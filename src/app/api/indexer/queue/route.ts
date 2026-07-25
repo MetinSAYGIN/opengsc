@@ -9,24 +9,25 @@ export async function GET(req: Request) {
     const userId = (session?.user as any)?.id as string | undefined;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const queue = await prisma.indexerQueue.findMany({
-      where: {
-        domain: {
-          userId,
-        },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-      include: {
-        domain: {
-          select: {
-            domain: true,
-          },
-        },
-      },
-    });
+    // Server-side pagination — the queue can hold thousands of URLs, so never ship them all.
+    const sp = new URL(req.url).searchParams;
+    const page = Math.max(1, parseInt(sp.get("page") || "1", 10) || 1);
+    const pageSize = Math.min(100, Math.max(5, parseInt(sp.get("pageSize") || "15", 10) || 15));
+    const where = { domain: { userId } };
 
-    return NextResponse.json(queue);
+    const [items, total, crawled] = await Promise.all([
+      prisma.indexerQueue.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: { domain: { select: { domain: true } } },
+      }),
+      prisma.indexerQueue.count({ where }),
+      prisma.indexerQueue.count({ where: { ...where, status: "crawled" } }),
+    ]);
+
+    return NextResponse.json({ items, total, crawled, page, pageSize });
   } catch (e: any) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

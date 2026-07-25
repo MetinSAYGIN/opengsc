@@ -22,6 +22,11 @@ interface DomainOpt {
 export default function IndexerQueuePage() {
   const { t } = useLanguage();
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [crawledCount, setCrawledCount] = useState(0);
+  const PAGE_SIZE = 15;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const [domains, setDomains] = useState<DomainOpt[]>([]);
   const [domainId, setDomainId] = useState("all");
   const [urlsInput, setUrlsInput] = useState("");
@@ -44,12 +49,16 @@ export default function IndexerQueuePage() {
     }
   };
 
-  const fetchQueue = async () => {
+  const fetchQueue = async (p = page) => {
     try {
-      const res = await fetch("/api/indexer/queue");
+      const res = await fetch(`/api/indexer/queue?page=${p}&pageSize=${PAGE_SIZE}`);
       if (res.ok) {
         const d = await res.json();
-        setQueue(d);
+        // Support both the paginated shape and (defensively) a raw array
+        const items = Array.isArray(d) ? d : (d.items ?? []);
+        setQueue(items);
+        setTotal(Array.isArray(d) ? items.length : (d.total ?? 0));
+        setCrawledCount(Array.isArray(d) ? 0 : (d.crawled ?? 0));
       }
     } catch (e) {
       console.error(e);
@@ -60,10 +69,15 @@ export default function IndexerQueuePage() {
 
   useEffect(() => {
     fetchDomains();
-    fetchQueue();
     setIsLarge(window.innerWidth > 960);
     try { setIndexNowKey(localStorage.getItem("seoKey_indexnow") || ""); } catch {}
   }, []);
+
+  // Refetch whenever the page changes (and on first mount)
+  useEffect(() => {
+    fetchQueue(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,7 +119,7 @@ export default function IndexerQueuePage() {
         }
         setStatusMsg({ type: "success", text: `✓ Queued ${data.count} URLs${sitemapInfo}${domainInfo}${inInfo}` });
         setUrlsInput("");
-        fetchQueue();
+        setPage(1); fetchQueue(1);
       } else {
         setStatusMsg({ type: "error", text: data.error || "Failed to add URLs." });
       }
@@ -122,7 +136,7 @@ export default function IndexerQueuePage() {
       const res = await fetch("/api/indexer/queue", { method: "DELETE" });
       if (res.ok) {
         setStatusMsg({ type: "success", text: "Очередь очищена." });
-        fetchQueue();
+        setPage(1); fetchQueue(1);
       }
     } catch (e: any) {
       setStatusMsg({ type: "error", text: e.message });
@@ -137,7 +151,7 @@ export default function IndexerQueuePage() {
       const d = await res.json().catch(() => ({}));
       if (res.ok) {
         setStatusMsg({ type: "success", text: `Удалено ${d.deleted ?? crawledCount} CRAWLED URL.` });
-        fetchQueue();
+        setPage(1); fetchQueue(1);
       } else {
         setStatusMsg({ type: "error", text: d.error || "Не удалось удалить." });
       }
@@ -145,8 +159,6 @@ export default function IndexerQueuePage() {
       setStatusMsg({ type: "error", text: e.message });
     }
   };
-
-  const crawledCount = queue.filter(q => q.status.toLowerCase() === "crawled").length;
 
   // Google "site:" lookup — quickest way to eyeball whether a URL made it into the index
   const siteSearchUrl = (url: string) => {
@@ -178,7 +190,7 @@ export default function IndexerQueuePage() {
         display: "grid",
         gridTemplateColumns: isLarge ? "minmax(0, 1fr) minmax(0, 1.3fr)" : "1fr",
         gap: "24px",
-        alignItems: "stretch",
+        alignItems: "start",
       }}>
         {/* Bulk Submission Form */}
       <div style={{
@@ -354,9 +366,9 @@ export default function IndexerQueuePage() {
             <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>
               Crawl Queue
             </h3>
-            {queue.length > 0 && (
+            {total > 0 && (
               <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", fontWeight: 500 }}>
-                {queue.length} URL · {crawledCount} crawled
+                {total} URL · {crawledCount} crawled
               </span>
             )}
           </div>
@@ -386,7 +398,7 @@ export default function IndexerQueuePage() {
               Очистить CRAWLED ({crawledCount})
             </button>
           )}
-          {queue.length > 0 && (
+          {total > 0 && (
             <button
               onClick={handleClear}
               style={{
@@ -437,9 +449,9 @@ export default function IndexerQueuePage() {
             <span style={{ fontSize: "11px" }}>Newly added doorway URLs waiting to be fetched by Googlebot will appear here.</span>
           </div>
         ) : (
-          // flex:1 + minHeight:0 makes the scroll area fill whatever height the stretched
-          // card has, instead of leaving dead space under a fixed 400px box.
-          <div style={{ flex: "1 1 auto", minHeight: 0, overflowX: "auto", overflowY: "auto" }}>
+          // Height is bounded by PAGE_SIZE rows + the pagination footer, so no fixed maxHeight
+          // and no infinite growth — the card is exactly as tall as one page of results.
+          <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
               <thead>
                 <tr style={{ color: "var(--color-text-secondary)", height: "36px" }}>
@@ -522,6 +534,50 @@ export default function IndexerQueuePage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {total > PAGE_SIZE && (
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingTop: "12px",
+            borderTop: "1px solid var(--color-border)",
+            fontSize: "12px",
+            color: "var(--color-text-secondary)"
+          }}>
+            <span>
+              {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} из {total}
+            </span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                style={{
+                  padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)",
+                  background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "11px",
+                  cursor: page <= 1 ? "not-allowed" : "pointer", opacity: page <= 1 ? 0.5 : 1
+                }}
+              >
+                ← Назад
+              </button>
+              <span style={{ padding: "4px 6px", color: "var(--color-text-tertiary)" }}>
+                {page} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                style={{
+                  padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)",
+                  background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "11px",
+                  cursor: page >= totalPages ? "not-allowed" : "pointer", opacity: page >= totalPages ? 0.5 : 1
+                }}
+              >
+                Вперёд →
+              </button>
+            </div>
           </div>
         )}
       </div>
