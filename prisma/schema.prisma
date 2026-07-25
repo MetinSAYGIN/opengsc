@@ -498,6 +498,8 @@ model IndexerQueue {
   url       String
   status    String        @default("pending") // "pending", "crawled", "indexed"
   createdAt DateTime      @default(now())
+  // Last time this URL was injected into a doorway page served to a crawler.
+  // NULL = never served yet; used to rotate exposure fairly (oldest/never first).
   crawledAt DateTime?
 
   domain    IndexerDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)

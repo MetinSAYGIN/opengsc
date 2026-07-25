@@ -68,6 +68,55 @@ function isSitemapUrl(url: string): boolean {
   return lower.endsWith(".xml") || lower.includes("sitemap");
 }
 
+// ── Helper: push URLs to IndexNow (Bing, Yandex, Seznam…) ──
+// Independent of the doorway network: this submits the money-site URLs directly to the
+// engines. Grouped per host because IndexNow accepts one host per request.
+async function submitToIndexNow(
+  urls: string[],
+  key: string,
+): Promise<{ submitted: number; hosts: number; errors: string[] }> {
+  const byHost = new Map<string, string[]>();
+  for (const u of urls) {
+    try {
+      const host = new URL(u).host;
+      if (!byHost.has(host)) byHost.set(host, []);
+      byHost.get(host)!.push(u);
+    } catch { /* skip malformed URLs */ }
+  }
+
+  let submitted = 0;
+  const errors: string[] = [];
+
+  for (const [host, hostUrls] of byHost) {
+    // IndexNow caps a single submission at 10 000 URLs
+    for (let i = 0; i < hostUrls.length; i += 10000) {
+      const batch = hostUrls.slice(i, i + 10000);
+      try {
+        const res = await fetch("https://api.indexnow.org/indexnow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify({
+            host,
+            key,
+            keyLocation: `https://${host}/${key}.txt`,
+            urlList: batch,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (res.status === 200 || res.status === 202) {
+          submitted += batch.length;
+        } else {
+          errors.push(`${host}: HTTP ${res.status}`);
+        }
+      } catch (e: any) {
+        errors.push(`${host}: ${e?.message ?? "request failed"}`);
+      }
+    }
+  }
+
+  return { submitted, hosts: byHost.size, errors };
+}
+
 export async function POST(req: Request) {
   try {
     const session = await getServerSession(authOptions);
@@ -75,7 +124,7 @@ export async function POST(req: Request) {
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
-    const { domainId, urls } = body; // urls is a string or array
+    const { domainId, urls, indexNowKey } = body; // urls is a string or array
 
     if (!urls) {
       return NextResponse.json({ error: "URLs are required" }, { status: 400 });
@@ -153,11 +202,19 @@ export async function POST(req: Request) {
       }
     }
 
+    // Push the same URLs straight to IndexNow (Bing/Yandex) — instant, engine-official
+    // indexation that does not depend on a crawler finding the doorway network.
+    let indexNow: { submitted: number; hosts: number; errors: string[] } | null = null;
+    if (typeof indexNowKey === "string" && indexNowKey.trim().length > 0) {
+      indexNow = await submitToIndexNow(expandedUrls, indexNowKey.trim());
+    }
+
     return NextResponse.json({
       success: true,
       count: created,
       totalUrls: expandedUrls.length,
       domainsUsed: targetDomains.length,
+      indexNow,
     });
   } catch (e: any) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

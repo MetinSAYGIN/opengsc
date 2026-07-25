@@ -777,7 +777,7 @@
   "indexerStep3Title": "3. Upload index.php",
   "indexerStep3Text": "Copy the PHP code generated below. Create a file named 'index.php' in your server's root folder (via cPanel File Manager or FTP tools like FileZilla), paste the code, and save. Make sure the PHP cURL extension is enabled on your hosting (it is enabled on 99% of servers by default) so the script can ping your OpenGSC dashboard.",
   "indexerStep4Title": "4. Target URL & Cloaking",
-  "indexerStep4Text": "In the 'Domains' tab in OpenGSC, make sure to add your 'Money Redirect Target URL' (the real project you want to drive traffic or index backlinks to). The script will automatically cloak the site: showing text sandboxes with dictionary keywords to Googlebot, while instantly redirecting human users to your money project.",
+  "indexerStep4Text": "In the 'Domains' tab, set the 'Redirect Target URL' — this is WHERE HUMAN VISITORS GO. Use a large neutral site matching the domain's topic (Amazon, Wikipedia, BBC, etc.), NOT your own money site: that way you never create a 'doorway → your project' trail that exposes it during a manual review. The script splits traffic: crawlers get the text sandbox, humans get redirected to that neutral site. Add your own money-site pages under the 'Queue' tab — only those are injected into the pages Google and AI bots see.",
   "indexerNoDataTitle": "Panel is empty",
   "indexerNoDataDesc": "You have not added any domains or received any traffic yet. Go to the \"Domains\" tab to link your first domain and configure tracking according to the instructions in \"Settings\".",
   "indexerNoLogsTitle": "No logs yet",

@@ -20,7 +20,7 @@ export default function IndexerSettingsPage() {
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isLarge, setIsLarge] = useState(false);
-  const [integrationType, setIntegrationType] = useState<"php" | "phpStatic" | "astro" | "nginx">("php");
+  const [integrationType, setIntegrationType] = useState<"php" | "phpStatic" | "nginx">("php");
 
   useEffect(() => {
     // Load public URL from localStorage if set
@@ -77,10 +77,39 @@ export default function IndexerSettingsPage() {
 define('API_URL', '${publicUrl.replace(/\/$/, "")}/api/indexer/webhook');
 define('API_KEY', '${selectedDomain?.apiKey || "YOUR_DOMAIN_API_KEY_HERE"}');
 define('REDIRECT_TARGET', '${selectedDomain?.moneyUrl || "https://your-money-site.com"}');
+// Root domain used to spawn endless subdomains. Requires wildcard DNS (*.domain -> this server).
+define('BASE_DOMAIN', '${selectedDomain?.domain || "your-doorway-domain.com"}');
+// Scheme for generated subdomain links. Keep 'http' unless you have a WILDCARD SSL cert:
+// a plain Let's Encrypt cert covers only the root domain, so https://sub.domain would fail
+// the TLS handshake and crawlers would drop every subdomain URL without fetching it.
+// Switch to 'https' after installing a *.domain certificate.
+define('SUBDOMAIN_SCHEME', 'http');
+// Crawl-space size: how many internal + subdomain links each served page emits.
+// This is the "bait": every page spawns dozens of new URLs, so crawlers never run out.
+define('LINKS_PER_PAGE_MIN', 18);
+define('LINKS_PER_PAGE_MAX', 34);
+define('SUBDOMAIN_LINKS_MIN', 4);
+define('SUBDOMAIN_LINKS_MAX', 9);
 // Tokens enforced below: google,bing,yandex,mailru,ai (AI answer/GEO), ai-training.
 // Uncheck a crawler in the panel -> its token drops here -> that bot stops being served.
 define('ALLOWED_BOTS', '${effectiveAllowedBots}');
 define('STRICT_VERIFICATION', true); // Verify search bots via Reverse & Forward DNS lookup
+
+// ─── CRAWL-SPACE HELPERS ───
+// Builds an effectively unlimited URL slug: 2-4 dictionary words + a number.
+// 60 words -> millions of combinations per length, so the crawl space never repeats.
+function build_slug($words) {
+    $n = rand(2, 4);
+    $parts = array();
+    for ($i = 0; $i < $n; $i++) { $parts[] = $words[array_rand($words)]; }
+    return implode('-', $parts) . '-' . rand(1, 9999999);
+}
+
+// Turns a slug back into a readable anchor ("winter-deals-42" -> "Winter deals")
+function slug_to_anchor($slug) {
+    $clean = preg_replace('#-\\d+$#', '', $slug);
+    return ucfirst(str_replace('-', ' ', $clean));
+}
 
 // ─── BOT DETECTION LOGIC ───
 function get_client_ip() {
@@ -163,28 +192,35 @@ if ($is_bot && STRICT_VERIFICATION && in_array($detected_bot_type, array('google
 
 // ─── ROUTE VISITOR ───
 if ($is_bot) {
-    // 1. Serve 304 conditional check (saves server load & crawler budget)
-    $etag = md5($host . $uri . date('Y-m-d'));
-    if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
-        // Send a 304 log ping so OpenGSC registers the crawler visit
-        send_log_ping(false, 304);
-        header("HTTP/1.1 304 Not Modified");
-        exit;
-    }
-    
-    // Send a 200 log ping
-    send_log_ping(false, 200);
-    header("ETag: $etag");
+    // NOTE: no 304 handling here on purpose. A 304 has an empty body, so the crawler would
+    // never see the queued money-site links — which is the whole point of serving the bot.
+    // Always return a fresh 200 and tell caches not to reuse it.
+
+    // Send a 200 log ping — the response carries queued money-site URLs to inject below
+    $queue_links = send_log_ping(false, 200, $detected_bot_type);
+    header("Cache-Control: no-cache, no-store, must-revalidate");
+    header("Pragma: no-cache");
     header("Content-Type: text/html; charset=UTF-8");
 
     // 2. Render dynamic messy doorway content
-    $niche_words = array("deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping");
-    $rand_title = ucfirst($niche_words[array_rand($niche_words)]) . " " . $niche_words[array_rand($niche_words)] . " deals sandbox";
-    
+    // Seed the generator from the requested URL: the same URL always renders the same page,
+    // so re-crawls see stable content and a stable link graph (looks like a real site),
+    // while every NEW url spawns its own fresh branch of the crawl space.
+    mt_srand(crc32($host . $uri));
+
+    $niche_words = array(
+        "deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping",
+        "guide", "compare", "catalog", "offers", "store", "market", "budget", "premium", "rating", "top", "choice", "trends",
+        "models", "brands", "series", "edition", "bundle", "coupon", "outlet", "express", "global", "local", "prime", "value",
+        "expert", "buyers", "picks", "list", "index", "archive", "digest", "report", "insight", "update", "season", "collection",
+        "specs", "features", "options", "variants", "sizes", "colors", "styles", "sets", "kits", "packs", "gear", "supply"
+    );
+    $rand_title = ucfirst($niche_words[array_rand($niche_words)]) . " " . $niche_words[array_rand($niche_words)] . " " . $niche_words[array_rand($niche_words)];
+
     echo "<!DOCTYPE html><html><head><title>" . htmlspecialchars($rand_title) . "</title></head><body style='font-family: sans-serif; padding: 20px;'>";
     echo "<h1>" . htmlspecialchars($rand_title) . "</h1>";
     echo "<p>Crawl pool semantic markup sandbox:</p>";
-    
+
     // Generate text mash
     echo "<div>";
     for ($i = 0; $i < 60; $i++) {
@@ -192,21 +228,48 @@ if ($is_bot) {
     }
     echo "</div>";
 
-    // Money-site promotion — surface REDIRECT_TARGET so search + AI crawlers discover,
-    // index and (for GEO) cite/recommend it. Varied anchors keep the footprint natural.
-    $money = REDIRECT_TARGET;
-    $money_host = preg_replace('#^https?://#', '', rtrim($money, '/'));
+    // ─── Money-site links: ONLY from the OpenGSC crawl queue ───
+    // Note: REDIRECT_TARGET is the human decoy (a big neutral site) and is deliberately
+    // NOT linked here — linking it would pass equity to someone else's domain and create
+    // a doorway->decoy footprint. Real money-site URLs come from Indexer -> Queue.
     $anchors = array("official site", "read more", "best offer", "visit resource", "full guide", "recommended", "learn more", "see details");
-    echo "<p>Recommended resource: <a href='" . htmlspecialchars($money) . "'>" . htmlspecialchars($money_host) . "</a></p>";
-    echo "<ul>";
-    for ($i = 0; $i < 3; $i++) {
-        $anchor = ucfirst($anchors[array_rand($anchors)]) . " " . $niche_words[array_rand($niche_words)];
-        echo "<li><a href='" . htmlspecialchars($money) . "'>" . htmlspecialchars($anchor) . "</a></li>";
+    if (!empty($queue_links)) {
+        echo "<p>Recommended resources:</p><ul>";
+        foreach ($queue_links as $q_url) {
+            if (!is_string($q_url) || $q_url === '') continue;
+            $slug = trim(preg_replace('#[^a-z0-9]+#i', ' ', parse_url($q_url, PHP_URL_PATH)));
+            $q_anchor = $slug !== '' ? ucfirst($slug) : ucfirst($anchors[array_rand($anchors)]) . " " . $niche_words[array_rand($niche_words)];
+            echo "<li><a href='" . htmlspecialchars($q_url) . "'>" . htmlspecialchars($q_anchor) . "</a></li>";
+        }
+        echo "</ul>";
+    }
+
+    // ─── INFINITE CRAWL SPACE (the bait) ───
+    // Every served page emits dozens of brand-new URLs, and each of those does the same.
+    // The link graph therefore branches exponentially instead of running as a single chain,
+    // so a crawler always has somewhere new to go and keeps coming back for more.
+    echo "<h2>" . htmlspecialchars(ucfirst($niche_words[array_rand($niche_words)])) . " sections</h2><ul>";
+    $link_count = rand(LINKS_PER_PAGE_MIN, LINKS_PER_PAGE_MAX);
+    for ($i = 0; $i < $link_count; $i++) {
+        $slug = build_slug($niche_words);
+        echo "<li><a href='/?p=" . urlencode($slug) . "'>" . htmlspecialchars(slug_to_anchor($slug)) . "</a></li>";
     }
     echo "</ul>";
 
-    // Random crosslinks to next subdomains
-    echo "<br/><br/><a href='?p=" . rand(100, 9999) . "'>Next internal link &rarr;</a>";
+    // Endless subdomains — needs wildcard DNS (*.BASE_DOMAIN -> this server).
+    // Each subdomain is a fresh host with its own unlimited page space.
+    if (BASE_DOMAIN !== '' && strpos(BASE_DOMAIN, 'your-doorway-domain') === false) {
+        echo "<h2>More " . htmlspecialchars($niche_words[array_rand($niche_words)]) . "</h2><ul>";
+        $sub_count = rand(SUBDOMAIN_LINKS_MIN, SUBDOMAIN_LINKS_MAX);
+        for ($i = 0; $i < $sub_count; $i++) {
+            $sub = $niche_words[array_rand($niche_words)] . "-" . $niche_words[array_rand($niche_words)] . rand(1, 99999);
+            $slug = build_slug($niche_words);
+            $sub_url = SUBDOMAIN_SCHEME . "://" . $sub . "." . BASE_DOMAIN . "/?p=" . urlencode($slug);
+            echo "<li><a href='" . htmlspecialchars($sub_url) . "'>" . htmlspecialchars(slug_to_anchor($slug)) . "</a></li>";
+        }
+        echo "</ul>";
+    }
+
     echo "</body></html>";
     exit;
 } else {
@@ -252,9 +315,11 @@ function verify_bot_dns($ip, $bot_type) {
     return ($resolved_ip === $ip);
 }
 
-function send_log_ping($is_redirect, $status_code = 200) {
+// Sends the crawl log to OpenGSC and returns the money-site URLs from the crawl queue
+// that should be injected into this page (so queued pages get discovered by crawlers).
+function send_log_ping($is_redirect, $status_code = 200, $bot_type = '') {
     global $user_agent, $ip, $uri, $host, $referer;
-    
+
     $payload = json_encode(array(
         'apiKey' => API_KEY,
         'url' => 'https://' . $host . $uri,
@@ -262,7 +327,8 @@ function send_log_ping($is_redirect, $status_code = 200) {
         'userAgent' => $user_agent,
         'statusCode' => $status_code,
         'referer' => $referer,
-        'isRedirect' => $is_redirect
+        'isRedirect' => $is_redirect,
+        'botType' => $bot_type
     ));
 
     $ch = curl_init(API_URL);
@@ -274,8 +340,17 @@ function send_log_ping($is_redirect, $status_code = 200) {
     curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    curl_exec($ch);
+    $response = curl_exec($ch);
     curl_close($ch);
+
+    $links = array();
+    if ($response) {
+        $decoded = json_decode($response, true);
+        if (is_array($decoded) && !empty($decoded['links']) && is_array($decoded['links'])) {
+            $links = $decoded['links'];
+        }
+    }
+    return $links;
 }
 `;
 
@@ -288,10 +363,29 @@ function send_log_ping($is_redirect, $status_code = 200) {
 
 define('API_URL', '${publicUrl.replace(/\/$/, "")}/api/indexer/webhook');
 define('API_KEY', '${selectedDomain?.apiKey || "YOUR_DOMAIN_API_KEY_HERE"}');
-define('REDIRECT_TARGET', '${selectedDomain?.moneyUrl || "https://your-money-site.com"}'); // money site linked to bots
+define('REDIRECT_TARGET', '${selectedDomain?.moneyUrl || "https://your-money-site.com"}'); // human decoy target
+define('BASE_DOMAIN', '${selectedDomain?.domain || "your-doorway-domain.com"}'); // needs wildcard DNS (*.domain)
+// 'http' unless you installed a WILDCARD SSL cert — https on subdomains without one fails TLS.
+define('SUBDOMAIN_SCHEME', 'http');
+define('LINKS_PER_PAGE_MIN', 18);
+define('LINKS_PER_PAGE_MAX', 34);
+define('SUBDOMAIN_LINKS_MIN', 4);
+define('SUBDOMAIN_LINKS_MAX', 9);
 // Tokens enforced below: google,bing,yandex,mailru,ai (AI answer/GEO), ai-training.
 define('ALLOWED_BOTS', '${effectiveAllowedBots}');
 define('STRICT_VERIFICATION', true);
+
+// ─── CRAWL-SPACE HELPERS ───
+function build_slug($words) {
+    $n = rand(2, 4);
+    $parts = array();
+    for ($i = 0; $i < $n; $i++) { $parts[] = $words[array_rand($words)]; }
+    return implode('-', $parts) . '-' . rand(1, 9999999);
+}
+function slug_to_anchor($slug) {
+    $clean = preg_replace('#-\\d+$#', '', $slug);
+    return ucfirst(str_replace('-', ' ', $clean));
+}
 
 // ─── BOT DETECTION LOGIC ───
 $user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '';
@@ -358,20 +452,24 @@ if ($is_bot && STRICT_VERIFICATION && in_array($detected_bot_type, array('google
 
 // ─── ROUTE VISITOR ───
 if ($is_bot) {
-    $etag = md5($host . $uri . date('Y-m-d'));
-    if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
-        send_log_ping(false, 304);
-        header("HTTP/1.1 304 Not Modified");
-        exit;
-    }
-    
-    send_log_ping(false, 200);
-    header("ETag: $etag");
+    // No 304 handling: an empty 304 body would hide the queued money-site links from crawlers.
+    $queue_links = send_log_ping(false, 200, $detected_bot_type);
+    header("Cache-Control: no-cache, no-store, must-revalidate");
+    header("Pragma: no-cache");
     header("Content-Type: text/html; charset=UTF-8");
 
-    $niche_words = array("deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping");
-    $rand_title = ucfirst($niche_words[array_rand($niche_words)]) . " " . $niche_words[array_rand($niche_words)] . " deals sandbox";
-    
+    // Stable per-URL rendering + endless new branches (see main script for rationale)
+    mt_srand(crc32($host . $uri));
+
+    $niche_words = array(
+        "deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping",
+        "guide", "compare", "catalog", "offers", "store", "market", "budget", "premium", "rating", "top", "choice", "trends",
+        "models", "brands", "series", "edition", "bundle", "coupon", "outlet", "express", "global", "local", "prime", "value",
+        "expert", "buyers", "picks", "list", "index", "archive", "digest", "report", "insight", "update", "season", "collection",
+        "specs", "features", "options", "variants", "sizes", "colors", "styles", "sets", "kits", "packs", "gear", "supply"
+    );
+    $rand_title = ucfirst($niche_words[array_rand($niche_words)]) . " " . $niche_words[array_rand($niche_words)] . " " . $niche_words[array_rand($niche_words)];
+
     echo "<!DOCTYPE html><html><head><title>" . htmlspecialchars($rand_title) . "</title></head><body style='font-family: sans-serif; padding: 20px;'>";
     echo "<h1>" . htmlspecialchars($rand_title) . "</h1>";
     echo "<p>Crawl pool semantic markup sandbox:</p>";
@@ -382,19 +480,42 @@ if ($is_bot) {
     }
     echo "</div>";
 
-    // Money-site promotion for search + AI (GEO) crawlers
-    $money = REDIRECT_TARGET;
-    $money_host = preg_replace('#^https?://#', '', rtrim($money, '/'));
+    // ─── Money-site links: ONLY from the OpenGSC crawl queue ───
+    // REDIRECT_TARGET is the human decoy and is deliberately NOT linked here.
     $anchors = array("official site", "read more", "best offer", "visit resource", "full guide", "recommended", "learn more", "see details");
-    echo "<p>Recommended resource: <a href='" . htmlspecialchars($money) . "'>" . htmlspecialchars($money_host) . "</a></p>";
-    echo "<ul>";
-    for ($i = 0; $i < 3; $i++) {
-        $anchor = ucfirst($anchors[array_rand($anchors)]) . " " . $niche_words[array_rand($niche_words)];
-        echo "<li><a href='" . htmlspecialchars($money) . "'>" . htmlspecialchars($anchor) . "</a></li>";
+    if (!empty($queue_links)) {
+        echo "<p>Recommended resources:</p><ul>";
+        foreach ($queue_links as $q_url) {
+            if (!is_string($q_url) || $q_url === '') continue;
+            $slug = trim(preg_replace('#[^a-z0-9]+#i', ' ', parse_url($q_url, PHP_URL_PATH)));
+            $q_anchor = $slug !== '' ? ucfirst($slug) : ucfirst($anchors[array_rand($anchors)]) . " " . $niche_words[array_rand($niche_words)];
+            echo "<li><a href='" . htmlspecialchars($q_url) . "'>" . htmlspecialchars($q_anchor) . "</a></li>";
+        }
+        echo "</ul>";
+    }
+
+    // ─── INFINITE CRAWL SPACE (the bait) ───
+    echo "<h2>" . htmlspecialchars(ucfirst($niche_words[array_rand($niche_words)])) . " sections</h2><ul>";
+    $link_count = rand(LINKS_PER_PAGE_MIN, LINKS_PER_PAGE_MAX);
+    for ($i = 0; $i < $link_count; $i++) {
+        $slug = build_slug($niche_words);
+        echo "<li><a href='/?p=" . urlencode($slug) . "'>" . htmlspecialchars(slug_to_anchor($slug)) . "</a></li>";
     }
     echo "</ul>";
 
-    echo "<br/><br/><a href='?p=" . rand(100, 9999) . "'>Next internal link &rarr;</a>";
+    // Endless subdomains — needs wildcard DNS (*.BASE_DOMAIN -> this server)
+    if (BASE_DOMAIN !== '' && strpos(BASE_DOMAIN, 'your-doorway-domain') === false) {
+        echo "<h2>More " . htmlspecialchars($niche_words[array_rand($niche_words)]) . "</h2><ul>";
+        $sub_count = rand(SUBDOMAIN_LINKS_MIN, SUBDOMAIN_LINKS_MAX);
+        for ($i = 0; $i < $sub_count; $i++) {
+            $sub = $niche_words[array_rand($niche_words)] . "-" . $niche_words[array_rand($niche_words)] . rand(1, 99999);
+            $slug = build_slug($niche_words);
+            $sub_url = SUBDOMAIN_SCHEME . "://" . $sub . "." . BASE_DOMAIN . "/?p=" . urlencode($slug);
+            echo "<li><a href='" . htmlspecialchars($sub_url) . "'>" . htmlspecialchars(slug_to_anchor($slug)) . "</a></li>";
+        }
+        echo "</ul>";
+    }
+
     echo "</body></html>";
     exit;
 } else {
@@ -428,7 +549,8 @@ function verify_bot_dns($ip, $bot_type) {
     return ($resolved_ip === $ip);
 }
 
-function send_log_ping($is_redirect, $status_code = 200) {
+// Returns money-site URLs from the OpenGSC crawl queue to inject into the served page.
+function send_log_ping($is_redirect, $status_code = 200, $bot_type = '') {
     global $user_agent, $ip, $uri, $host, $referer;
     $payload = json_encode(array(
         'apiKey' => API_KEY,
@@ -437,191 +559,28 @@ function send_log_ping($is_redirect, $status_code = 200) {
         'userAgent' => $user_agent,
         'statusCode' => $status_code,
         'referer' => $referer,
-        'isRedirect' => $is_redirect
+        'isRedirect' => $is_redirect,
+        'botType' => $bot_type
     ));
     $ch = curl_init(API_URL);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_POST, true);
     curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
     curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/json'));
-    curl_setopt($ch, CURLOPT_TIMEOUT, 2);
-    curl_exec($ch);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+    $response = curl_exec($ch);
     curl_close($ch);
+
+    $links = array();
+    if ($response) {
+        $decoded = json_decode($response, true);
+        if (is_array($decoded) && !empty($decoded['links']) && is_array($decoded['links'])) {
+            $links = $decoded['links'];
+        }
+    }
+    return $links;
 }
 \n?>`;
-
-  // Astro Middleware Content
-  const astroMiddlewareContent = `// ─── OpenGSC Private Indexer Astro Middleware (src/middleware.ts) ───
-// For Astro projects running in SSR mode (Node.js, Vercel, Netlify, Cloudflare).
-// Paste this inside src/middleware.ts.
-
-import { defineMiddleware } from "astro:middleware";
-import dns from "dns/promises";
-
-const API_URL = "${publicUrl.replace(/\/$/, "")}/api/indexer/webhook";
-const API_KEY = "${selectedDomain?.apiKey || "YOUR_DOMAIN_API_KEY_HERE"}";
-const REDIRECT_TARGET = "${selectedDomain?.moneyUrl || "https://your-money-site.com"}";
-const ALLOWED_BOTS = "${effectiveAllowedBots}"; // tokens: google,bing,yandex,mailru,ai,ai-training
-const STRICT_VERIFICATION = true;
-// AI / GEO crawlers: "answer" bots cite live pages (traffic), "training" bots only ingest content.
-const AI_ANSWER_BOTS = ["oai-searchbot", "chatgpt-user", "perplexitybot", "perplexity-user", "claudebot", "claude-user", "duckassistbot", "google-extended"];
-const AI_TRAINING_BOTS = ["gptbot", "ccbot", "anthropic-ai", "bytespider", "meta-externalagent", "meta-externalfetcher", "applebot-extended", "cohere-ai", "cohere-training", "amazonbot", "diffbot", "imagesift", "omgili", "timpibot", "youbot"];
-
-async function verifyBotDns(ip: string, botType: string): Promise<boolean> {
-  try {
-    const hostnames = await dns.reverse(ip);
-    if (!hostnames || hostnames.length === 0) return false;
-    const hostname = hostnames[0];
-
-    let isValidDomain = false;
-    if (botType === 'google') {
-      if (/\\.googlebot\\.com$/i.test(hostname) || /\\.google\\.com$/i.test(hostname)) isValidDomain = true;
-    } else if (botType === 'yandex') {
-      if (/\\.yandex\\.(ru|net|com)$/i.test(hostname)) isValidDomain = true;
-    } else if (botType === 'bing') {
-      if (/\\.search\\.msn\\.com$/i.test(hostname)) isValidDomain = true;
-    } else if (botType === 'mailru') {
-      if (/\\.mail\\.ru$/i.test(hostname)) isValidDomain = true;
-    }
-
-    if (!isValidDomain) return false;
-    const ips = await dns.resolve(hostname);
-    return ips.includes(ip);
-  } catch (e) {
-    return false;
-  }
-}
-
-async function sendLogPing(payload: any) {
-  try {
-    await fetch(API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {}
-}
-
-export const onRequest = defineMiddleware(async (context, next) => {
-  const userAgent = context.request.headers.get("user-agent") || "";
-  const ip = context.request.headers.get("cf-connecting-ip") || 
-             context.request.headers.get("x-real-ip") || 
-             context.request.headers.get("x-forwarded-for")?.split(",")[0].trim() || 
-             "0.0.0.0";
-             
-  const url = new URL(context.request.url);
-  const host = url.host;
-  const referer = context.request.headers.get("referer") || "";
-
-  let isBot = false;
-  let detectedBotType = "";
-  let aiKind = "";
-  const uaLower = userAgent.toLowerCase();
-
-  if (uaLower.includes("googlebot") || uaLower.includes("google-co")) {
-    isBot = true;
-    detectedBotType = "google";
-  } else if (uaLower.includes("bingbot") || uaLower.includes("bingpreview")) {
-    isBot = true;
-    detectedBotType = "bing";
-  } else if (uaLower.includes("yandex")) {
-    isBot = true;
-    detectedBotType = "yandex";
-  } else if (uaLower.includes("mail.ru") || uaLower.includes("mailru")) {
-    isBot = true;
-    detectedBotType = "mailru";
-  } else if (AI_ANSWER_BOTS.some(b => uaLower.includes(b))) {
-    isBot = true;
-    detectedBotType = "ai";
-    aiKind = "answer";
-  } else if (AI_TRAINING_BOTS.some(b => uaLower.includes(b))) {
-    isBot = true;
-    detectedBotType = "ai";
-    aiKind = "training";
-  } else if (uaLower.includes("bot") || uaLower.includes("crawler") || uaLower.includes("spider")) {
-    isBot = true;
-    detectedBotType = "other";
-  }
-
-  // ─── ENFORCE ALLOWED_BOTS (panel checkboxes) ───
-  const allowed = ALLOWED_BOTS.toLowerCase().split(",").map(s => s.trim());
-  if (["google", "bing", "yandex", "mailru"].includes(detectedBotType) && !allowed.includes(detectedBotType)) {
-    isBot = false;
-    detectedBotType = "";
-  }
-  if (aiKind === "answer" && !allowed.includes("ai")) {
-    isBot = false;
-  }
-  if (aiKind === "training" && !allowed.includes("ai-training")) {
-    // Block AI training crawlers: no doorway, no money-site redirect
-    await sendLogPing({ apiKey: API_KEY, url: context.request.url, ip, userAgent, statusCode: 403, referer, isRedirect: false });
-    return new Response("Forbidden", { status: 403 });
-  }
-
-  if (isBot && STRICT_VERIFICATION && ["google", "yandex", "bing", "mailru"].includes(detectedBotType)) {
-    isBot = await verifyBotDns(ip, detectedBotType);
-  }
-
-  const pingPayload = {
-    apiKey: API_KEY,
-    url: context.request.url,
-    ip,
-    userAgent,
-    statusCode: 200,
-    referer,
-    isRedirect: false
-  };
-
-  if (isBot) {
-    const etag = "etag_" + Buffer.from(\`\${host}\${url.pathname}\`).toString("base64").slice(0, 10);
-    const ifNoneMatch = context.request.headers.get("if-none-match");
-    if (ifNoneMatch && ifNoneMatch.trim() === etag) {
-      pingPayload.statusCode = 304;
-      context.waitUntil ? context.waitUntil(sendLogPing(pingPayload)) : await sendLogPing(pingPayload);
-      return new Response(null, { status: 304 });
-    }
-
-    context.waitUntil ? context.waitUntil(sendLogPing(pingPayload)) : await sendLogPing(pingPayload);
-
-    const nicheWords = ["deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping"];
-    const randTitle = nicheWords[Math.floor(Math.random() * nicheWords.length)].charAt(0).toUpperCase() + 
-                      nicheWords[Math.floor(Math.random() * nicheWords.length)].slice(1) + " " + 
-                      nicheWords[Math.floor(Math.random() * nicheWords.length)] + " deals sandbox";
-
-    let textMash = "";
-    for (let i = 0; i < 60; i++) {
-      textMash += nicheWords[Math.floor(Math.random() * nicheWords.length)] + " ";
-    }
-
-    // Money-site promotion for search + AI (GEO) crawlers
-    const moneyHost = REDIRECT_TARGET.replace(/^https?:\\/\\//, "").replace(/\\/$/, "");
-    const anchorWords = ["official site", "read more", "best offer", "visit resource", "full guide", "recommended", "learn more", "see details"];
-    let moneyLinks = "";
-    for (let i = 0; i < 3; i++) {
-      const a = anchorWords[Math.floor(Math.random() * anchorWords.length)] + " " + nicheWords[Math.floor(Math.random() * nicheWords.length)];
-      moneyLinks += \`<li><a href="\${REDIRECT_TARGET}">\${a}</a></li>\`;
-    }
-
-    const html = \`<!DOCTYPE html><html><head><title>\${randTitle}</title></head><body style="font-family: sans-serif; padding: 20px;">
-<h1>\${randTitle}</h1>
-<p>Crawl pool semantic markup sandbox:</p>
-<div>\${textMash}</div>
-<p>Recommended resource: <a href="\${REDIRECT_TARGET}">\${moneyHost}</a></p>
-<ul>\${moneyLinks}</ul>
-<br/><br/><a href="?p=\${Math.floor(Math.random() * 9900) + 100}">Next internal link &rarr;</a>
-</body></html>\`;
-
-    return new Response(html, {
-      headers: {
-        "Content-Type": "text/html; charset=UTF-8",
-        "ETag": etag
-      }
-    });
-  } else {
-    // Serve normal request for human
-    return next();
-  }
-});`;
 
   // Nginx Config Content
   const nginxConfigContent = `# ─── Nginx Configuration for Static HTML Cloaking ───
@@ -674,8 +633,6 @@ server {
     switch (integrationType) {
       case "phpStatic":
         return phpStaticWrapperContent;
-      case "astro":
-        return astroMiddlewareContent;
       case "nginx":
         return nginxConfigContent;
       case "php":
@@ -689,8 +646,6 @@ server {
       case "php":
       case "phpStatic":
         return "index.php";
-      case "astro":
-        return "src/middleware.ts";
       case "nginx":
         return "nginx.conf";
       default:
@@ -803,7 +758,6 @@ server {
             {[
               { id: "php", label: t("settOptPhp") },
               { id: "phpStatic", label: t("settOptPhpStatic") },
-              { id: "astro", label: t("settOptAstro") },
               { id: "nginx", label: t("settOptNginx") }
             ].map(opt => (
               <button
@@ -843,11 +797,9 @@ server {
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <Code size={16} color="var(--color-accent-blue)" />
             <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>
-              {integrationType === "php" || integrationType === "phpStatic" 
-                ? t("settScriptTitle") 
-                : integrationType === "astro" 
-                  ? "Astro Middleware (src/middleware.ts)" 
-                  : "Nginx Configuration (nginx.conf)"}
+              {integrationType === "php" || integrationType === "phpStatic"
+                ? t("settScriptTitle")
+                : "Nginx Configuration (nginx.conf)"}
             </h3>
           </div>
           <button

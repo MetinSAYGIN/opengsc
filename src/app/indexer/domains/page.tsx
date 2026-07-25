@@ -212,13 +212,13 @@ export default function IndexerDomainsPage() {
           {/* Money redirect URL */}
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             <label style={{ fontSize: "12px", color: "var(--color-text-secondary)", fontWeight: 600 }}>
-              Money Redirect Target URL (cloaking target)
+              Redirect Target URL — куда уходят живые посетители
             </label>
             <input
               type="text"
               value={moneyUrl}
               onChange={e => setMoneyUrl(e.target.value)}
-              placeholder="https://my-main-money-site.com/offers"
+              placeholder="https://www.amazon.com"
               style={{
                 background: "var(--color-bg)",
                 border: "1px solid var(--color-border)",
@@ -229,6 +229,9 @@ export default function IndexerDomainsPage() {
                 outline: "none"
               }}
             />
+            <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>
+              Крупный нейтральный сайт по теме домена, НЕ ваш мани-сайт. Свои страницы для индексации добавляйте во вкладке «Очередь».
+            </span>
           </div>
 
           {/* Template Selection */}

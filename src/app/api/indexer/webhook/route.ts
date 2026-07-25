@@ -85,7 +85,35 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ success: true });
+    // ─── Feed money-site URLs from the crawl queue back to the doorway ───
+    // The doorway injects these as links into the page it serves the crawler, so queued
+    // money-site pages actually get discovered/indexed. Only for real 200 bot serves —
+    // a 304/403/redirect renders no HTML, so there is nothing to inject into.
+    let links: string[] = [];
+    const code = statusCode ? parseInt(statusCode) : 200;
+    const isServedBot = !isRedirect && botType !== "redirect" && code === 200;
+
+    if (isServedBot) {
+      // Rotate fairly: never-served (crawledAt NULL) first, then least-recently-served,
+      // so every queued URL keeps getting link exposure across crawls.
+      const queued = await prisma.indexerQueue.findMany({
+        where: { domainId: domain.id },
+        orderBy: [{ crawledAt: "asc" }, { createdAt: "asc" }],
+        take: 5,
+        select: { id: true, url: true },
+      });
+
+      links = queued.map(q => q.url);
+
+      if (queued.length > 0) {
+        await prisma.indexerQueue.updateMany({
+          where: { id: { in: queued.map(q => q.id) } },
+          data: { status: "crawled", crawledAt: new Date() },
+        });
+      }
+    }
+
+    return NextResponse.json({ success: true, links });
   } catch (e: any) {
     console.error("[Indexer Webhook Error]", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

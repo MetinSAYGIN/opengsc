@@ -29,6 +29,8 @@ export default function IndexerQueuePage() {
   const [submitting, setSubmitting] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [isLarge, setIsLarge] = useState(false);
+  // IndexNow key — same storage convention as the per-site SEO panel (shared global key).
+  const [indexNowKey, setIndexNowKey] = useState("");
 
   const fetchDomains = async () => {
     try {
@@ -60,6 +62,7 @@ export default function IndexerQueuePage() {
     fetchDomains();
     fetchQueue();
     setIsLarge(window.innerWidth > 960);
+    try { setIndexNowKey(localStorage.getItem("seoKey_indexnow") || ""); } catch {}
   }, []);
 
   const handleAdd = async (e: React.FormEvent) => {
@@ -79,6 +82,7 @@ export default function IndexerQueuePage() {
         body: JSON.stringify({
           domainId,
           urls: urlsInput,
+          indexNowKey: indexNowKey.trim() || undefined,
         }),
       });
 
@@ -90,7 +94,16 @@ export default function IndexerQueuePage() {
         const sitemapInfo = data.totalUrls && data.totalUrls !== data.count
           ? ` (${data.totalUrls} total, ${data.totalUrls - data.count} duplicates skipped)`
           : "";
-        setStatusMsg({ type: "success", text: `✓ Queued ${data.count} URLs${sitemapInfo}${domainInfo}` });
+        // IndexNow result (Bing/Yandex) — independent of the doorway network
+        let inInfo = "";
+        if (data.indexNow) {
+          const { submitted, hosts, errors } = data.indexNow;
+          inInfo = submitted > 0
+            ? ` · IndexNow: отправлено ${submitted} URL (${hosts} сайт(ов)) → Bing/Yandex`
+            : "";
+          if (errors?.length) inInfo += ` · ошибки IndexNow: ${errors.slice(0, 2).join("; ")}`;
+        }
+        setStatusMsg({ type: "success", text: `✓ Queued ${data.count} URLs${sitemapInfo}${domainInfo}${inInfo}` });
         setUrlsInput("");
         fetchQueue();
       } else {
@@ -227,6 +240,38 @@ export default function IndexerQueuePage() {
             />
             <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>
               {t("indexerQueueSitemapHint")}
+            </span>
+          </div>
+
+          {/* IndexNow — direct submission to Bing/Yandex, independent of the doorway network */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <label style={{ fontSize: "12px", color: "var(--color-text-secondary)", fontWeight: 600 }}>
+              Ключ IndexNow (Bing / Yandex) — необязательно
+            </label>
+            <input
+              type="text"
+              value={indexNowKey}
+              onChange={e => {
+                setIndexNowKey(e.target.value);
+                try { localStorage.setItem("seoKey_indexnow", e.target.value.trim()); } catch {}
+              }}
+              placeholder="a1b2c3d4e5f6..."
+              style={{
+                background: "var(--color-bg)",
+                border: "1px solid var(--color-border)",
+                borderRadius: "8px",
+                padding: "8px 12px",
+                fontSize: "13px",
+                color: "var(--color-text-primary)",
+                outline: "none",
+                fontFamily: "monospace"
+              }}
+            />
+            <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
+              Если указан — URL сразу уходят в Bing и Yandex напрямую, не дожидаясь ботов на дорвеях.
+              Требуется один раз положить файл <code>{(indexNowKey.trim() || "ВАШ_КЛЮЧ")}.txt</code> с этим же ключом внутри
+              в корень каждого мани-сайта (<code>https://ваш-сайт/{(indexNowKey.trim() || "ВАШ_КЛЮЧ")}.txt</code>).
+              Ключ — любая строка 8–128 символов (латиница и цифры).
             </span>
           </div>
 
