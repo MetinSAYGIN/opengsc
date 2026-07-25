@@ -21,6 +21,9 @@ export default function IndexerSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [isLarge, setIsLarge] = useState(false);
   const [integrationType, setIntegrationType] = useState<"php" | "phpStatic" | "nginx">("php");
+  // Words from Indexer -> Dictionary. They drive the generated slugs, subdomains and page text,
+  // so the doorway crawl space matches the user's niche instead of a generic hardcoded list.
+  const [dictionary, setDictionary] = useState<string[]>([]);
 
   useEffect(() => {
     // Load public URL from localStorage if set
@@ -45,6 +48,12 @@ export default function IndexerSettingsPage() {
       }
     };
     fetchDomains();
+
+    // Load the user's dictionary to embed into the generated script
+    fetch("/api/indexer/dictionary")
+      .then(r => (r.ok ? r.json() : []))
+      .then(d => { if (Array.isArray(d)) setDictionary(d); })
+      .catch(() => {});
   }, []);
 
   const savePublicUrl = (url: string) => {
@@ -66,6 +75,37 @@ export default function IndexerSettingsPage() {
     tokens = tokens.filter(t => t !== "cfg");
     if (!explicit) { const set = new Set(tokens); set.add("mailru"); set.add("ai"); tokens = Array.from(set); }
     return tokens.join(",");
+  })();
+
+  // ── Word pool embedded into the doorway script ──
+  // Taken from Indexer -> Dictionary so the generated slugs/subdomains/text match the user's
+  // niche. Words are slugified (lowercase, a-z0-9 and hyphens) because they end up inside URLs.
+  // Falls back to a generic pool when the dictionary is still empty.
+  const FALLBACK_WORDS = [
+    "deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping",
+    "guide", "compare", "catalog", "offers", "store", "market", "budget", "premium", "rating", "top", "choice", "trends",
+    "models", "brands", "series", "edition", "bundle", "coupon", "outlet", "express", "global", "local", "prime", "value",
+    "expert", "buyers", "picks", "list", "index", "archive", "digest", "report", "insight", "update", "season", "collection",
+  ];
+
+  const wordPool = (() => {
+    const cleaned = dictionary
+      .map(w => String(w).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""))
+      .filter(w => w.length >= 2 && w.length <= 30);
+    const unique = Array.from(new Set(cleaned));
+    // A tiny dictionary would make URLs repeat, so top it up with the fallback pool.
+    return unique.length >= 20 ? unique : Array.from(new Set([...unique, ...FALLBACK_WORDS]));
+  })();
+
+  const usingDictionary = dictionary.length > 0;
+
+  // Render as a PHP array literal, 12 words per line for readability
+  const phpWordArray = (() => {
+    const lines: string[] = [];
+    for (let i = 0; i < wordPool.length; i += 12) {
+      lines.push("        " + wordPool.slice(i, i + 12).map(w => `"${w}"`).join(", "));
+    }
+    return lines.join(",\n");
   })();
 
   // Generate PHP Script Content Dynamically (Standard Redirect)
@@ -208,12 +248,9 @@ if ($is_bot) {
     // while every NEW url spawns its own fresh branch of the crawl space.
     mt_srand(crc32($host . $uri));
 
+    // Word pool from your OpenGSC dictionary (Indexer -> Dictionary). Drives slugs, subdomains and text.
     $niche_words = array(
-        "deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping",
-        "guide", "compare", "catalog", "offers", "store", "market", "budget", "premium", "rating", "top", "choice", "trends",
-        "models", "brands", "series", "edition", "bundle", "coupon", "outlet", "express", "global", "local", "prime", "value",
-        "expert", "buyers", "picks", "list", "index", "archive", "digest", "report", "insight", "update", "season", "collection",
-        "specs", "features", "options", "variants", "sizes", "colors", "styles", "sets", "kits", "packs", "gear", "supply"
+${phpWordArray}
     );
     $rand_title = ucfirst($niche_words[array_rand($niche_words)]) . " " . $niche_words[array_rand($niche_words)] . " " . $niche_words[array_rand($niche_words)];
 
@@ -461,12 +498,9 @@ if ($is_bot) {
     // Stable per-URL rendering + endless new branches (see main script for rationale)
     mt_srand(crc32($host . $uri));
 
+    // Word pool from your OpenGSC dictionary (Indexer -> Dictionary). Drives slugs, subdomains and text.
     $niche_words = array(
-        "deals", "shop", "discount", "sale", "online", "price", "review", "best", "cheap", "quality", "free", "shipping",
-        "guide", "compare", "catalog", "offers", "store", "market", "budget", "premium", "rating", "top", "choice", "trends",
-        "models", "brands", "series", "edition", "bundle", "coupon", "outlet", "express", "global", "local", "prime", "value",
-        "expert", "buyers", "picks", "list", "index", "archive", "digest", "report", "insight", "update", "season", "collection",
-        "specs", "features", "options", "variants", "sizes", "colors", "styles", "sets", "kits", "packs", "gear", "supply"
+${phpWordArray}
     );
     $rand_title = ucfirst($niche_words[array_rand($niche_words)]) . " " . $niche_words[array_rand($niche_words)] . " " . $niche_words[array_rand($niche_words)];
 
@@ -801,6 +835,27 @@ server {
                 ? t("settScriptTitle")
                 : "Nginx Configuration (nginx.conf)"}
             </h3>
+            {integrationType !== "nginx" && (
+              <span
+                title={usingDictionary
+                  ? "Слова для URL, поддоменов и текста берутся из вашего словаря"
+                  : "Словарь пуст — используется стандартный набор. Сгенерируйте слова во вкладке «Словарь», чтобы дорвеи говорили на языке вашей ниши."}
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  padding: "3px 8px",
+                  borderRadius: "6px",
+                  border: `1px solid ${usingDictionary ? "rgba(52,199,89,0.35)" : "var(--color-border)"}`,
+                  color: usingDictionary ? "var(--color-accent-green)" : "var(--color-text-tertiary)",
+                  background: usingDictionary ? "rgba(52,199,89,0.08)" : "transparent",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {usingDictionary
+                  ? `Словарь: ${wordPool.length} слов`
+                  : "Словарь пуст — набор по умолчанию"}
+              </span>
+            )}
           </div>
           <button
             onClick={copyToClipboard}
