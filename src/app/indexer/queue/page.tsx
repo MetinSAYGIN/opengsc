@@ -413,12 +413,13 @@ export default function IndexerQueuePage() {
         </div>
 
         {loading ? (
-          <div style={{ padding: "40px 0", textAlign: "center", color: "var(--color-text-secondary)" }}>
-            <RefreshCw size={18} className="animate-spin" style={{ margin: "0 auto 12px" }} />
+          <div style={{ flex: "1 1 auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 0", color: "var(--color-text-secondary)" }}>
+            <RefreshCw size={18} className="animate-spin" style={{ marginBottom: "12px" }} />
             Loading crawl queue...
           </div>
         ) : queue.length === 0 ? (
           <div style={{
+            flex: "1 1 auto",
             padding: "48px 16px",
             textAlign: "center",
             color: "var(--color-text-secondary)",
@@ -428,6 +429,7 @@ export default function IndexerQueuePage() {
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
+            justifyContent: "center",
             gap: "10px"
           }}>
             <Globe size={24} color="var(--color-text-tertiary)" />
@@ -435,14 +437,35 @@ export default function IndexerQueuePage() {
             <span style={{ fontSize: "11px" }}>Newly added doorway URLs waiting to be fetched by Googlebot will appear here.</span>
           </div>
         ) : (
-          <div style={{ overflowX: "auto", maxHeight: "400px", overflowY: "auto" }}>
+          // flex:1 + minHeight:0 makes the scroll area fill whatever height the stretched
+          // card has, instead of leaving dead space under a fixed 400px box.
+          <div style={{ flex: "1 1 auto", minHeight: 0, overflowX: "auto", overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
               <thead>
-                <tr style={{ borderBottom: "1px solid var(--color-border)", color: "var(--color-text-secondary)", height: "36px" }}>
-                  <th style={{ padding: "0 8px" }}>Domain</th>
-                  <th style={{ padding: "0 8px" }}>URL Path</th>
-                  <th style={{ padding: "0 8px", width: "100px" }}>Status</th>
-                  <th style={{ padding: "0 8px", width: "56px", textAlign: "center" }}>Индекс</th>
+                <tr style={{ color: "var(--color-text-secondary)", height: "36px" }}>
+                  {[
+                    { label: "Domain", w: undefined as string | undefined, align: "left" as const },
+                    { label: "URL Path", w: undefined, align: "left" as const },
+                    { label: "Status", w: "100px", align: "left" as const },
+                    { label: "Индекс", w: "56px", align: "center" as const },
+                  ].map(h => (
+                    <th
+                      key={h.label}
+                      style={{
+                        padding: "0 8px",
+                        width: h.w,
+                        textAlign: h.align,
+                        // keep headers visible while scrolling the now full-height list
+                        position: "sticky",
+                        top: 0,
+                        zIndex: 1,
+                        background: "var(--color-card)",
+                        borderBottom: "1px solid var(--color-border)",
+                      }}
+                    >
+                      {h.label}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
