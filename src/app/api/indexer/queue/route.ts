@@ -227,7 +227,10 @@ export async function DELETE(req: Request) {
     const userId = (session?.user as any)?.id as string | undefined;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // Clear entire queue for user's domains
+    // Clear the queue for the user's domains.
+    // ?status=crawled removes only URLs already shown to crawlers, keeping pending ones.
+    const status = new URL(req.url).searchParams.get("status");
+
     const domains = await prisma.indexerDomain.findMany({
       where: { userId },
       select: { id: true },
@@ -235,15 +238,14 @@ export async function DELETE(req: Request) {
 
     const domainIds = domains.map(d => d.id);
 
-    await prisma.indexerQueue.deleteMany({
+    const result = await prisma.indexerQueue.deleteMany({
       where: {
-        domainId: {
-          in: domainIds,
-        },
+        domainId: { in: domainIds },
+        ...(status ? { status: status.toLowerCase() } : {}),
       },
     });
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, deleted: result.count });
   } catch (e: any) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

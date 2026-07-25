@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, ListChecks, Trash2, Globe, AlertCircle, RefreshCw } from "lucide-react";
+import { Plus, ListChecks, Trash2, Globe, AlertCircle, RefreshCw, Search, CheckCheck } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface QueueItem {
@@ -117,16 +117,41 @@ export default function IndexerQueuePage() {
   };
 
   const handleClear = async () => {
-    if (!confirm("Are you sure you want to clear the entire queue?")) return;
+    if (!confirm("Очистить всю очередь? Будут удалены все URL, включая ещё не показанные ботам.")) return;
     try {
       const res = await fetch("/api/indexer/queue", { method: "DELETE" });
       if (res.ok) {
-        setStatusMsg({ type: "success", text: "Queue cleared." });
+        setStatusMsg({ type: "success", text: "Очередь очищена." });
         fetchQueue();
       }
     } catch (e: any) {
       setStatusMsg({ type: "error", text: e.message });
     }
+  };
+
+  // Remove only URLs already shown to crawlers, keeping pending ones in the rotation
+  const handleClearCrawled = async () => {
+    if (!confirm(`Удалить ${crawledCount} URL со статусом CRAWLED? Ожидающие (PENDING) останутся в очереди.`)) return;
+    try {
+      const res = await fetch("/api/indexer/queue?status=crawled", { method: "DELETE" });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setStatusMsg({ type: "success", text: `Удалено ${d.deleted ?? crawledCount} CRAWLED URL.` });
+        fetchQueue();
+      } else {
+        setStatusMsg({ type: "error", text: d.error || "Не удалось удалить." });
+      }
+    } catch (e: any) {
+      setStatusMsg({ type: "error", text: e.message });
+    }
+  };
+
+  const crawledCount = queue.filter(q => q.status.toLowerCase() === "crawled").length;
+
+  // Google "site:" lookup — quickest way to eyeball whether a URL made it into the index
+  const siteSearchUrl = (url: string) => {
+    const clean = url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    return `https://www.google.com/search?q=site:${encodeURIComponent(clean)}`;
   };
 
   return (
@@ -151,9 +176,9 @@ export default function IndexerQueuePage() {
 
       <div style={{
         display: "grid",
-        gridTemplateColumns: isLarge ? "1fr 1.3fr" : "1fr",
+        gridTemplateColumns: isLarge ? "minmax(0, 1fr) minmax(0, 1.3fr)" : "1fr",
         gap: "24px",
-        alignItems: "start",
+        alignItems: "stretch",
       }}>
         {/* Bulk Submission Form */}
       <div style={{
@@ -329,7 +354,38 @@ export default function IndexerQueuePage() {
             <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>
               Crawl Queue
             </h3>
+            {queue.length > 0 && (
+              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", fontWeight: 500 }}>
+                {queue.length} URL · {crawledCount} crawled
+              </span>
+            )}
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {crawledCount > 0 && (
+            <button
+              onClick={handleClearCrawled}
+              title="Удалить только уже показанные ботам URL (PENDING останутся)"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid rgba(52,199,89,0.25)",
+                borderRadius: "6px",
+                color: "var(--color-accent-green)",
+                fontSize: "12px",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                transition: "all 0.15s"
+              }}
+              onMouseOver={e => { e.currentTarget.style.background = "rgba(52,199,89,0.07)"; }}
+              onMouseOut={e => { e.currentTarget.style.background = "transparent"; }}
+            >
+              <CheckCheck size={12} />
+              Очистить CRAWLED ({crawledCount})
+            </button>
+          )}
           {queue.length > 0 && (
             <button
               onClick={handleClear}
@@ -353,6 +409,7 @@ export default function IndexerQueuePage() {
               Clear Queue
             </button>
           )}
+          </div>
         </div>
 
         {loading ? (
@@ -384,18 +441,23 @@ export default function IndexerQueuePage() {
                 <tr style={{ borderBottom: "1px solid var(--color-border)", color: "var(--color-text-secondary)", height: "36px" }}>
                   <th style={{ padding: "0 8px" }}>Domain</th>
                   <th style={{ padding: "0 8px" }}>URL Path</th>
-                  <th style={{ padding: "0 8px" }}>Status</th>
+                  <th style={{ padding: "0 8px", width: "100px" }}>Status</th>
+                  <th style={{ padding: "0 8px", width: "56px", textAlign: "center" }}>Индекс</th>
                 </tr>
               </thead>
               <tbody>
                 {queue.map(item => {
                   const path = item.url.replace(/^https?:\/\/[^/]+/, "");
+                  const isCrawled = item.status.toLowerCase() === "crawled";
                   return (
                     <tr key={item.id} style={{ borderBottom: "1px solid var(--color-border-soft)", height: "38px" }}>
-                      <td style={{ padding: "0 8px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+                      <td style={{ padding: "0 8px", fontWeight: 600, color: "var(--color-text-primary)", whiteSpace: "nowrap" }}>
                         {item.domain.domain}
                       </td>
-                      <td style={{ padding: "0 8px", fontFamily: "monospace", color: "var(--color-text-secondary)", maxWidth: "250px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <td
+                        title={item.url}
+                        style={{ padding: "0 8px", fontFamily: "monospace", color: "var(--color-text-secondary)", maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
                         {path || "/"}
                       </td>
                       <td style={{ padding: "0 8px" }}>
@@ -404,11 +466,33 @@ export default function IndexerQueuePage() {
                           borderRadius: "4px",
                           fontSize: "11px",
                           fontWeight: 700,
-                          backgroundColor: "rgba(255,159,10,0.1)",
-                          color: "var(--color-accent-orange)",
+                          whiteSpace: "nowrap",
+                          backgroundColor: isCrawled ? "rgba(52,199,89,0.12)" : "rgba(255,159,10,0.1)",
+                          color: isCrawled ? "var(--color-accent-green)" : "var(--color-accent-orange)",
                         }}>
                           {item.status.toUpperCase()}
                         </span>
+                      </td>
+                      <td style={{ padding: "0 8px", textAlign: "center" }}>
+                        <a
+                          href={siteSearchUrl(item.url)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`Проверить в Google: site:${item.url.replace(/^https?:\/\//, "")}`}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            padding: "4px",
+                            borderRadius: "6px",
+                            color: "var(--color-text-tertiary)",
+                            transition: "all 0.15s"
+                          }}
+                          onMouseOver={e => { e.currentTarget.style.color = "var(--color-accent-blue)"; e.currentTarget.style.background = "rgba(41,151,255,0.08)"; }}
+                          onMouseOut={e => { e.currentTarget.style.color = "var(--color-text-tertiary)"; e.currentTarget.style.background = "transparent"; }}
+                        >
+                          <Search size={13} />
+                        </a>
                       </td>
                     </tr>
                   );
