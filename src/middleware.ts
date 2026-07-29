@@ -15,6 +15,7 @@ export default withAuth(
       authorized: ({ token, req }) => {
         const { pathname, searchParams } = req.nextUrl;
         if (pathname === "/api/indexer/webhook") return true;
+        if (pathname === "/api/mcp") return true;
         if (pathname.startsWith("/share/")) return true;
         if (pathname.startsWith("/api/") && searchParams.has("shareToken")) return true;
         return !!token;
