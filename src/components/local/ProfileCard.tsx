@@ -251,7 +251,7 @@ function ServiceAreas({ areas, country }: { areas: string[]; country: string }) 
     // note rides the link itself now — no clipboard permission to ask for, no sessionStorage
     // seed that a new tab would lose.
     const q = new URLSearchParams({ keyword: `${svc} ${area}`, note, ...(country ? { gl: country.toLowerCase() } : {}) });
-    window.location.href = `/seo-tools/outline?${q.toString()}`;
+    window.location.assign(`/seo-tools/outline?${q.toString()}`);
   };
 
   return (

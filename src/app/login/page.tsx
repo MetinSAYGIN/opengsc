@@ -413,7 +413,7 @@ function MemberSignIn({ t, passwordOnly }: { t: (key: string) => string; passwor
     const result = await signIn("credentials", { ...form, redirect: false });
     setBusy(false);
     if (result?.error) { setError("invalid"); return; }
-    window.location.href = "/";
+    window.location.assign("/");
   }
 
   const notice = reason === "use_password" ? t("loginErrorUsePassword")
