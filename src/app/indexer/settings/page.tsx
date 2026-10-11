@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Code, Copy, Check, Info, Globe, Shield, RefreshCw } from "lucide-react";
+import { Code, Copy, Check, Info, Shield } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface DomainOpt {

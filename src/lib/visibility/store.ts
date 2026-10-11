@@ -13,7 +13,7 @@ import {
 import { brandNamesFromHost } from "@/lib/seo/localPack";
 import { parseBrandTerms } from "@/lib/aeoTracker";
 import { getAeoDomainLists } from "./domainListStore";
-import { buildSovReport, buildCitedDomains, latestPerQuestionEngine, questionLike, sentimentDistribution, type SovAnswer, type SentimentSlice } from "./sov";
+import { buildSovReport, buildCitedDomains, latestPerQuestionEngine, questionLike, sentimentDistribution, type SentimentSlice } from "./sov";
 import type { AiCompetitor, CitedDomainRow, SovReport, SuggestedQuestion } from "./types";
 
 const SOV_ROW_CAP = 5000;       // answerText is up to 12 kB a row — the window is bounded in rows

@@ -10,7 +10,7 @@
 // assumed a single country would silently serve German volumes for US keywords.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getMetricsCreds, getKeywordCapableCreds, getMetricsWithKd, setMetricsWithKd } from "./metricsClient";
+import { getKeywordCapableCreds, getMetricsWithKd, setMetricsWithKd } from "./metricsClient";
 
 export interface KeywordWeight {
   volume: number | null;

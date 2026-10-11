@@ -45,7 +45,7 @@
 // provider call is worse than no bookkeeping.
 
 import { randomUUID } from "node:crypto";
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { currentCallContext } from "./context";
 import { redact, redactText, safeEndpoint } from "./redact";
 

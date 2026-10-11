@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { createKieImageTask, ImageModelId as KieModelId } from "@/lib/seo/kieImages";
 import { generateZaiImage, type ZaiImageModelId } from "@/lib/seo/zaiImages";

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { currentDialect } from "@/lib/db/upsert";
 import { rawQuery } from "@/lib/db/raw";

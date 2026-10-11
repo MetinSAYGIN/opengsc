@@ -8,7 +8,7 @@
 // answers 200 even when every data endpoint on the host is failing), OpenRouter (/api/v1/key)
 // and 2index.ninja (/api/v1/balance). Providers that publish no such endpoint are invisible
 // here by design — for those, the provider_down alert over the call log is the coverage.
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { rawQuery } from "@/lib/db/raw";
 import { getOwnerSettings } from "@/lib/engineKeysServer";
 

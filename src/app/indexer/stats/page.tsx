@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Play, ShieldAlert, CheckCircle, RefreshCw, Download } from "lucide-react";
+import { ShieldAlert, CheckCircle, RefreshCw, Download } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 

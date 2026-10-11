@@ -10,7 +10,7 @@ import {
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { HistoryItem, getHistoryItem, updateHistory, patchHistory } from "@/lib/seo/history";
 import { outlineHeadings, articleHeadings, markdownToHtml, htmlDocument, countWords, splitArticleSections, hasVerifiableFacts } from "@/lib/seo/outlineFormat";
-import { getSeoGenCreds, getTaskCreds, getSerpCreds, getFirecrawlKey, getAutoFactcheck, getAutoImages, getFactSourceCount, getFactBearingOnly, getFactReuseCorpus, getKieKey } from "@/lib/seo/keys";
+import { getTaskCreds, getSerpCreds, getFirecrawlKey, getAutoFactcheck, getAutoImages, getFactSourceCount, getFactBearingOnly, getFactReuseCorpus } from "@/lib/seo/keys";
 import { IMAGE_MODELS, imageModel, type ImageModelId } from "@/lib/seo/imageModels";
 import { META_LIMITS } from "@/lib/seo/metaLimits";
 

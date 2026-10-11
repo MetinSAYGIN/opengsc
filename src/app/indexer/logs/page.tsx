@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { Search, Globe, ChevronRight, Activity, RefreshCw, AlertCircle } from "lucide-react";
+import { Activity, RefreshCw, AlertCircle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { useNow } from "@/lib/useNow";
 

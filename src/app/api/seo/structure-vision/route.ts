@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { fetchLLMVision } from "@/lib/llm";
 import { buildVisionStructurePrompt, extractJson } from "@/lib/seo/prompts";

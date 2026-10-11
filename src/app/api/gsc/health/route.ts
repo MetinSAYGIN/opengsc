@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma, dbAny } from "@/lib/prisma";
 import { assertSafeTarget } from "@/lib/security/safeFetch";

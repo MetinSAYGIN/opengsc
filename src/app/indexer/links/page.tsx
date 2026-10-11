@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { GitFork, Download, Info, RefreshCw, AlertCircle, Sparkles } from "lucide-react";
+import { GitFork, Download, Info, RefreshCw, AlertCircle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface DomainNode {

@@ -69,20 +69,20 @@ export default function HumanizePage() {
     <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
       <div>
         <h2 style={{ fontSize: "20px", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 4px", display: "flex", alignItems: "center", gap: "9px" }}>
-          <Fingerprint size={20} color={ACCENT} /> {t("hmTitle" as any)}
+          <Fingerprint size={20} color={ACCENT} /> {t("hmTitle")}
         </h2>
-        <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: 0 }}>{t("hmSub" as any)}</p>
+        <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: 0 }}>{t("hmSub")}</p>
       </div>
 
       {/* The tool is only honest if this caveat is unavoidable, so it sits above the tabs. */}
       <div className={card} style={{ borderColor: "rgba(255,159,10,0.3)", background: "rgba(255,159,10,0.05)", display: "flex", gap: "10px", alignItems: "flex-start", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
         <Info size={16} color="var(--color-accent-orange)" style={{ flexShrink: 0, marginTop: "1px" }} />
-        <span>{t("hmProxyWarning" as any)}</span>
+        <span>{t("hmProxyWarning")}</span>
       </div>
 
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: "2px", background: "rgba(255,255,255,0.06)", borderRadius: "8px", padding: "3px", width: "fit-content", flexWrap: "wrap" }}>
-        {([["analyze", t("hmTabAnalyze" as any), Fingerprint], ["corpus", t("hmTabCorpus" as any), Database], ["bench", t("hmTabBench" as any), FlaskConical]] as const).map(([k, lbl, Icon]) => (
+        {([["analyze", t("hmTabAnalyze"), Fingerprint], ["corpus", t("hmTabCorpus"), Database], ["bench", t("hmTabBench"), FlaskConical]] as const).map(([k, lbl, Icon]) => (
           <button key={k} onClick={() => setTab(k as Tab)} style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "7px 14px", borderRadius: "6px", fontSize: "12px", fontWeight: 600, cursor: "pointer", border: "none", background: tab === k ? "var(--color-card)" : "transparent", color: tab === k ? "var(--color-text-primary)" : "var(--color-text-secondary)" }}>
             <Icon size={13} /> {lbl}
           </button>
@@ -117,8 +117,8 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
 
   function run() {
     setErr(""); setReport(null); setExported(false); setHz(null);
-    if (!active) { setErr(t("hmErrNeedModel" as any)); return; }
-    if (!text.trim()) { setErr(t("hmErrNeedText" as any)); return; }
+    if (!active) { setErr(t("hmErrNeedModel")); return; }
+    if (!text.trim()) { setErr(t("hmErrNeedText")); return; }
     setReport(scoreText(text, active.model));
   }
 
@@ -130,13 +130,13 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
   // pair is always shown, including when the score goes UP, because that happens and hiding it
   // would make the tool a liar.
   async function humanize(source?: string) {
-    if (!active) { setErr(t("hmErrNeedModel" as any)); return; }
+    if (!active) { setErr(t("hmErrNeedModel")); return; }
     const src = (source ?? text).trim();
-    if (!src) { setErr(t("hmErrNeedText" as any)); return; }
+    if (!src) { setErr(t("hmErrNeedText")); return; }
     setErr(""); setHzBusy(true);
     try {
       const creds = getTaskCreds("text");
-      if (!creds.apiKey) { setErr(t("seoErrNoAiKey" as any)); setHzBusy(false); return; }
+      if (!creds.apiKey) { setErr(t("seoErrNoAiKey")); setHzBusy(false); return; }
       const res = await fetch("/api/seo/rewrite", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -149,7 +149,7 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
         }),
       });
       const d = await res.json();
-      if (!res.ok) { setErr(String(d.error || t("rwErrGen" as any))); setHzBusy(false); return; }
+      if (!res.ok) { setErr(String(d.error || t("rwErrGen"))); setHzBusy(false); return; }
       // Rank by score, but prefer a variant that did not invent facts: a text that reads as human
       // and quotes a number nobody wrote is a worse outcome than a slightly higher score.
       type Scored = { text: string; score: number; drift: FactDrift; invented: boolean };
@@ -159,7 +159,7 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
           return { text: v.content, score: scoreText(v.content, active.model).avgScore, drift, invented: driftSeverity(drift) === "danger" };
         })
         .sort((a: Scored, b: Scored) => (a.invented === b.invented ? a.score - b.score : a.invented ? 1 : -1));
-      if (!scored.length) { setErr(t("rwErrGen" as any)); setHzBusy(false); return; }
+      if (!scored.length) { setErr(t("rwErrGen")); setHzBusy(false); return; }
       setHz({ before: scoreText(src, active.model).avgScore, after: scored[0].score, text: scored[0].text, drift: scored[0].drift });
     } catch (e: unknown) { setErr(String((e as Error)?.message ?? e)); }
     setHzBusy(false);
@@ -185,20 +185,20 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
     <>
       {!active && (
         <div className={card} style={{ borderColor: "rgba(255,159,10,0.35)", background: "rgba(255,159,10,0.06)", display: "flex", gap: "10px", alignItems: "center", fontSize: "13px", color: "var(--color-text-secondary)" }}>
-          <AlertTriangle size={18} color="var(--color-accent-orange)" /> {t("hmNoModelHint" as any)}
+          <AlertTriangle size={18} color="var(--color-accent-orange)" /> {t("hmNoModelHint")}
         </div>
       )}
 
       <div className={card} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {history.length > 0 && (
-          <label style={label}>{t("hmFromHistory" as any)}
+          <label style={label}>{t("hmFromHistory")}
             <select defaultValue="" onChange={e => { const h = history.find(x => x.id === e.target.value); if (h) setText(String(h.data)); }} style={{ ...inputStyle, marginTop: "4px" }}>
               <option value="">—</option>
               {history.slice(0, 40).map(h => <option key={h.id} value={h.id}>{h.keyword}</option>)}
             </select>
           </label>
         )}
-        <textarea value={text} onChange={e => setText(e.target.value)} placeholder={t("hmTextPlaceholder" as any)} rows={10} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }} />
+        <textarea value={text} onChange={e => setText(e.target.value)} placeholder={t("hmTextPlaceholder")} rows={10} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }} />
         {marks && marks.total > 0 && (
           <div style={{ border: "1px solid rgba(255,159,10,0.35)", background: "rgba(255,159,10,0.06)", borderRadius: "10px", padding: "12px 14px", display: "flex", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" }}>
             <AlertTriangle size={16} color="var(--color-accent-orange)" style={{ flexShrink: 0, marginTop: "1px" }} />
@@ -211,9 +211,9 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
         )}
         {err && <div style={{ fontSize: "12px", color: "#f87171", display: "flex", alignItems: "center", gap: "6px" }}><AlertTriangle size={14} /> {err}</div>}
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-          <button onClick={run} disabled={!active} style={btn(ACCENT, !active)}><Play size={14} /> {t("hmAnalyze" as any)}</button>
+          <button onClick={run} disabled={!active} style={btn(ACCENT, !active)}><Play size={14} /> {t("hmAnalyze")}</button>
           <button onClick={() => humanize()} disabled={!active || hzBusy} style={btn("#8B5CF6", !active || hzBusy)}>
-            {hzBusy ? <><Loader2 size={14} className="spin" /> {t("hmHumanizing" as any)}</> : <><Wand2 size={14} /> {t("hmHumanize" as any)}</>}
+            {hzBusy ? <><Loader2 size={14} className="spin" /> {t("hmHumanizing")}</> : <><Wand2 size={14} /> {t("hmHumanize")}</>}
           </button>
         </div>
         {/* The one lever this lab cannot measure locally: statistical watermarks break best when
@@ -227,7 +227,7 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
       {hz && (
         <div className={card} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmHumanizeResult" as any)}</div>
+            <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmHumanizeResult")}</div>
             <span style={{ fontSize: "13px", fontWeight: 700, color: scoreColor(hz.before) }}>{hz.before}%</span>
             <span style={{ color: "var(--color-text-secondary)" }}>→</span>
             <span style={{ fontSize: "18px", fontWeight: 800, color: scoreColor(hz.after) }}>{hz.after}%</span>
@@ -236,13 +236,13 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
             </span>
             <span style={{ flex: 1 }} />
             <button onClick={() => { setText(hz.text); setReport(scoreText(hz.text, active!.model)); setHz(null); }} style={ghostBtn}>
-              <Check size={13} /> {t("hmHumanizeAccept" as any)}
+              <Check size={13} /> {t("hmHumanizeAccept")}
             </button>
             <button onClick={() => humanize(hz.text)} disabled={hzBusy} style={ghostBtn}>
-              <Wand2 size={13} /> {t("hmHumanizeAgain" as any)}
+              <Wand2 size={13} /> {t("hmHumanizeAgain")}
             </button>
             <button onClick={() => navigator.clipboard.writeText(hz.text).catch(() => {})} style={ghostBtn}>
-              <Copy size={13} /> {t("rwCopy" as any)}
+              <Copy size={13} /> {t("rwCopy")}
             </button>
           </div>
           {/* Deterministic value check — this is the guardrail that replaces "please verify facts". */}
@@ -255,8 +255,8 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
             <div style={{ border: "1px solid rgba(41,151,255,0.35)", background: "rgba(41,151,255,0.07)", borderRadius: "10px", padding: "12px 14px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
               <Info size={16} color="var(--color-accent-blue)" style={{ flexShrink: 0, marginTop: "1px" }} />
               <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
-                {t("hmWeakDelta" as any)}{" "}
-                <Link href="/seo-tools/text" style={{ color: "var(--color-accent-blue)", fontWeight: 600 }}>{t("hmWeakDeltaCta" as any)}</Link>
+                {t("hmWeakDelta")}{" "}
+                <Link href="/seo-tools/text" style={{ color: "var(--color-accent-blue)", fontWeight: 600 }}>{t("hmWeakDeltaCta")}</Link>
               </div>
             </div>
           )}
@@ -272,9 +272,9 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
               <div style={{ fontSize: "34px", fontWeight: 800, color: scoreColor(report.avgScore), lineHeight: 1 }}>{report.avgScore}%</div>
               <div>
                 <div style={{ fontSize: "14px", fontWeight: 700, color: scoreColor(report.avgScore) }}>
-                  {t((report.verdict === "human" ? "hmVerdictHuman" : report.verdict === "mixed" ? "hmVerdictMixed" : "hmVerdictAi") as any)}
+                  {t(report.verdict === "human" ? "hmVerdictHuman" : report.verdict === "mixed" ? "hmVerdictMixed" : "hmVerdictAi")}
                 </div>
-                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{report.words} {t("hmWords" as any)} · {report.windows.length} {t("hmWindows" as any)}</div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{report.words} {t("hmWords")} · {report.windows.length} {t("hmWindows")}</div>
               </div>
             </div>
 
@@ -291,8 +291,8 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "14px" }}>
             <div className={card} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmMarkers" as any)}</div>
-              <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{t("hmMarkersHint" as any)}</div>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmMarkers")}</div>
+              <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{t("hmMarkersHint")}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "4px" }}>
                 {report.markers.map(m => (
                   <span key={m.token} title={`weight ${m.weight.toFixed(2)} × ${m.count}`} style={{ fontSize: "11px", padding: "3px 9px", borderRadius: "20px", background: "rgba(255,55,95,0.12)", color: "#ff375f", fontWeight: 600 }}>
@@ -302,13 +302,13 @@ function AnalyzeTab({ active }: { active: StoredModel | null }) {
                 {!report.markers.length && <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>—</span>}
               </div>
               <button onClick={exportBanned} style={{ ...ghostBtn, marginTop: "8px" }}>
-                {exported ? <><Check size={13} color="#34c759" /> {t("hmExportedBanned" as any)}</> : <><Download size={13} /> {t("hmExportBanned" as any)}</>}
+                {exported ? <><Check size={13} color="#34c759" /> {t("hmExportedBanned")}</> : <><Download size={13} /> {t("hmExportBanned")}</>}
               </button>
             </div>
 
             <div className={card} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmMissing" as any)}</div>
-              <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{t("hmMissingHint" as any)}</div>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmMissing")}</div>
+              <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{t("hmMissingHint")}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "4px" }}>
                 {report.missing.map(m => (
                   <span key={m.token} style={{ fontSize: "11px", padding: "3px 9px", borderRadius: "20px", background: "rgba(52,199,89,0.12)", color: "#34c759", fontWeight: 600 }}>{m.token}</span>
@@ -358,12 +358,12 @@ function CorpusTab({ models, activeName, onChange }: { models: StoredModel[]; ac
         }),
       });
       const d = await res.json();
-      if (!res.ok) { setErr(String(d.error || t("hmErrHarvest" as any))); }
+      if (!res.ok) { setErr(String(d.error || t("hmErrHarvest"))); }
       else setHuman(prev => {
         // Accumulate across harvests — one keyword rarely yields enough documents, and the model
         // wants breadth across the niche rather than depth on a single query.
         const seen = new Set(prev.map(p => p.url));
-        return [...prev, ...(d.docs || []).filter((x: any) => !seen.has(x.url))];
+        return [...prev, ...(d.docs || []).filter((x: { url: string }) => !seen.has(x.url))];
       });
     } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setBusy(null);
@@ -377,7 +377,7 @@ function CorpusTab({ models, activeName, onChange }: { models: StoredModel[]; ac
       setErr(t(({
         need_more_human: "hmNeedHuman", need_more_ai: "hmNeedAi",
         corpus_too_small: "hmCorpusTooSmall", no_separation: "hmNoSeparation",
-      } as any)[r.error] || "hmErrTrain" as any));
+      } as Record<string, Parameters<typeof t>[0]>)[r.error] || "hmErrTrain"));
       return;
     }
     const nm = name.trim() || keyword.trim() || `model-${new Date().toISOString().slice(0, 10)}`;
@@ -390,44 +390,44 @@ function CorpusTab({ models, activeName, onChange }: { models: StoredModel[]; ac
     <>
       <div className={card} style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
         <div>
-          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmCorpusHuman" as any)}</div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>{t("hmCorpusHumanHint" as any)}</div>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmCorpusHuman")}</div>
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>{t("hmCorpusHumanHint")}</div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "10px" }}>
-          <label style={label}>{t("hmKeyword" as any)}
+          <label style={label}>{t("hmKeyword")}
             <input value={keyword} onChange={e => setKeyword(e.target.value)} style={{ ...inputStyle, marginTop: "4px" }} />
           </label>
-          <label style={label}>{t("seoCountryGl" as any)}
+          <label style={label}>{t("seoCountryGl")}
             <select value={gl} onChange={e => { const g = e.target.value; setGl(g); if (!langTouched) setHl(defaultLanguageFor(g)); }} style={{ ...inputStyle, marginTop: "4px" }}>
               {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
             </select>
           </label>
-          <label style={label}>{t("seoLanguageHl" as any)}
+          <label style={label}>{t("seoLanguageHl")}
             <select value={hl} onChange={e => { setLangTouched(true); setHl(e.target.value); }} style={{ ...inputStyle, marginTop: "4px" }}>
               {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
             </select>
           </label>
-          <label style={label}>{t("hmDocs" as any)}
+          <label style={label}>{t("hmDocs")}
             <select value={count} onChange={e => setCount(parseInt(e.target.value))} style={{ ...inputStyle, marginTop: "4px" }}>
               {[6, 10, 12, 20, 30].map(n => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
         </div>
-        <label style={label}>{t("hmUrls" as any)}
-          <textarea value={urls} onChange={e => setUrls(e.target.value)} placeholder={t("hmUrlsHint" as any)} rows={3} style={{ ...inputStyle, marginTop: "4px", resize: "vertical", fontFamily: "inherit" }} />
+        <label style={label}>{t("hmUrls")}
+          <textarea value={urls} onChange={e => setUrls(e.target.value)} placeholder={t("hmUrlsHint")} rows={3} style={{ ...inputStyle, marginTop: "4px", resize: "vertical", fontFamily: "inherit" }} />
         </label>
         {err && <div style={{ fontSize: "12px", color: "#f87171", display: "flex", alignItems: "center", gap: "6px" }}><AlertTriangle size={14} /> {err}</div>}
         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={harvest} disabled={busy !== null} style={btn(ACCENT, busy !== null)}>
-            {busy === "harvest" ? <><Loader2 size={14} className="spin" /> {t("hmHarvesting" as any)}</> : <><Database size={14} /> {t("hmHarvest" as any)}</>}
+            {busy === "harvest" ? <><Loader2 size={14} className="spin" /> {t("hmHarvesting")}</> : <><Database size={14} /> {t("hmHarvest")}</>}
           </button>
           {human.length > 0 && (
             <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
-              {t("hmHarvested" as any)}: <b style={{ color: "var(--color-text-primary)" }}>{human.length}</b>
-              {" · "}{t("hmCorpusAi" as any)}: <b style={{ color: "var(--color-text-primary)" }}>{aiDocs.length}</b>
+              {t("hmHarvested")}: <b style={{ color: "var(--color-text-primary)" }}>{human.length}</b>
+              {" · "}{t("hmCorpusAi")}: <b style={{ color: "var(--color-text-primary)" }}>{aiDocs.length}</b>
             </span>
           )}
-          {human.length > 0 && <button onClick={() => setHuman([])} style={ghostBtn}><X size={13} /> {t("hmClear" as any)}</button>}
+          {human.length > 0 && <button onClick={() => setHuman([])} style={ghostBtn}><X size={13} /> {t("hmClear")}</button>}
         </div>
         {human.length > 0 && (
           <div style={{ maxHeight: "160px", overflow: "auto", border: "1px solid var(--color-border)", borderRadius: "8px", padding: "8px 10px", background: "var(--color-bg)" }}>
@@ -442,20 +442,20 @@ function CorpusTab({ models, activeName, onChange }: { models: StoredModel[]; ac
 
       <div className={card} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         <div>
-          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmTrain" as any)}</div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>{t("hmCorpusAiHint" as any)}</div>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmTrain")}</div>
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>{t("hmCorpusAiHint")}</div>
         </div>
-        <label style={label}>{t("hmModelName" as any)}
+        <label style={label}>{t("hmModelName")}
           <input value={name} onChange={e => setName(e.target.value)} placeholder={keyword || "casino-ru"} style={{ ...inputStyle, marginTop: "4px" }} />
         </label>
         <button onClick={train} disabled={busy !== null || human.length < 3 || aiDocs.length < 3} style={btn(ACCENT, busy !== null || human.length < 3 || aiDocs.length < 3)}>
-          {busy === "train" ? <><Loader2 size={14} className="spin" /> {t("hmTraining" as any)}</> : <><FlaskConical size={14} /> {t("hmTrain" as any)}</>}
+          {busy === "train" ? <><Loader2 size={14} className="spin" /> {t("hmTraining")}</> : <><FlaskConical size={14} /> {t("hmTrain")}</>}
         </button>
       </div>
 
       {models.length > 0 && (
         <div className={card} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmModelLabel" as any)}</div>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmModelLabel")}</div>
           {models.map(m => {
             const s = modelStats(m.model);
             const qc = s.quality === "good" ? "#34c759" : s.quality === "fair" ? "#ff9f0a" : "#ff375f";
@@ -463,14 +463,14 @@ function CorpusTab({ models, activeName, onChange }: { models: StoredModel[]; ac
               <div key={m.name} style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", padding: "9px 11px", borderRadius: "9px", border: `1px solid ${m.name === activeName ? ACCENT : "var(--color-border)"}`, background: "var(--color-bg)" }}>
                 <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{m.name}</div>
                 <span style={{ fontSize: "11px", fontWeight: 700, padding: "2px 9px", borderRadius: "20px", color: qc, background: `${qc}1f` }}>
-                  {t(("hmQuality" + s.quality.charAt(0).toUpperCase() + s.quality.slice(1)) as any)} · {t("hmSeparation" as any)} {(s.separation * 100).toFixed(0)}%
+                  {t(("hmQuality" + s.quality.charAt(0).toUpperCase() + s.quality.slice(1)) as Parameters<typeof t>[0])} · {t("hmSeparation")} {(s.separation * 100).toFixed(0)}%
                 </span>
                 <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
-                  {s.humanDocs}/{s.aiDocs} {t("hmDocs" as any)} · {s.vocab} {t("hmVocab" as any)}
+                  {s.humanDocs}/{s.aiDocs} {t("hmDocs")} · {s.vocab} {t("hmVocab")}
                 </span>
                 <span style={{ flex: 1 }} />
-                {m.name !== activeName && <button onClick={() => { setActiveName(m.name); onChange(); }} style={ghostBtn}>{t("hmSetActive" as any)}</button>}
-                {m.name === activeName && <span style={{ fontSize: "11px", fontWeight: 700, color: ACCENT }}>{t("hmActive" as any)}</span>}
+                {m.name !== activeName && <button onClick={() => { setActiveName(m.name); onChange(); }} style={ghostBtn}>{t("hmSetActive")}</button>}
+                {m.name === activeName && <span style={{ fontSize: "11px", fontWeight: 700, color: ACCENT }}>{t("hmActive")}</span>}
                 <button onClick={() => { removeModel(m.name); onChange(); }} style={{ ...ghostBtn, color: "#f87171" }}><Trash2 size={13} /></button>
               </div>
             );
@@ -506,8 +506,8 @@ function BenchTab({ active }: { active: StoredModel | null }) {
 
   async function run() {
     setErr(""); setResults([]);
-    if (!active) { setErr(t("hmErrNeedModel" as any)); return; }
-    if (!prompt.trim()) { setErr(t("hmErrNeedPrompt" as any)); return; }
+    if (!active) { setErr(t("hmErrNeedModel")); return; }
+    if (!prompt.trim()) { setErr(t("hmErrNeedPrompt")); return; }
     setBusy(true);
 
     // Sequential on purpose: firing every provider at once makes the slowest row's latency
@@ -546,16 +546,16 @@ function BenchTab({ active }: { active: StoredModel | null }) {
     <>
       {!active && (
         <div className={card} style={{ borderColor: "rgba(255,159,10,0.35)", background: "rgba(255,159,10,0.06)", display: "flex", gap: "10px", alignItems: "center", fontSize: "13px", color: "var(--color-text-secondary)" }}>
-          <AlertTriangle size={18} color="var(--color-accent-orange)" /> {t("hmNoModelHint" as any)}
+          <AlertTriangle size={18} color="var(--color-accent-orange)" /> {t("hmNoModelHint")}
         </div>
       )}
 
       <div className={card} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         <div>
-          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmBenchPrompt" as any)}</div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>{t("hmBenchHint" as any)}</div>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmBenchPrompt")}</div>
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px", lineHeight: 1.5 }}>{t("hmBenchHint")}</div>
         </div>
-        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={t("hmBenchPromptPlaceholder" as any)} rows={4} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }} />
+        <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder={t("hmBenchPromptPlaceholder")} rows={4} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6 }} />
 
         <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
           {rows.map(row => (
@@ -565,30 +565,30 @@ function BenchTab({ active }: { active: StoredModel | null }) {
                   <option key={id} value={id}>{AI_PROVIDER_NAMES[id] || id}</option>
                 ))}
               </select>
-              <input value={row.model} onChange={e => setRow(row.id, { model: e.target.value })} placeholder={t("hmBenchModelPlaceholder" as any)} style={inputStyle} />
+              <input value={row.model} onChange={e => setRow(row.id, { model: e.target.value })} placeholder={t("hmBenchModelPlaceholder")} style={inputStyle} />
               <input value={row.temp} onChange={e => setRow(row.id, { temp: e.target.value })} placeholder="0.7" style={inputStyle} />
               <button onClick={() => delRow(row.id)} style={{ ...ghostBtn, justifyContent: "center", padding: "9px 0" }}><X size={13} /></button>
             </div>
           ))}
-          <button onClick={addRow} style={{ ...ghostBtn, width: "fit-content" }}><Plus size={13} /> {t("hmBenchAddRow" as any)}</button>
+          <button onClick={addRow} style={{ ...ghostBtn, width: "fit-content" }}><Plus size={13} /> {t("hmBenchAddRow")}</button>
         </div>
 
         {err && <div style={{ fontSize: "12px", color: "#f87171", display: "flex", alignItems: "center", gap: "6px" }}><AlertTriangle size={14} /> {err}</div>}
         <button onClick={run} disabled={busy || !active || !rows.length} style={btn(ACCENT, busy || !active || !rows.length)}>
-          {busy ? <><Loader2 size={14} className="spin" /> {t("hmBenchRunning" as any)}</> : <><Play size={14} /> {t("hmBenchRun" as any)}</>}
+          {busy ? <><Loader2 size={14} className="spin" /> {t("hmBenchRunning")}</> : <><Play size={14} /> {t("hmBenchRun")}</>}
         </button>
       </div>
 
       {sorted.length > 0 && (
         <div className={card} style={{ display: "flex", flexDirection: "column", gap: "8px", overflowX: "auto" }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmBenchResult" as any)}</div>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("hmBenchResult")}</div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
             <thead>
               <tr style={{ color: "var(--color-text-secondary)", textAlign: "left" }}>
-                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmBenchModelCol" as any)}</th>
-                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmBenchTempCol" as any)}</th>
-                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmBenchScoreCol" as any)}</th>
-                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmWords" as any)}</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmBenchModelCol")}</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmBenchTempCol")}</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmBenchScoreCol")}</th>
+                <th style={{ padding: "6px 8px", fontWeight: 600 }}>{t("hmWords")}</th>
                 <th style={{ padding: "6px 8px", fontWeight: 600 }}>ms</th>
               </tr>
             </thead>
@@ -599,7 +599,7 @@ function BenchTab({ active }: { active: StoredModel | null }) {
                     {AI_PROVIDER_NAMES[r.provider] || r.provider}{r.model ? ` · ${r.model}` : ""}
                   </td>
                   <td style={{ padding: "7px 8px", color: "var(--color-text-secondary)" }}>
-                    {r.tempIgnored ? <span title={t("hmTempIgnoredHint" as any)} style={{ color: "#ff9f0a" }}>{t("hmTempIgnored" as any)}</span> : r.temp || "—"}
+                    {r.tempIgnored ? <span title={t("hmTempIgnoredHint")} style={{ color: "#ff9f0a" }}>{t("hmTempIgnored")}</span> : r.temp || "—"}
                   </td>
                   <td style={{ padding: "7px 8px", fontWeight: 700, color: r.error ? "#f87171" : scoreColor(r.score ?? 0) }}>
                     {r.error ? r.error : `${r.score}%`}
@@ -610,13 +610,13 @@ function BenchTab({ active }: { active: StoredModel | null }) {
               ))}
             </tbody>
           </table>
-          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginTop: "4px" }}>{t("hmBenchNote" as any)}</div>
+          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginTop: "4px" }}>{t("hmBenchNote")}</div>
         </div>
       )}
 
       {!configured.length && (
         <div className={card} style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
-          {t("seoNeedKeysPrefix" as any)} <Link href="/settings?tab=api-keys" style={{ color: "var(--color-accent-blue)" }}>{t("seoSettingsShort" as any)}</Link>
+          {t("seoNeedKeysPrefix")} <Link href="/settings?tab=api-keys" style={{ color: "var(--color-accent-blue)" }}>{t("seoSettingsShort")}</Link>
         </div>
       )}
     </>

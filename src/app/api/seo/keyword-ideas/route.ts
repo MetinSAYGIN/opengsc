@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { expandKeywords, type KwSource } from "@/lib/seo/keywordSource";
 import { priceExpand, type IdeaMode } from "@/lib/seo/metrics";

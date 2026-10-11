@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { OPENAI_FALLBACK_MODELS } from "@/lib/seo/models";
 import { prisma, dbAny } from "@/lib/prisma";

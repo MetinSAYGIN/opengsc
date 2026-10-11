@@ -26,7 +26,7 @@ import {
 import { expandKeywords } from "@/lib/seo/keywordSource";
 import { defaultLanguageFor } from "@/lib/seo/regions";
 import { priceExpand } from "@/lib/seo/metrics";
-import { readUsage, recordUsage, withinCap, releaseUnusedUnits } from "@/lib/seo/metricsStore";
+import { recordUsage, withinCap, releaseUnusedUnits } from "@/lib/seo/metricsStore";
 import { scrapePage } from "@/lib/seo/scrape";
 import { maskAIPatterns, headingCounts } from "@/lib/seo/rewrite";
 import { runRewriteBatch } from "@/lib/seo/rewriteBatch";

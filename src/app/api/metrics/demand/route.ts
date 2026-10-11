@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import { fetchVolumeHistory, AHREFS_UNIT_FLOOR, parseMetricsProvider } from "@/lib/seo/metrics";

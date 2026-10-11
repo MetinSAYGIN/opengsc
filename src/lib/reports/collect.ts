@@ -12,7 +12,7 @@
 // client only knows ClientReport* after `prisma db push`, and a pulled-but-not-restarted
 // instance must answer `notMigrated`, not crash at import time.
 
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { uptimeSummary } from "@/lib/uptime/store";
 import { sovForSite } from "@/lib/visibility/store";
 import { AUDIT_RULES } from "@/lib/audit/rules";

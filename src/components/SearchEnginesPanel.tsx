@@ -7,7 +7,7 @@
 // passed per-request, matching the app's key convention.
 
 import { useEffect, useState } from "react";
-import { Loader2, Send, RefreshCw, ExternalLink, Settings } from "lucide-react";
+import { Loader2, Send, RefreshCw, Settings } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { resolveEngineKey } from "@/lib/engineKeys";
 

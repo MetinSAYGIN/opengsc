@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Boxes, Loader2, AlertTriangle } from "lucide-react";
+import { Boxes, AlertTriangle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { getSerpCreds, serpPayload, getKeywordSource } from "@/lib/seo/keys";
 import { COUNTRIES, LANGUAGES, defaultLanguageFor } from "@/lib/seo/regions";

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { runSerp, heuristicSiteType, heuristicIntent, SerpEngine } from "@/lib/seo/serp";
 

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { rawQuery, rawExec } from "@/lib/db/raw";
 import { loggedFetch } from "@/lib/providerLog/log";

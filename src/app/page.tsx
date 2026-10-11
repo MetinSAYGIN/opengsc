@@ -64,6 +64,27 @@ interface Pt {
   cCN: number; iCN: number; tCN: number; pCN: number;
 }
 
+// One dashboard row: a Prisma Site as the portfolio API returns it, spread together with the
+// chart data, summary and hasData flag that route computes. Discovery rows (/api/gsc/sites GET)
+// carry only the Site fields — sitesWithData fills data/summary in for those before rendering.
+type Summary = Record<Metric, { value: number; change: number }>;
+type SiteRow = {
+  id: string;
+  url: string;
+  siteId: string;
+  tags?: string | null;
+  market?: string | null;
+  archivedAt?: string | null;
+  pinned?: boolean;
+  hidden?: boolean;
+  siteDbId?: string | null;
+  hasData?: boolean;
+  data: Pt[];
+  summary: Summary;
+};
+// A Google account chip in the accounts bar.
+type GscAccount = { id: string; picture?: string | null; email: string };
+
 function norm(arr: number[]): number[] {
   const lo = Math.min(...arr), hi = Math.max(...arr);
   return hi === lo ? arr.map(() => 50) : arr.map(v => Math.round(((v - lo) / (hi - lo)) * 85 + 5));
@@ -297,7 +318,8 @@ function ExportModal({ domain, onClose }: { domain: string; onClose: () => void 
 }
 
 // ─── Custom tooltip ───────────────────────────────────────────────────────────
-function ChartTooltip({ active, payload }: any) {
+// Props recharts injects into the content element; only the two this renders against are named.
+function ChartTooltip({ active, payload }: { active?: boolean; payload?: { payload?: unknown }[] }) {
   const { t } = useLanguage();
   if (!active || !payload?.length) return null;
   const d = payload[0]?.payload as Pt;
@@ -629,7 +651,7 @@ function PortfolioPageContent() {
     if (legacy && legacy !== "sites") router.replace(`/${legacy}`);
     else if (legacy === "sites") router.replace("/");
   }, [searchParams, router]);
-  const [sites, setSites]       = useState<any[]>([]);
+  const [sites, setSites]       = useState<SiteRow[]>([]);
   const [loading, setLoading]   = useState(true);
   const [search, setSearch]     = useState("");
   const { blur } = usePrivacy();
@@ -694,7 +716,7 @@ function PortfolioPageContent() {
     if (typeof window !== "undefined") return (localStorage.getItem("gsc_sort") as SortBy) ?? "az";
     return "az";
   });
-  const [accounts, setAccounts] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<GscAccount[]>([]);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [editingTagSiteId, setEditingTagSiteId] = useState<string | null>(null);
   // Per-site market override, mirroring `editingTagSiteId`. The market drives which country the
@@ -718,7 +740,7 @@ function PortfolioPageContent() {
   // click and cached per engine+period so switching back is instant.
   const [engine, setEngine] = useState<"google" | "bing" | "yandex">("google");
   const [altEngines, setAltEngines] = useState<("bing" | "yandex")[]>([]);
-  const [engineCache, setEngineCache] = useState<Record<string, any[]>>({});
+  const [engineCache, setEngineCache] = useState<Record<string, SiteRow[]>>({});
   const [engineSyncedAt, setEngineSyncedAt] = useState<Record<string, number>>({});
   const [engineAccounts, setEngineAccounts] = useState<Record<string, { name: string }[]>>({ bing: [], yandex: [] });
   const [engineLoading, setEngineLoading] = useState(false);
@@ -776,7 +798,7 @@ function PortfolioPageContent() {
       .then(r => r.json())
       .then(d => {
         if (d.sites) {
-          setNewSitesFound(prev => Math.max(0, (d.sites as any[]).length - sites.length));
+          setNewSitesFound(prev => Math.max(0, (d.sites as SiteRow[]).length - sites.length));
           setSites(d.sites);
         }
       })
@@ -800,14 +822,14 @@ function PortfolioPageContent() {
             // discovery list wipe the whole portfolio on every single load.
             if (prev.length === 0) return d.sites;
             const known = new Set(prev.map(s => s.id));
-            const extra = (d.sites as any[]).filter(s => !known.has(s.id));
+            const extra = (d.sites as SiteRow[]).filter(s => !known.has(s.id));
             return extra.length > 0 ? [...prev, ...extra] : prev;
           });
           // Load tags from DB once on mount
           if (!tagsInitialized.current) {
             tagsInitialized.current = true;
             const tagsFromDb: Record<string, string[]> = {};
-            for (const s of d.sites as any[]) {
+            for (const s of d.sites as SiteRow[]) {
               if (s.tags) {
                 try {
                   const parsed = JSON.parse(s.tags);
@@ -904,7 +926,7 @@ function PortfolioPageContent() {
   useEffect(() => {
     const has = (e: string) => {
       if (localStorage.getItem(`seoKey_${e}`)) return true;
-      try { return (JSON.parse(localStorage.getItem(`seoKey_${e}_accounts_list`) || "[]") as any[]).length > 0; } catch { return false; }
+      try { return (JSON.parse(localStorage.getItem(`seoKey_${e}_accounts_list`) || "[]") as unknown[]).length > 0; } catch { return false; }
     };
     const list: ("bing" | "yandex")[] = [];
     if (has("bing")) list.push("bing");
@@ -912,7 +934,7 @@ function PortfolioPageContent() {
     setAltEngines(list);
     // Connected accounts per engine (name from Settings), mirroring the Google accounts bar.
     const accsOf = (e: string): { name: string }[] => {
-      let arr: any[] = [];
+      let arr: { key?: string; name?: string; email?: string }[] = [];
       try { arr = JSON.parse(localStorage.getItem(`seoKey_${e}_accounts_list`) || "[]"); } catch { arr = []; }
       const out = arr.filter(a => a?.key).map(a => ({ name: a.name || a.email || (e === "bing" ? "Bing" : "Yandex") }));
       if (!out.length && localStorage.getItem(`seoKey_${e}`)) out.push({ name: "Default" });
@@ -1005,7 +1027,7 @@ function PortfolioPageContent() {
             if (!res.ok) continue;
             const d = await res.json();
             const add: Record<string, number> = {};
-            Object.entries(d.ratings || {}).forEach(([k, v]: [string, any]) => { add[k] = Number(v.dr); });
+            Object.entries(d.ratings || {}).forEach(([k, v]: [string, { dr?: number }]) => { add[k] = Number(v.dr); });
             setDrMap(prev => ({ ...prev, ...add }));
           } catch { /* best-effort */ }
         }
@@ -1055,7 +1077,7 @@ function PortfolioPageContent() {
           if (!res.ok) continue;
           const d = await res.json();
           const add: Record<string, { refDomains: number | null; orgTraffic: number | null }> = {};
-          Object.entries(d.metrics || {}).forEach(([k, v]: [string, any]) => {
+          Object.entries(d.metrics || {}).forEach(([k, v]: [string, { refDomains?: number | null; orgTraffic?: number | null }]) => {
             if (v?.refDomains != null || v?.orgTraffic != null) {
               add[k] = { refDomains: v.refDomains ?? null, orgTraffic: v.orgTraffic ?? null };
             }
@@ -1069,10 +1091,10 @@ function PortfolioPageContent() {
 
   // Resolve a site's market the same way the card chip does: explicit override, then ccTLD, then
   // null. Kept as a helper so the filter and the totals row answer the same question the card does.
-  const marketOf = (s: any) => marketFor({ url: s.url, siteId: s.siteId, market: s.market });
+  const marketOf = (s: SiteRow) => marketFor({ url: s.url, siteId: s.siteId, market: s.market });
   // `__unknown__` is the active-market value for the amber set — sites whose market cannot be
   // resolved and which therefore file paid keyword data under the wrong country (or refuse it).
-  const marketMatch = (s: any) => {
+  const marketMatch = (s: SiteRow) => {
     if (!activeMarket) return true;
     const m = marketOf(s);
     return activeMarket === "__unknown__" ? m === null : m === activeMarket;
@@ -1644,7 +1666,7 @@ function PortfolioPageContent() {
   );
 
   // Site card
-  function SiteCard({ site }: { site: any }) {
+  function SiteCard({ site }: { site: SiteRow }) {
     const domain = getDomain(site.url);
     const isFav  = favorites.has(site.id);
     const sum: Record<Metric,{value:number;change:number}> = site.summary;

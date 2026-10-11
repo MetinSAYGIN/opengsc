@@ -7,7 +7,7 @@
 // notMigrated instead of crashing on a missing table at import time.
 
 import { randomBytes } from "node:crypto";
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { instanceUrl } from "@/lib/notify/channels";
 import { notifyUser } from "@/lib/notify";
 import { NOTIFY_L, normalizeLang, type NotifyLang } from "@/lib/notifyI18n";

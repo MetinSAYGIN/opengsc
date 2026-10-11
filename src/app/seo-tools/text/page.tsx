@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PenLine, Loader2, AlertTriangle, Wand2, Eye } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
-import { getSeoGenCreds, getTaskCreds, getSerpCreds, serpPayload, getFirecrawlKey, getFactSourceCount, getHardRedact, getMechanicsOn, getMechanicsRepairOn, getMarksScrubOn, loadPolicies, getActivePolicyName } from "@/lib/seo/keys";
+import { getSeoGenCreds, getTaskCreds, serpPayload, getFirecrawlKey, getFactSourceCount, getHardRedact, getMechanicsOn, getMechanicsRepairOn, getMarksScrubOn, loadPolicies, getActivePolicyName } from "@/lib/seo/keys";
 import { TONES, toneToPrompt } from "@/lib/seo/tones";
 import { LANGUAGES } from "@/lib/seo/regions";
 import { loadHistory, HistoryItem } from "@/lib/seo/history";

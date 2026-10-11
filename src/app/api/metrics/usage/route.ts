@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { readUsage } from "@/lib/seo/metricsStore";
 import { parseMetricsProvider } from "@/lib/seo/metrics";

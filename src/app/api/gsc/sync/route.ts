@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { authOptions } from '@/lib/auth';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { runGscSync, isSyncInProgress, getLastSyncResult, getSyncStartedAt } from '@/lib/gscSync';
 import { getSyncSchedule } from '@/lib/syncSchedule';

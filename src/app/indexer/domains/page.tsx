@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Globe, Settings, Trash2, Copy, Check, Eye, EyeOff, AlertCircle, RefreshCw, Code } from "lucide-react";
+import { Plus, Globe, Trash2, Copy, Check, Eye, EyeOff, AlertCircle, RefreshCw } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import DomainHealthChip from "@/components/DomainHealthChip";
 

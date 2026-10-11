@@ -26,7 +26,7 @@ import {
 } from "@/lib/seo/demand";
 import { expandKeywords, type KwSource } from "@/lib/seo/keywordSource";
 import { defaultLanguageFor } from "@/lib/seo/regions";
-import { writeKeywordCache, normalizeKeyword, recordUsage } from "@/lib/seo/metricsStore";
+import { normalizeKeyword, recordUsage } from "@/lib/seo/metricsStore";
 import { runUpsert } from "@/lib/db/upsert";
 import { rawQuery } from "@/lib/db/raw";
 import { isYandexMarketKey } from "@/lib/seo/metricsPricing";

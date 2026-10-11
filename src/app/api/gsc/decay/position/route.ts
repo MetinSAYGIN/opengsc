@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { authOptions } from '@/lib/auth';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import { getUserGoogleAccounts, queryGsc, isoDaysAgo } from '@/lib/gscQuery';

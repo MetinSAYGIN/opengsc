@@ -24,7 +24,7 @@
 // housekeeping. Ten thousand rows a tick, hourly, retires far more than any instance produces,
 // and a backlog drains over a few hours instead of stalling one of them.
 
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 
 /** Days a captured request/response body is kept. */
 export const BODY_RETENTION_DAYS = 7;

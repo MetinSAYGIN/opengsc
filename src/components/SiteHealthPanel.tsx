@@ -3,11 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { withShare, isGuestView } from "@/lib/shareParam";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
-import {
-  ShieldCheck, ShieldAlert, Lock, Unlock, Zap, ZapOff,
-  Bug, AlertTriangle, RefreshCw, ExternalLink, Info,
-  CheckCircle, XCircle, Clock, ChevronDown, ChevronUp,
-} from "lucide-react";
+import { ShieldCheck, ShieldAlert, Lock, Unlock, Zap, ZapOff, Bug, AlertTriangle, RefreshCw, ExternalLink, Info, CheckCircle, XCircle, Clock } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface SslData {

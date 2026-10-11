@@ -1,7 +1,7 @@
 // The only module in src/lib/drops that talks to the database. Everything else stays pure so it
 // can be tested without one; the interesting decisions here are about volume, not about logic.
 
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { rawQuery } from "@/lib/db/raw";
 import { monthKey, readDrHistory } from "@/lib/seo/drHistory";
 import { parseDomainRows, summariseSkips, type ColumnMap } from "./ingest";

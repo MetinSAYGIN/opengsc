@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { MCP_TOOLS } from "@/lib/mcp/tools";
 import { rawQuery } from "@/lib/db/raw";

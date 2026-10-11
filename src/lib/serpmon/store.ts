@@ -16,7 +16,7 @@
 // pushes at container start rather than at build time.
 import { createHash } from "node:crypto";
 
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { apexOf } from "@/lib/drops/registries";
 import { COUNTRIES, defaultLanguageFor } from "@/lib/seo/regions";
 import { hostMatches, ignorePredicate, parseHostList } from "./hosts";
