@@ -89,7 +89,7 @@ async function checkSafeBrowsing(domain: string, apiKey: string): Promise<{
     );
     const data = await res.json();
     if (data.error) return { safe: true, threats: [], error: data.error.message };
-    const threats = (data.matches ?? []).map((m: any) => m.threatType as string);
+    const threats = (data.matches ?? []).map((m: { threatType?: unknown }) => m.threatType as string);
     return { safe: threats.length === 0, threats };
   } catch (err) {
     return { safe: true, threats: [], error: (err as Error).message };

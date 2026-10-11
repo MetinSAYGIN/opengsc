@@ -50,7 +50,11 @@ async function queryGSC(
 // setup, and pulling the first JSON object out of the reply.
 type AiCreds = { provider?: string; apiKey?: string; model?: string; baseUrl?: string };
 
-async function askJson(prompt: string, ai: AiCreds, maxTokens = 2048): Promise<any> {
+// The shape both producers (AI and algorithmic) of cluster/group definitions converge on.
+interface ClusterDef { name?: string; values: string[]; count: number }
+interface PageGroupDef { name?: string; values: (string | undefined)[]; count: number; isEquals?: boolean }
+
+async function askJson(prompt: string, ai: AiCreds, maxTokens = 2048): Promise<Record<string, unknown> | null> {
   const provider = ai.provider || 'anthropic';
   // One-Click Setup can run before any key is stored in the browser, so a server-side env key is
   // still an accepted source here — unlike the SEO tools, which are strictly bring-your-own.
@@ -96,7 +100,7 @@ Rules:
   const parsed = await askJson(prompt, ai);
   if (!parsed) return null;
 
-  return (parsed.clusters ?? []).map((c: any) => ({
+  return ((parsed.clusters as { name?: string; keywords?: string[] }[] | undefined) ?? []).map(c => ({
     name: c.name,
     values: c.keywords ?? [],
     count: queries.filter(q => (c.keywords ?? []).some((kw: string) => q.label.toLowerCase().includes(kw.toLowerCase()))).length,
@@ -136,11 +140,11 @@ Rules:
   const parsed = await askJson(prompt, ai);
   if (!parsed) return null;
 
-  return (parsed.groups ?? []).map((g: any) => ({
+  return ((parsed.groups as { name?: string; pattern?: string; type?: string }[] | undefined) ?? []).map(g => ({
     name: g.name,
     values: [g.pattern],
     isEquals: g.type === 'equals',
-    count: pages.filter(p => g.type === 'equals' ? p.label === g.pattern : p.label.includes(g.pattern)).length,
+    count: pages.filter(p => g.type === 'equals' ? p.label === g.pattern : p.label.includes(g.pattern as string)).length,
   }));
 }
 
@@ -236,16 +240,16 @@ export async function POST(req: Request) {
   const clusterDefs = aiClusters ?? algorithmicCluster(queries);
   const groupDefs   = aiGroups   ?? algorithmicGroupPages(pages);
 
-  const clusters = clusterDefs.map((c: any) => ({
+  const clusters = clusterDefs.map((c: ClusterDef) => ({
     name:  c.name,
     rules: JSON.stringify([{ type: 'contains', values: c.values }]),
     count: c.count,
     aiGenerated: !!aiClusters,
   }));
 
-  const groups = groupDefs.map((g: any) => ({
+  const groups = groupDefs.map((g: PageGroupDef) => ({
     name:  g.name,
-    rules: JSON.stringify([{ type: (g as any).isEquals ? 'equals' : 'contains', values: (g as any).values }]),
+    rules: JSON.stringify([{ type: g.isEquals ? 'equals' : 'contains', values: g.values }]),
     count: g.count,
     aiGenerated: !!aiGroups,
   }));

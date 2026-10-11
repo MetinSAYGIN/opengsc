@@ -35,7 +35,7 @@ export async function GET(req: Request) {
   if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { userId, site } = auth;
 
-  const propertyId = (site as any).ga4PropertyId as string | null;
+  const propertyId = (site as { ga4PropertyId?: string | null }).ga4PropertyId as string | null;
   if (!propertyId) {
     return NextResponse.json({ linked: false });
   }
@@ -109,7 +109,7 @@ export async function GET(req: Request) {
 
       return NextResponse.json({
         linked: true,
-        property: { id: propertyId, name: (site as any).ga4PropertyName ?? '' },
+        property: { id: propertyId, name: (site as { ga4PropertyName?: string | null }).ga4PropertyName ?? '' },
         range: { start: w.start, end: w.end },
         totals: {
           sessions: Math.round(curr.sessions),

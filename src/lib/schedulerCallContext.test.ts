@@ -44,8 +44,8 @@ before(async () => { log = await import("./providerLog/log"); });
 // One mutable object on globalThis, because the stub files are plain CommonJS written to a temp
 // directory and cannot import anything from this test's module graph.
 
-type World = Record<string, any>;
-const world: World = {};
+type World = Record<string, unknown> & { call: (endpoint?: string) => Promise<void> };
+const world = {} as World;
 (globalThis as unknown as { __sched: World }).__sched = world;
 
 /** Every table, empty. */
@@ -144,10 +144,10 @@ function reset(): void {
  * share the alert one.
  */
 const ticks = new Map<string, () => unknown>();
-async function tickOf(name: string, load: () => Promise<any>, start: string): Promise<() => unknown> {
+async function tickOf(name: string, load: () => Promise<unknown>, start: string): Promise<() => unknown> {
   const cached = ticks.get(name);
   if (cached) return cached;
-  const mod = await load();
+  const mod = await load() as Record<string, () => void>;
   const realTimeout = globalThis.setTimeout;
   const realInterval = globalThis.setInterval;
   let captured: (() => unknown) | undefined;
@@ -222,15 +222,15 @@ test("clarity-cron logs its calls against the site's owner", async () => {
 
 test("clarity-cron asks the database for the owner it has to name", async () => {
   reset();
-  let select: any = null;
+  let select: { userId?: unknown } | null | undefined = null;
   world.prisma = {
-    site: { findMany: async (a: any) => { select = a?.select; return []; } },
+    site: { findMany: async (a: { select?: { userId?: unknown } }) => { select = a?.select; return []; } },
     claritySnapshot: { findFirst: async () => null },
   };
   world.clarity = { runClarityFetch: async () => ({ ok: true }) };
   const tick = await tickOf("clarity", () => import("./clarityScheduler"), "startClarityScheduler");
   await rowsFrom(tick);
-  assert.equal(select?.userId, true, "the site query must select userId — it cannot attribute what it never read");
+  assert.equal((select as { userId?: unknown } | null | undefined)?.userId, true, "the site query must select userId — it cannot attribute what it never read");
 });
 
 test("digest-cron logs its calls against the user being digested", async () => {
@@ -282,7 +282,7 @@ test("alert-cron logs its calls against the user being alerted", async () => {
     site: { findMany: async () => [{ id: "s1", url: "https://a.test" }] },
     trackedKeyword: { findMany: async () => [{ id: "k1", siteId: "s1", keyword: "kw", country: "us", lastPosition: 30, prevPosition: 3 }] },
     alertEvent: { create: async () => ({}), updateMany: async () => ({ count: 1 }) },
-  } as Record<string, unknown>, { get: (t, k) => (t as any)[k] ?? noRows });
+  } as Record<string, unknown>, { get: (t, k) => t[k as string] ?? noRows });
   world.notify = { notifyUser: async () => { await world.call(); return true; } };
   const tick = await tickOf("alert", () => import("./alertScheduler"), "startAlertScheduler");
   assert.deepEqual(await rowsFrom(tick), [{ userId: "u-alert", feature: "alert-cron" }]);
@@ -356,14 +356,14 @@ test("a detached job logs against the job's own user, after its request is gone"
 
 test("the alert tick is where the provider log is swept", async () => {
   reset();
-  const seen: any[] = [];
+  const seen: { OR?: unknown; at: { lt: Date } }[] = [];
   world.prisma = new Proxy({
     providerCall: {
-      findMany: async (a: any) => { seen.push(a.where); return []; },
+      findMany: async (a: { where: { OR?: unknown; at: { lt: Date } } }) => { seen.push(a.where); return []; },
       updateMany: async () => ({ count: 0 }),
       deleteMany: async () => ({ count: 0 }),
     },
-  } as Record<string, unknown>, { get: (t, k) => (t as any)[k] ?? noRows });
+  } as Record<string, unknown>, { get: (t, k) => t[k as string] ?? noRows });
   const tick = await tickOf("alert", () => import("./alertScheduler"), "startAlertScheduler");
   await rowsFrom(tick);
   // Both phases, in the order that matters: bodies (the pass that filters on a body still being

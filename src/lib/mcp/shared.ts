@@ -110,9 +110,9 @@ export const siteOrAllArg = {
 // the column may not exist on an instance that hasn't run `prisma db push`, and an
 // agent asking for a rewrite should get "no key configured", not a 500.
 
-export async function getUserSettings(userId: string): Promise<Record<string, any>> {
+export async function getUserSettings(userId: string): Promise<Record<string, unknown>> {
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ seoSettings?: string | null }>>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     return rows?.[0]?.seoSettings ? JSON.parse(rows[0].seoSettings) : {};
   } catch {
     return {};
@@ -180,8 +180,8 @@ export async function resolveAiCreds(userId: string, args: Json = {}, task?: Seo
     // Per-provider base URL, falling back to the custom-provider slot for backwards compatibility.
     // zai needs its own: the default is now the general API endpoint, and a user on the Coding
     // Plan points this at https://api.z.ai/api/anthropic to keep using that one.
-    aiBaseUrl: s[`aiBaseUrl_${provider}`] || s.aiBaseUrl_custom || undefined,
-    firecrawlKey: s.seoKey_firecrawl || s.firecrawlKey || undefined,
+    aiBaseUrl: (s[`aiBaseUrl_${provider}`] || s.aiBaseUrl_custom || undefined) as string | undefined,
+    firecrawlKey: (s.seoKey_firecrawl || s.firecrawlKey || undefined) as string | undefined,
   };
 }
 
@@ -214,7 +214,7 @@ export async function resolveAiFallbacks(userId: string, primaryProvider?: strin
       aiProvider: p,
       aiApiKey: apiKey,
       model: firstSet(s[`aiModel_${p}`]),
-      aiBaseUrl: s[`aiBaseUrl_${p}`] || undefined,
+      aiBaseUrl: (s[`aiBaseUrl_${p}`] || undefined) as string | undefined,
     });
   }
   out.sort((a, b) => (b.model ? 1 : 0) - (a.model ? 1 : 0));
@@ -262,7 +262,7 @@ export async function resolveActivePolicy(userId: string, args: Json = {}): Prom
   }
   if (!Array.isArray(list) || !list.length) return undefined;
   const wanted = firstSet(args.policyName, s.seoActivePolicy);
-  const hit = (wanted && list.find((p: any) => p?.name === wanted)) || list[0];
+  const hit = (wanted && list.find((p: { name?: unknown }) => p?.name === wanted)) || list[0];
   return hit ? normalizePolicy(hit) : undefined;
 }
 

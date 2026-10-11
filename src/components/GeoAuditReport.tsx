@@ -8,8 +8,8 @@ import type { GeoReport } from "@/lib/seo/geo";
 // Small {placeholder} interpolation over the flat t() dictionary.
 function useT() {
   const { t } = useLanguage();
-  return (key: any, params?: Record<string, string | number>) => {
-    let s = t(key);
+  return (key: string, params?: Record<string, string | number>) => {
+    let s = t(key as Parameters<typeof t>[0]);
     if (params) for (const k of Object.keys(params)) s = s.replace(new RegExp(`\\{${k}\\}`, "g"), String(params[k]));
     return s;
   };
@@ -373,7 +373,7 @@ export default function GeoAuditReport({ report }: { report: GeoReport }) {
                 <div key={i} style={{ ...card, background: style.bg, borderColor: style.bd }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                     {style.icon}
-                    <span style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>{tp(("geoKind_" + sig.kind) as any)} · {sig.type}</span>
+                    <span style={{ fontSize: "12px", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--color-text-secondary)" }}>{tp("geoKind_" + sig.kind)} · {sig.type}</span>
                   </div>
                   <div style={{ fontSize: "14px", color: "var(--color-text-primary)", marginBottom: "8px" }}>{sig.text}</div>
                   {sig.kind !== "absent" && (

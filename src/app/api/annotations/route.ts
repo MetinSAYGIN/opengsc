@@ -231,16 +231,16 @@ export async function GET(req: Request) {
       ...noteRows.map(r => ({ ...r, kind: "note" as const, updateType: null, endDate: null })),
       ...purchaseEventRows,
       ...updateRows,
-    ].sort((a, b) => +new Date(b.date as any) - +new Date(a.date as any));
+    ].sort((a, b) => +new Date(b.date) - +new Date(a.date));
 
     // One shared query covers every all-pages note; only page-scoped notes need their own.
-    const dates = rows.map(r => new Date(r.date as any));
+    const dates = rows.map(r => new Date(r.date));
     const spanFrom = dates.length ? addDays(new Date(Math.min(...dates.map(d => +d))), -days) : new Date();
     const spanTo = dates.length ? addDays(new Date(Math.max(...dates.map(d => +d))), days) : new Date();
     const shared = dates.length ? await dailySeries(siteId, spanFrom, spanTo, []) : [];
 
     const notes = await Promise.all(rows.map(async r => {
-      const d = new Date(r.date as any);
+      const d = new Date(r.date);
       d.setHours(0, 0, 0, 0);
       const beforeFrom = addDays(d, -days);
       const afterTo = addDays(d, days);

@@ -37,7 +37,7 @@ export const SOURCE_AUDIT_TOOLS: McpTool[] = [
       return {
         runs: runs.map(run => {
           const dto = sourceAuditDto(run);
-          return severity ? { ...dto, findings: dto.findings.filter((item: any) => item?.severity === severity) } : dto;
+          return severity ? { ...dto, findings: dto.findings.filter((item: { severity?: unknown }) => item?.severity === severity) } : dto;
         }),
         note: "Findings are bounded and store no source code. Open the linked file on GitHub to apply a fix by hand.",
       };

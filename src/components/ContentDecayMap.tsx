@@ -291,7 +291,7 @@ function Heatmap({
 // ─── Position Decay Scatter Plot ──────────────────────────────────────────────
 function PositionDecayScatter({ siteDbId }: { siteDbId: string }) {
   const { t } = useLanguage();
-  const [points, setPoints] = useState<any[]>([]);
+  const [points, setPoints] = useState<{ currPos: number; prevPos: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [reason, setReason] = useState("");

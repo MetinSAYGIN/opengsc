@@ -5,7 +5,7 @@ import { validateSourceRef } from "@/lib/contentOps/github";
 import { markStaleSourceAudits, runSourceAudit, sourceAuditDto } from "@/lib/sourceAudit/service";
 
 function schemaMissing(error: unknown): boolean {
-  const value = error as any;
+  const value = error as { code?: unknown; message?: unknown };
   if (value?.code === "P2021" || value?.code === "P2022") return true;
   return /SourceAuditRun.*(?:does not exist|no such table|unknown column)/i.test(String(value?.message ?? value ?? ""));
 }

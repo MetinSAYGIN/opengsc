@@ -11,7 +11,7 @@ export async function GET() {
   const userId = await workspaceUserId("manageSecrets");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ seoSettings?: string | null }>>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.seoSettings;
     return NextResponse.json({ settings: raw ? JSON.parse(raw) : null });
   } catch {
@@ -22,7 +22,7 @@ export async function GET() {
 export async function PUT(req: Request) {
   const userId = await workspaceUserId("manageSecrets");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  let body: any;
+  let body: { settings?: unknown } | undefined;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "bad_json" }, { status: 400 }); }
   const settings = body?.settings;
   if (!settings || typeof settings !== "object") return NextResponse.json({ error: "no_settings" }, { status: 400 });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { fetchLLM } from "@/lib/llm";
 import { runSerp, SerpEngine } from "@/lib/seo/serp";
-import { scrapeMany } from "@/lib/seo/scrape";
+import { scrapeMany, ScrapedPage } from "@/lib/seo/scrape";
 import { buildFactCheckSectionPrompt, extractJson } from "@/lib/seo/prompts";
 
 // POST /api/seo/factcheck-section
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
   // 1) gather real sources. Cost saver: if the client supplies a shared competitor corpus
   // (reuse-corpus mode), use it directly and skip the per-section SERP + scrape entirely.
   let sources: { title: string; snippet: string; url: string; domain: string }[] =
-    Array.isArray(b.sources) ? b.sources.filter((s: any) => s && s.url) : [];
+    Array.isArray(b.sources) ? b.sources.filter((s: { url?: unknown }) => s && s.url) : [];
   if (!sources.length && b.serpKey) {
     // Query MUST be topic-led: searching the bare heading ("Key Facts at a Glance",
     // "Transport Modes Comparison") returns generic/off-topic pages. Prefix the main keyword
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     const results = serp.results || [];
     const scrapeCount = Math.max(0, Math.min(10, Number(b.scrapeCount ?? 6)));
     const topUrls = results.slice(0, scrapeCount).map(r => r.url);
-    let scraped: any[] = [];
+    let scraped: ScrapedPage[] = [];
     if (scrapeCount > 0) { try { scraped = await scrapeMany(topUrls, b.firecrawlKey ? String(b.firecrawlKey) : undefined, 4); } catch {} }
     sources = results.map(r => {
       const sc = scraped.find(s => s.url === r.url);
@@ -58,8 +58,8 @@ export async function POST(req: Request) {
   const model = b.model ? String(b.model) : undefined;
   const baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
   let raw = await fetchLLM(prompt, aiProvider, aiKey, 3000, model, baseUrl);
-  let parsed = extractJson<any>(raw);
-  if (!parsed) { raw = await fetchLLM(prompt + "\n\nВерни ТОЛЬКО валидный JSON.", aiProvider, aiKey, 3000, model, baseUrl); parsed = extractJson<any>(raw); }
+  let parsed = extractJson<{ status?: string; facts?: unknown[] }>(raw);
+  if (!parsed) { raw = await fetchLLM(prompt + "\n\nВерни ТОЛЬКО валидный JSON.", aiProvider, aiKey, 3000, model, baseUrl); parsed = extractJson<{ status?: string; facts?: unknown[] }>(raw); }
   if (!parsed) return NextResponse.json({ error: "parse_failed", heading, sources }, { status: 502 });
 
   return NextResponse.json({ heading, status: parsed.status ?? "partial", facts: parsed.facts ?? [], sources });

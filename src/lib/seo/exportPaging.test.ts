@@ -15,7 +15,7 @@ const urlFrom = (i: number) => `https://donor${String(i).padStart(5, "0")}.examp
 function harness(g: Gw, live: number | null) {
   const rows = Array.from({ length: g.total }, (_, i) => ({ url_from: urlFrom(i), url_to: "https://t.example/", anchor: "a" }));
   const requests: PageQuery[] = [];
-  const persisted: any[] = [];
+  const persisted: { url_from: string }[] = [];
   const state: PagingState = {
     rowsSeen: 0, pagesPulled: 0, unitsSpent: 0, complete: false, slicesUsed: false, slicesTruncated: false, notes: [],
   };

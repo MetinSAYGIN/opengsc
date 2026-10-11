@@ -16,6 +16,7 @@
 // (Settings → SEO Tools → Rank Tracker fallback).
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma";
 import { runSerp } from "@/lib/seo/serp";
 import { resolveBaseUrl, setAparserConcurrency } from "@/lib/seo/aparser";
 import { aparserRankPosition } from "@/lib/seo/aparserPositionRun";
@@ -74,7 +75,7 @@ export interface SerpCreds {
  */
 const SELF_HOSTED_PROVIDERS = new Set<string>(["aparser"]);
 
-async function configuredIn(s: any, provider: string): Promise<SerpCreds | null> {
+async function configuredIn(s: Record<string, unknown>, provider: string): Promise<SerpCreds | null> {
   // A-Parser is deliberately deployable through the env pair alone (OPENGSC_APARSER_BASE_URL /
   // OPENGSC_APARSER_PASSWORD — see the comment on `resolveBaseUrl` for why env outranks a
   // settings URL). The password goes through the same probe SERP Monitor and the console use:
@@ -104,7 +105,7 @@ async function configuredIn(s: any, provider: string): Promise<SerpCreds | null>
  * configured, supported provider. An unconfigured fallback is simply absent: the primary's
  * errors are stored as they are, exactly as before this setting existed.
  */
-async function withFallback(s: any, primary: SerpCreds | null): Promise<SerpCreds | null> {
+async function withFallback(s: Record<string, unknown>, primary: SerpCreds | null): Promise<SerpCreds | null> {
   if (!primary) return null;
   const id = String(s.seoSerpProvider_rankFallback ?? "").trim();
   if (!id || id === primary.provider || RANK_UNSUPPORTED[id]) return primary;
@@ -115,7 +116,7 @@ async function withFallback(s: any, primary: SerpCreds | null): Promise<SerpCred
 // Read the user's SERP provider + key from the server-side settings snapshot.
 export async function getUserSerpCreds(userId: string): Promise<SerpCreds | null> {
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<Array<{ seoSettings?: string | null }>>(
       `SELECT seoSettings FROM "User" WHERE id = ?`, userId,
     );
     const raw = rows?.[0]?.seoSettings;
@@ -370,7 +371,7 @@ export async function checkSiteKeywords(
 ): Promise<{ checked: number; remaining: number; errors: number; packChanges: PackChange[] }> {
   const limit = opts.limit ?? 20;
   const staleBefore = new Date(Date.now() - RANK_STALE_MS);
-  const where: any = { siteId };
+  const where: Prisma.TrackedKeywordWhereInput = { siteId };
   if (opts.onlyIds?.length) where.id = { in: opts.onlyIds };
   // `force` = regardless of staleness, but each keyword once: the client loops while
   // `remaining > 0`, and with no cut-off every call counted all keywords again — a "check all"

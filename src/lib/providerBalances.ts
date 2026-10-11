@@ -34,7 +34,7 @@ async function fetchAhrefs(key: string): Promise<BalanceFetch> {
     signal: timeout(15_000),
   });
   if (!res.ok) return { provider: "ahrefs", unit: "units", left: null, limit: null, resetAt: null, ok: false, error: `HTTP ${res.status}` };
-  const d: any = await res.json();
+  const d = await res.json() as { units_limit_workspace?: unknown; units_usage_workspace?: unknown; usage_reset_date?: string };
   const limit = Number(d?.units_limit_workspace);
   const usage = Number(d?.units_usage_workspace);
   if (!isFinite(limit) || !isFinite(usage)) return { provider: "ahrefs", unit: "units", left: null, limit: null, resetAt: null, ok: false, error: "no units fields" };
@@ -49,7 +49,7 @@ async function fetchDataForSeo(key: string): Promise<BalanceFetch> {
     signal: timeout(15_000),
   });
   if (!res.ok) return { provider: "dataforseo", unit: "USD", left: null, limit: null, resetAt: null, ok: false, error: `HTTP ${res.status}` };
-  const d: any = await res.json();
+  const d = await res.json() as { tasks?: { result?: { money?: { balance?: unknown } }[] }[] };
   const money = d?.tasks?.[0]?.result?.[0]?.money;
   const left = Number(money?.balance);
   if (!isFinite(left)) return { provider: "dataforseo", unit: "USD", left: null, limit: null, resetAt: null, ok: false, error: "no money.balance" };
@@ -62,8 +62,8 @@ async function fetchOpenRouter(key: string): Promise<BalanceFetch> {
     signal: timeout(15_000),
   });
   if (!res.ok) return { provider: "openrouter", unit: "USD", left: null, limit: null, resetAt: null, ok: false, error: `HTTP ${res.status}` };
-  const d: any = await res.json();
-  const k = d?.data ?? {};
+  const d = await res.json() as { data?: { limit_remaining?: unknown; limit?: unknown } };
+  const k = d?.data ?? ({} as { limit_remaining?: unknown; limit?: unknown });
   const left = Number(k.limit_remaining);
   // No limit on the key = pay-as-you-go with nothing to run out of: report the spend rate is
   // not knowable here and let the provider's own dashboard own that question.
@@ -79,7 +79,7 @@ async function fetch2Index(token: string): Promise<BalanceFetch> {
   });
   if (res.status === 401 || res.status === 403) return { provider: "2index", unit: "pages", left: null, limit: null, resetAt: null, ok: false, error: "invalid token" };
   if (!res.ok) return { provider: "2index", unit: "pages", left: null, limit: null, resetAt: null, ok: false, error: `HTTP ${res.status}` };
-  const d: any = await res.json().catch(() => ({}));
+  const d = await res.json().catch(() => ({})) as { balance?: unknown };
   const left = Number(d?.balance);
   return { provider: "2index", unit: "pages", left: isFinite(left) ? left : null, limit: null, resetAt: null, ok: isFinite(left) };
 }
@@ -101,7 +101,7 @@ async function credentialFor(userId: string, provider: string): Promise<string |
     return key || null;
   }
   if (provider === "2index") {
-    const rows: any[] = await rawQuery(`SELECT "twoIndexToken" FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ twoIndexToken?: unknown }>>(`SELECT "twoIndexToken" FROM "User" WHERE id = ?`, userId);
     const token = String(rows?.[0]?.twoIndexToken ?? "").trim();
     return token || null;
   }
@@ -145,7 +145,15 @@ export async function refreshProviderBalances(userId: string): Promise<BalanceFe
 
 // The read side (page + alert). Never fetches: it returns the cached rows as-is, including
 // failed ones, so the caller can distinguish "no key", "checked and fine" and "check failed".
-export async function getProviderBalances(userId: string): Promise<any[]> {
+// Row shape of the ProviderBalance table (prisma/schema.prisma); dates arrive as Date objects
+// or ISO strings depending on the driver.
+export interface ProviderBalanceRow {
+  userId: string; provider: string; unit: string;
+  left: number | null; limit: number | null; resetAt: Date | string | null;
+  ok: boolean; error: string | null; fetchedAt: Date | string;
+}
+
+export async function getProviderBalances(userId: string): Promise<ProviderBalanceRow[]> {
   try {
     return await balances().findMany({ where: { userId } });
   } catch {

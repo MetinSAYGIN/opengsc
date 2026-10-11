@@ -76,8 +76,8 @@ test("quoteArticles sums rows before choosing the tier; bonus is +30% per row, r
 test("createOrder sends only the four fields the API accepts, languages as names", async () => {
   const orig = globalThis.fetch;
   let sent: unknown = null;
-  globalThis.fetch = (async (_input: any, init?: any) => {
-    sent = JSON.parse(init.body);
+  globalThis.fetch = (async (_input: unknown, init: { body?: unknown }) => {
+    sent = JSON.parse(init.body as string);
     return res(201, { order_id: "o9", status: "awaiting_content", total_count: 5, bonus_count: 1, total_price: 1, price_per_placement: 0.2, balance: 11.34 });
   }) as typeof fetch;
   try {

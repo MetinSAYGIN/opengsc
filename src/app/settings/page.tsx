@@ -33,6 +33,9 @@ interface ConnectedAccount {
   id: string; email: string; picture: string | null; connected: boolean; gscAccess: boolean; ga4Access?: boolean;
 }
 
+// next-auth session user as consumed by the sections below (display fields only).
+interface SessionUser { name?: string | null; email?: string | null; image?: string | null }
+
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 function UserAvatar({ email, picture, size = 36 }: { email: string; picture?: string | null; size?: number }) {
   const colors = ["#8B5CF6","#3B82F6","#10B981","#F59E0B","#EF4444","#06B6D4"];
@@ -293,7 +296,7 @@ function YandexIcon({ size = 16 }: { size?: number }) {
 
 // ─── Section: My Google Accounts ──────────────────────────────────────────────
 function AccountsSection({ user, accounts, loadingAccounts, removing, onAdd, onRemove, onReauth }: {
-  user: any; accounts: ConnectedAccount[]; loadingAccounts: boolean;
+  user?: SessionUser; accounts: ConnectedAccount[]; loadingAccounts: boolean;
   removing: string | null; onAdd: () => void; onRemove: (id: string) => void; onReauth: (email: string) => void;
 }) {
   const { t } = useLanguage();
@@ -460,7 +463,7 @@ function AccountsSection({ user, accounts, loadingAccounts, removing, onAdd, onR
 }
 
 // ─── Section: My Teams ────────────────────────────────────────────────────────
-function TeamsSection({ user }: { user: any }) {
+function TeamsSection({ user }: { user?: SessionUser }) {
   const { t } = useLanguage();
   const teamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
   return (
@@ -709,7 +712,7 @@ http_headers = { "Authorization" = "Bearer ${shownToken}" }`,
 }
 
 // ─── Section: Team Members ────────────────────────────────────────────────────
-function MembersSection({ user }: { user: any }) {
+function MembersSection({ user }: { user?: SessionUser }) {
   const { t } = useLanguage();
   return (
     <SectionCard>
@@ -738,7 +741,7 @@ function MembersSection({ user }: { user: any }) {
 }
 
 // ─── Section: Preferences ─────────────────────────────────────────────────────
-function PreferencesSection({ user }: { user: any }) {
+function PreferencesSection({ user }: { user?: SessionUser }) {
   const { t, language, setLanguage } = useLanguage();
   const teamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
   const [shareWithTeam, setShareWithTeam] = useState(true);
@@ -849,7 +852,7 @@ function PreferencesSection({ user }: { user: any }) {
 // is "be ready before I start work" and a UTC hour drifts away from that at every DST change.
 // See src/lib/syncSchedule.ts.
 function SyncScheduleSection() {
-  const { t } = useLanguage() as any;
+  const { t } = useLanguage();
   type Schedule = { enabled: boolean; hour: number; timeZone: string; lastRunAt: string | null };
   const [s, setS] = useState<Schedule | null>(null);
   const [err, setErr] = useState("");
@@ -914,8 +917,15 @@ function SyncScheduleSection() {
 }
 
 // ─── Notifications Section (Telegram bot + alert rules) ───────────────────────
+// Client-side view of GET /api/settings/alerts: the editable alert rules and the recent
+// fired events. The server's full AlertSettings (src/lib/alertScheduler.ts) is deliberately
+// not imported — that module pulls server-only code into this client bundle.
+interface AlertRule { on: boolean; threshold?: number; percent?: number; days?: number; minScore?: number; failures?: number; minDr?: number }
+interface RecentAlertEvent { id: string; title: string; message: string; sent: boolean; createdAt: string }
+type AlertNumField = "threshold" | "percent" | "days" | "minScore" | "failures" | "minDr";
+
 function NotificationsSection() {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   // Telegram state
   const [tg, setTg] = useState<{ connected: boolean; botTokenMasked: string | null; chatId: string | null } | null>(null);
   const [botToken, setBotToken] = useState("");
@@ -927,8 +937,8 @@ function NotificationsSection() {
   const [slackBusy, setSlackBusy] = useState("");
   const [slackMsg, setSlackMsg] = useState("");
   // Alerts state
-  const [alerts, setAlerts] = useState<any>(null);
-  const [recent, setRecent] = useState<any[]>([]);
+  const [alerts, setAlerts] = useState<Record<string, AlertRule> | null>(null);
+  const [recent, setRecent] = useState<RecentAlertEvent[]>([]);
   const [alertsSaved, setAlertsSaved] = useState(false);
 
   const reloadTg = () => fetch("/api/settings/telegram").then(r => r.json()).then(setTg).catch(() => {});
@@ -936,7 +946,7 @@ function NotificationsSection() {
   const reloadAlerts = () => fetch("/api/settings/alerts").then(r => r.json()).then(d => { setAlerts(d.settings); setRecent(d.recent || []); }).catch(() => {});
   useEffect(() => { reloadTg(); reloadSlack(); reloadAlerts(); }, []);
 
-  const tgAction = async (action: string, body: any = {}) => {
+  const tgAction = async (action: string, body: Record<string, unknown> = {}) => {
     setTgBusy(action); setTgMsg("");
     try {
       const res = await fetch("/api/settings/telegram", {
@@ -952,7 +962,7 @@ function NotificationsSection() {
     setTgBusy("");
   };
 
-  const slackAction = async (action: string, body: any = {}) => {
+  const slackAction = async (action: string, body: Record<string, unknown> = {}) => {
     setSlackBusy(action); setSlackMsg("");
     try {
       const res = await fetch("/api/settings/slack", {
@@ -961,14 +971,14 @@ function NotificationsSection() {
       });
       const d = await res.json();
       if (!res.ok) setSlackMsg((t("tgErr") || "Error") + ": " + (d.error ?? res.status));
-      else if (action === "save") setSlackMsg(t("slackSaved") || "Slack Webhook saved successfully.");
-      else if (action === "test") setSlackMsg(t("slackTestOk") || "Test message sent to Slack channel.");
+      else if (action === "save") setSlackMsg(t("slackSaved" as never) || "Slack Webhook saved successfully.");
+      else if (action === "test") setSlackMsg(t("slackTestOk" as never) || "Test message sent to Slack channel.");
       reloadSlack();
     } catch (e) { setSlackMsg(String((e as Error)?.message ?? e)); }
     setSlackBusy("");
   };
 
-  const saveAlerts = async (next: any) => {
+  const saveAlerts = async (next: Record<string, AlertRule>) => {
     setAlerts(next);
     try {
       await fetch("/api/settings/alerts", {
@@ -983,7 +993,7 @@ function NotificationsSection() {
   const rowStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: "10px", padding: "10px 0", borderBottom: "1px solid var(--color-border)", flexWrap: "wrap" };
   const smallBtn: React.CSSProperties = { padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 
-  const AlertRow = ({ id, label, value, unit, field }: { id: string; label: string; value: any; unit: string; field: string }) => (
+  const AlertRow = ({ id, label, value, unit, field }: { id: string; label: string; value: AlertRule; unit: string; field: AlertNumField }) => (
     <div style={rowStyle}>
       <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", minWidth: "260px" }}>
         <input type="checkbox" checked={!!value.on} onChange={e => saveAlerts({ ...alerts, [id]: { ...value, on: e.target.checked } })} />
@@ -1117,7 +1127,7 @@ function NotificationsSection() {
               <div key={a.id} style={{ padding: "10px 12px", borderRadius: "8px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--color-border)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{a.title}</span>
-                  {a.sent && <span style={{ fontSize: "11px", color: "#34c759" }}>✓ {t("alertSent") || "Sent"}</span>}
+                  {a.sent && <span style={{ fontSize: "11px", color: "#34c759" }}>✓ {t("alertSent" as never) || "Sent"}</span>}
                   <span style={{ flex: 1 }} />
                   <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{new Date(a.createdAt).toLocaleString()}</span>
                 </div>

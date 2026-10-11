@@ -12,6 +12,19 @@ import { workspaceOwner, type WorkspaceContext } from "./workspace";
 // hard import would take down every route instead of this one.
 const memberships = () => dbAny.membership;
 
+/** A Membership row with the `member` include the queries in this file ask for. */
+interface MembershipRow {
+  id: string;
+  email: string;
+  role: string;
+  status: string;
+  invitedAt: Date | null;
+  acceptedAt: Date | null;
+  inviteExpiresAt: Date | null;
+  lastSeenAt: Date | null;
+  member: { name: string | null; passwordHash: string | null } | null;
+}
+
 const BCRYPT_ROUNDS = 12;
 const INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 
@@ -37,7 +50,7 @@ function hashInviteToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export function memberDto(row: any, ownerId: string) {
+export function memberDto(row: MembershipRow, ownerId: string) {
   return {
     id: row.id,
     email: row.email,
@@ -60,7 +73,7 @@ export async function listWorkspace(ws: WorkspaceContext) {
     where: { id: ws.ownerId },
     select: { id: true, email: true, name: true, image: true, workspaceName: true },
   });
-  let rows: any[] = [];
+  let rows: MembershipRow[] = [];
   try {
     rows = await memberships().findMany({
       where: { ownerId: ws.ownerId },
@@ -68,7 +81,7 @@ export async function listWorkspace(ws: WorkspaceContext) {
       orderBy: [{ role: "asc" }, { invitedAt: "asc" }],
     });
   } catch {
-    return { notMigrated: true, owner: null, members: [] as any[] };
+    return { notMigrated: true, owner: null, members: [] as ReturnType<typeof memberDto>[] };
   }
   return {
     notMigrated: false,

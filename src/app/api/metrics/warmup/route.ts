@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma";
 import {
   fetchKeywordMetrics, estimateKeywordUnits, parseMetricsProvider,
 } from "@/lib/seo/metrics";
@@ -59,7 +60,7 @@ export async function POST(req: Request) {
   const cap = Number(b.cap ?? 0);
 
   // ── Which sites are in scope ──
-  const where: any = { userId, archivedAt: null };
+  const where: Prisma.SiteWhereInput = { userId, archivedAt: null };
   if (scope === "site") {
     if (!b.siteId) return NextResponse.json({ error: "no_site" }, { status: 400 });
     where.id = String(b.siteId);

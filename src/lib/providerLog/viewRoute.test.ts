@@ -65,17 +65,18 @@ const world: {
   /** Who is signed in, and what they may do — the fake guard reads this. */
   actor: { ownerId: string; role: string } | null;
   users: Record<string, { isOwner: boolean }>;
-  lastFindMany: any;
+  /** The findMany args the stub prisma last received, as the assertions read them back. */
+  lastFindMany: { orderBy: { at: string }; take: number } | null;
 } = { rows: [], actor: null, users: {}, lastFindMany: null };
 (globalThis as unknown as { __plog: typeof world }).__plog = world;
 
 /** The subset of Prisma's `where` this route actually builds. Anything else is a test bug. */
-function matches(r: Row, where: any): boolean {
+function matches(r: Row, where: unknown): boolean {
   if (!where) return true;
-  for (const [k, v] of Object.entries(where)) {
-    if (k === "OR") { if (!(v as any[]).some(w => matches(r, w))) return false; continue; }
+  for (const [k, v] of Object.entries(where as Record<string, unknown>)) {
+    if (k === "OR") { if (!(v as unknown[]).some(w => matches(r, w))) return false; continue; }
     if (k === "at" || k === "id" || k === "userId" || k === "provider" || k === "feature") {
-      const actual = (r as any)[k];
+      const actual = r[k];
       if (v !== null && typeof v === "object") throw new Error(`unexpected operator on ${k}: ${JSON.stringify(v)}`);
       if (actual !== v) return false;
       continue;
@@ -180,12 +181,22 @@ beforeEach(() => {
   ];
 });
 
+/** One serialized row as the list replies carry it (bodies only on the single-row reply). */
+interface BodyRow {
+  id: string; userId: string | null; costUsd: number | null; complete: boolean; error: string | null;
+  promptTokens: number | null; requestBody?: string | null; responseBody?: string | null; hasBodies?: boolean;
+}
+/** The route's JSON replies as the assertions read them (refusals carry `error` instead). */
+interface RouteBody {
+  error?: string; rows: BodyRow[]; row?: BodyRow; providers: string[]; features: string[];
+}
+
 const get = async (query = "") => {
   const res = await route.GET(new Request(`https://opengsc.test/api/provider-log${query}`));
-  return { status: res.status, body: await res.json() as any };
+  return { status: res.status, body: await res.json() as RouteBody };
 };
 
-const ids = (body: any) => body.rows.map((r: any) => r.id);
+const ids = (body: RouteBody) => body.rows.map((r: BodyRow) => r.id);
 
 test("an unauthenticated request is refused", async () => {
   world.actor = null;
@@ -220,23 +231,23 @@ test("userId: null rows go to NO other workspace", async () => {
   world.actor = { ownerId: OWNER_B, role: "owner" };
   const { body } = await get();
   assert.ok(!ids(body).includes("n1"));
-  assert.equal(body.rows.filter((r: any) => r.userId === null).length, 0);
+  assert.equal(body.rows.filter((r: BodyRow) => r.userId === null).length, 0);
 });
 
 test("newest first", async () => {
   const { body } = await get();
   assert.deepEqual(ids(body), ["n1", "a3", "a2", "a1"]);
-  assert.equal(world.lastFindMany.orderBy.at, "desc");
+  assert.equal(world.lastFindMany!.orderBy.at, "desc");
 });
 
 test("the page size is capped, whatever was asked for", async () => {
   const { body } = await get("?limit=5000");
-  assert.ok(world.lastFindMany.take <= route.PAGE_SIZE_MAX, `take was ${world.lastFindMany.take}`);
+  assert.ok(world.lastFindMany!.take <= route.PAGE_SIZE_MAX, `take was ${world.lastFindMany!.take}`);
   assert.ok(body.rows.length <= route.PAGE_SIZE_MAX);
 
   const junk = await get("?limit=not-a-number");
   assert.equal(junk.status, 200);
-  assert.equal(world.lastFindMany.take, route.PAGE_SIZE_DEFAULT);
+  assert.equal(world.lastFindMany!.take, route.PAGE_SIZE_DEFAULT);
 });
 
 test("filters are checked against what the log actually holds, never interpolated", async () => {
@@ -265,24 +276,24 @@ test("a null cost stays null, and an unfinished call stays unfinished", async ()
   // Coerced to 0 here it would render as $0.00 — a number that looks exactly like a fact.
   // `complete: false` is "we never saw this call finish", which is not an error either.
   const { body } = await get();
-  const a3 = body.rows.find((r: any) => r.id === "a3");
+  const a3 = body.rows.find((r: BodyRow) => r.id === "a3")!;
   assert.equal(a3.costUsd, null);
   assert.equal(a3.complete, false);
   assert.equal(a3.error, null);
   assert.equal(a3.promptTokens, null);
-  const a2 = body.rows.find((r: any) => r.id === "a2");
+  const a2 = body.rows.find((r: BodyRow) => r.id === "a2")!;
   assert.equal(a2.costUsd, 0.004);
 });
 
 test("the list carries no bodies; one row hands over its own", async () => {
   const { body } = await get();
-  const n1 = body.rows.find((r: any) => r.id === "n1");
+  const n1 = body.rows.find((r: BodyRow) => r.id === "n1")!;
   assert.equal(n1.requestBody, undefined, "a list of fifty rows must not ship fifty prompts");
   assert.equal(n1.hasBodies, true);
 
   const one = await get("?id=n1");
-  assert.equal(one.body.row.requestBody, '{"q":"x"}');
-  assert.equal(one.body.row.responseBody, '{"ok":true}');
+  assert.equal(one.body.row!.requestBody, '{"q":"x"}');
+  assert.equal(one.body.row!.responseBody, '{"ok":true}');
 });
 
 test("a row belonging to another workspace cannot be opened by id", async () => {

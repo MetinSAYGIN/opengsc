@@ -16,7 +16,7 @@ return workspaceUserId(capability);
 
 async function readRow(userId: string): Promise<{ token: string; chatId: string }> {
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<Array<{ telegramBotToken?: string | null; telegramChatId?: string | null }>>(
       `SELECT telegramBotToken, telegramChatId FROM "User" WHERE id = ?`, userId);
     return { token: rows?.[0]?.telegramBotToken ?? "", chatId: rows?.[0]?.telegramChatId ?? "" };
   } catch {
