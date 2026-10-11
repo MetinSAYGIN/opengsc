@@ -45,8 +45,7 @@ export default function IndexerStatsPage() {
   const { t } = useLanguage();
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [simulating, setSimulating] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg] = useState<string | null>(null);
   const [isLarge, setIsLarge] = useState(false);
 
   // Pagination state for tables

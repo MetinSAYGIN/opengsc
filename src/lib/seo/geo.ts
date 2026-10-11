@@ -872,7 +872,6 @@ export function assembleReport(opts: {
   // ── Inclusion pattern ──
   const citedTypesSorted = sourceTypes.filter(s => s.cites > 0);
   const scannedNeverCited = sourceTypes.filter(s => s.cites === 0 && s.domains > 0);
-  const topBrandDomains = new Set(brands.slice(0, 3).map(b => b.domain));
   const inclusionSignals: GeoInclusionSignal[] = [];
   if (citedTypesSorted[0]) {
     const s = citedTypesSorted[0];
@@ -904,7 +903,6 @@ export function assembleReport(opts: {
   const stability = brands.length >= 5 ? "high confidence" : brands.length >= 3 ? "low confidence" : "very low confidence";
 
   // ── Coverage gaps (missing source types = taxonomy types never seen) ──
-  const seenTypes = new Set(sourceTypes.map(s => s.type));
   const missingSourceTypes = ["review_aggregator", "listicle_editorial"]
     .filter(ty => (citesByType.get(ty) ?? 0) === 0)
     .map(ty => ({

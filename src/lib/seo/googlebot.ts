@@ -238,7 +238,6 @@ export function parseSeoSignals(url: string, html: string): SeoSignals {
   for (const m of jsLoc) jsRedirects.push(resolveUrl(url, m[1]));
 
   const bodyText = stripTags(html);
-  const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
 
   // Indexability
   const indexableReasons: string[] = [];

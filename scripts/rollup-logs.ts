@@ -61,7 +61,7 @@ async function main() {
   console.log(`Successfully merged ${inserted} daily stat rows into IndexerDailyStat.`);
 
   // 2. Retention Cleanup: Keep the 5,000 most recent raw log entries only
-  const deleteResult = await prisma.$executeRawUnsafe(`
+  await prisma.$executeRawUnsafe(`
     DELETE FROM "IndexerLog"
     WHERE "id" NOT IN (
       SELECT "id" FROM "IndexerLog" ORDER BY "timestamp" DESC LIMIT 5000

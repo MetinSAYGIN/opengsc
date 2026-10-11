@@ -297,12 +297,6 @@ export function SerpIntentPanel({ analysis }: { analysis: { dominantIntent: stri
   );
 }
 
-// ─── Landing wireframe (block skeleton) ──────────────────────────────────────────
-const BLOCK_COLOR: Record<string, string> = {
-  HERO_FORM: "#bf5af2", USP_BAR: "#2997ff", ITEM_CARD_LIST: "#ff9f0a", HOW_IT_WORKS: "#34c759",
-  COMPARISON_TABLE: "#ff9f0a", PRICING_TABLE: "#ff9f0a", FEATURE_LIST: "#2997ff", GALLERY: "#bf5af2",
-  REVIEWS: "#34c759", TRUST_BADGES: "#34c759", MAP: "#2997ff", FAQ: "#8e8e93", TEXT_BLOCK: "#8e8e93", CTA_BANNER: "#ff453a",
-};
 
 // Visual landing wireframe: renders each block as a design-free page mockup — placeholder
 // bars, hatched image areas, CTA button stubs and requirement cards (orange, checkable) —

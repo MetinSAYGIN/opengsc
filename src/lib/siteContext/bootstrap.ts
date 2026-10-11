@@ -51,7 +51,6 @@ export function inferKeyPageRole(url: string): "hub" | "other" {
 
 export async function bootstrapSuggestions(siteId: string): Promise<ContextBootstrap> {
   const since = new Date(Date.now() - 90 * 86_400_000);
-  const empty: ContextBootstrap = { suggestedKeyPages: [], suggestedCompetitors: [], sitemapUrls: 0 };
 
   const [pages, competitors, sitemap] = await Promise.all([
     // The site's own top pages by clicks over 90 days — the honest shortlist of what matters.

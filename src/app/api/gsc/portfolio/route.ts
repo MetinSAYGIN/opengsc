@@ -27,7 +27,7 @@ export async function GET(req: Request) {
   // mode (previous / yoy / prev_month, weekday-aligned) — or none at all when disabled, in
   // which case no previous-period query runs and every delta ships as 0.
   const window = resolveWindow(period, searchParams.get('start'), searchParams.get('end'));
-  const { start: startDate, end: endDate, days } = window;
+  const { start: startDate, end: endDate } = window;
   const prev = previousWindow(window, comparison, matchWd);
   const shift = prev ? comparisonShift(window, prev) : 0;
   const noPrev: DailyRow[] = [];

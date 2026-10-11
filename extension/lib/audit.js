@@ -26,10 +26,6 @@ var ExtensionAudit = (function () {
     return Array.from(String(s == null ? "" : s).trim()).length;
   }
 
-  function text(el) {
-    return el && el.getAttribute ? String(el.getAttribute("content") || el.textContent || "").trim() : "";
-  }
-
   /** Everything the audit needs from the page, in one plain object. */
   function collectFacts(doc) {
     var loc = doc.defaultView ? doc.defaultView.location : { href: "", host: "" };

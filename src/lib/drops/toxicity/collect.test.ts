@@ -68,7 +68,7 @@ test("анкоры прокидываются без единого запрос
   };
   const evidence = await collectEvidence("example.com", {
     anchors: ["situs togel online"],
-    fetch: (u, o) => empty(u),
+    fetch: (u) => empty(u),
   });
   assert.deepEqual(evidence.snapshots, []);
   assert.deepEqual(evidence.anchors, ["situs togel online"]);

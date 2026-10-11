@@ -46,11 +46,9 @@ export async function GET() {
       });
 
       // Attempt token refresh first
-      let refreshed = false;
       try {
         const { credentials } = await oauth2.refreshAccessToken();
         oauth2.setCredentials(credentials);
-        refreshed = true;
         info.steps.push({ step: 'token_refresh', status: 'ok', newExpiry: credentials.expiry_date });
 
         // Save refreshed token

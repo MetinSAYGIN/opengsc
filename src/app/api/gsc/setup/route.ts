@@ -168,7 +168,7 @@ function algorithmicCluster(rows: { label: string; impr: number }[]) {
   return clusters.slice(0, 15);
 }
 
-function algorithmicGroupPages(rows: { label: string; impr: number }[], domain: string) {
+function algorithmicGroupPages(rows: { label: string; impr: number }[]) {
   const pages = rows.map(r => {
     const path = r.label.replace(/^https?:\/\/[^/]+/, '').replace(/\?.*$/, '').replace(/\/$/, '') || '/';
     const segs = path.split('/').filter(Boolean);
@@ -234,7 +234,7 @@ export async function POST(req: Request) {
   ]);
 
   const clusterDefs = aiClusters ?? algorithmicCluster(queries);
-  const groupDefs   = aiGroups   ?? algorithmicGroupPages(pages, site.url);
+  const groupDefs   = aiGroups   ?? algorithmicGroupPages(pages);
 
   const clusters = clusterDefs.map((c: any) => ({
     name:  c.name,

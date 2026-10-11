@@ -675,17 +675,6 @@ server {
     }
   };
 
-  const getSelectedFilename = () => {
-    switch (integrationType) {
-      case "php":
-      case "phpStatic":
-        return "index.php";
-      case "nginx":
-        return "nginx.conf";
-      default:
-        return "script";
-    }
-  };
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(getSelectedCode());

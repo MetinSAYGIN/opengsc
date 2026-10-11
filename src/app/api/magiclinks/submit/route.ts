@@ -183,7 +183,7 @@ async function submitMagic369(
   } catch (e) {
     return NextResponse.json({ error: "bad_brief", message: (e as Error).message }, { status: 400 });
   }
-  const context = parseContext(rawContext);
+  parseContext(rawContext);
   // The raw rows keep siteId per item, aligned by index — the validated briefs strip it.
   const rawRows = (Array.isArray(rawItems) ? rawItems : []) as Array<Record<string, unknown>>;
 

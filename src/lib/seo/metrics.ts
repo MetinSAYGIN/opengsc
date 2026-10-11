@@ -2088,7 +2088,6 @@ async function ahrefsIdeas(
   const mode: IdeaMode = opts.mode === "related" ? "related" : "matching";
   const limit = clampIdeaLimit(opts.limit);
   const select = opts.withDifficulty ? [...IDEA_FIELDS_BASE, ...KEYWORD_FIELDS_KD] : [...IDEA_FIELDS_BASE];
-  const units = estimateIdeaUnits(mode, limit, !!opts.withDifficulty);
 
   const base = (creds.baseUrl || DEFAULT_BASE_URL.ahrefs).replace(/\/+$/, "");
   const params = new URLSearchParams({
