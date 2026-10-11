@@ -27,6 +27,16 @@ const eslintConfig = defineConfig([
     // as warnings for gradual cleanup instead of failing the build.
     rules: { "react-hooks/set-state-in-effect": "warn" },
   },
+  {
+    // Conventional unused-vars hygiene: underscore-prefixed names are intentional
+    // placeholders, and `const { [id]: _drop, ...rest } = x` omits keys by rest-sibling.
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_", ignoreRestSiblings: true },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

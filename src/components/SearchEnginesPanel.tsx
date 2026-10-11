@@ -59,12 +59,12 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
 
       try {
         setBingAccounts(JSON.parse(localStorage.getItem("seoKey_bing_accounts_list") || "[]"));
-      } catch (e) {
+      } catch {
         setBingAccounts([]);
       }
       try {
         setYandexAccounts(JSON.parse(localStorage.getItem("seoKey_yandex_accounts_list") || "[]"));
-      } catch (e) {
+      } catch {
         setYandexAccounts([]);
       }
 

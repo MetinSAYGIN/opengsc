@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json(words.map(w => w.word));
-  } catch (e) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -69,7 +69,7 @@ export async function POST(req: Request) {
             },
           });
           added.push(entry.word);
-        } catch (e) {
+        } catch {
           // ignore duplicates
         }
       }
@@ -96,7 +96,7 @@ export async function POST(req: Request) {
           },
         });
         added.push(entry.word);
-      } catch (err) {
+      } catch {
         // Ignore duplicates
       }
     }
@@ -119,7 +119,7 @@ export async function DELETE(req: Request) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

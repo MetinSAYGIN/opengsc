@@ -26,7 +26,7 @@ function badge(text, color) {
     CR.action.setBadgeText({ text: text });
     CR.action.setBadgeBackgroundColor({ color: color || "#2997ff" });
     setTimeout(function () { CR.action.setBadgeText({ text: "" }); }, 2500);
-  } catch (e) { /* action API unavailable in a non-tab context */ }
+  } catch { /* action API unavailable in a non-tab context */ }
 }
 
 // ─── the send: index queue for our pages, outreach for everyone else's ───────────

@@ -32,7 +32,7 @@ function originPattern(base) {
   try {
     var u = new URL(base);
     return u.origin + "/*";
-  } catch (e) {
+  } catch {
     return "";
   }
 }

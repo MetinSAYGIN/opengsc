@@ -55,7 +55,7 @@ var ExtensionAudit = (function () {
       words: 0,
     };
 
-    try { facts.title = String(doc.title || "").trim(); } catch (e) { /* frame doc */ }
+    try { facts.title = String(doc.title || "").trim(); } catch { /* frame doc */ }
     facts.titleLength = metaLength(facts.title);
 
     var desc = doc.querySelector('meta[name="description" i]');
@@ -88,7 +88,7 @@ var ExtensionAudit = (function () {
     for (var j = 0; j < ldBlocks.length; j++) {
       var raw = String(ldBlocks[j].textContent || "").trim();
       if (!raw) { facts.jsonLdInvalid++; continue; }
-      try { JSON.parse(raw); facts.jsonLdValid++; } catch (e) { facts.jsonLdInvalid++; }
+      try { JSON.parse(raw); facts.jsonLdValid++; } catch { facts.jsonLdInvalid++; }
     }
 
     facts.og.title = !!doc.querySelector('meta[property="og:title" i]');

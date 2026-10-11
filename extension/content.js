@@ -20,7 +20,7 @@
     selection.inTable = !!table && !!selText;
     // Cap at 2 MB: a huge table's CSV belongs in a real export, not a popup handoff.
     selection.csv = selection.inTable ? ExtCsv.tableToCsv(table).slice(0, 2 * 1024 * 1024) : "";
-  } catch (e) {
+  } catch {
     /* selection APIs missing (PDF viewer frame etc.) — audit still works */
   }
 

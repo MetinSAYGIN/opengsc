@@ -107,7 +107,7 @@ function BingAccountsManager() {
   useEffect(() => {
     try {
       setAccounts(JSON.parse(localStorage.getItem("seoKey_bing_accounts_list") || "[]"));
-    } catch (e) {
+    } catch {
       setAccounts([]);
     }
   }, []);
@@ -180,7 +180,7 @@ function YandexAccountsManager() {
   useEffect(() => {
     try {
       setAccounts(JSON.parse(localStorage.getItem("seoKey_yandex_accounts_list") || "[]"));
-    } catch (e) {
+    } catch {
       setAccounts([]);
     }
   }, []);

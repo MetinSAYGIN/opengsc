@@ -64,7 +64,7 @@ function fmtDate(iso) {
   if (!iso) return "—";
   try {
     return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  } catch (e) {
+  } catch {
     return "—";
   }
 }
@@ -188,7 +188,7 @@ function renderAudit(container, payload) {
 
 function csvFileName(url) {
   var host = "page";
-  try { host = new URL(url).hostname.replace(/^www\./, ""); } catch (e) { /* keep default */ }
+  try { host = new URL(url).hostname.replace(/^www\./, ""); } catch { /* keep default */ }
   return "opengsc-" + host + "-" + new Date().toISOString().slice(0, 10) + ".csv";
 }
 
@@ -213,7 +213,7 @@ function isSpecialHost(url) {
     var u = new URL(url);
     if (u.hostname === "search.google.com" && u.pathname.indexOf("/search-console") === 0) return true;
     if (u.hostname === "pagespeed.web.dev") return true;
-  } catch (e) { /* not a URL */ }
+  } catch { /* not a URL */ }
   return false;
 }
 

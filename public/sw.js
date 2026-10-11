@@ -55,7 +55,7 @@ async function networkFirstDocument(request) {
       cache.put(request, fresh.clone());
     }
     return fresh;
-  } catch (e) {
+  } catch {
     const cached = await caches.match(request);
     if (cached) return cached;
     return new Response("offline", { status: 503, headers: { "Content-Type": "text/plain" } });
@@ -84,7 +84,7 @@ async function offlineApiGet(request) {
       await putWithTime(cache, request, fresh);
     }
     return fresh;
-  } catch (e) {
+  } catch {
     const cached = await caches.match(request);
     if (!cached) throw e; // genuinely nothing to show
     // Tell the page which moment it is looking at: a response header for anything that
@@ -93,7 +93,7 @@ async function offlineApiGet(request) {
     try {
       const clients = await self.clients.matchAll({ type: "window" });
       for (const client of clients) client.postMessage({ type: "opengsc-offline-data", time });
-    } catch (_) { /* the banner is best-effort */ }
+    } catch { /* the banner is best-effort */ }
     return cached;
   }
 }
@@ -144,7 +144,7 @@ self.addEventListener("push", (event) => {
         url: typeof parsed.url === "string" && parsed.url ? parsed.url : "/",
       };
     }
-  } catch (e) { /* malformed payload — fall back to the defaults above */ }
+  } catch { /* malformed payload — fall back to the defaults above */ }
   event.waitUntil(self.registration.showNotification(payload.title, {
     body: payload.body,
     icon: "/icons/icon-192.png",

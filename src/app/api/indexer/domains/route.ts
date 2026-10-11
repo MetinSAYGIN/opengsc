@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json(domains);
-  } catch (e) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -82,7 +82,7 @@ export async function DELETE(req: Request) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (e) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
