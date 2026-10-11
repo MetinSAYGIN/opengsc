@@ -14,7 +14,7 @@ export async function saveJobToHistory(
   const htype = HISTORY_TYPE[String(job.type)];
   if (!htype || result == null) return;
   const isText = String(job.type) === "text";
-  const data = isText ? ((result as any)?.text ?? result) : result;
+  const data = isText ? ((result as { text?: unknown } | null | undefined)?.text ?? result) : result;
   const diag = isText ? textDiagnostics(result) : null;
   try {
     await runUpsert({

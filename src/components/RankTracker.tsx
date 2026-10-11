@@ -106,9 +106,20 @@ function SortableTh({ label, active, dir, align = "center", onClick }: {
 // said nothing about stay gaps (null), never drawn as "outside".
 const PACK_OUT = 4;
 
+/** One day of /api/rank/history's series: the SERP check, the GSC aggregate, the map-pack facts. */
+type RankHistoryDay = {
+  date: string;
+  serp: number | null;
+  gsc: number | null;
+  clicks: number;
+  impressions: number;
+  pack: number | null;
+  hasPack: boolean | null;
+};
+
 function HistoryChart({ keywordId }: { keywordId: string }) {
   const { t } = useLanguage();
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<{ series?: RankHistoryDay[] } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -120,7 +131,7 @@ function HistoryChart({ keywordId }: { keywordId: string }) {
       .finally(() => setLoading(false));
   }, [keywordId]);
 
-  const series = useMemo(() => (data?.series ?? []).map((s: any) => ({
+  const series = useMemo(() => (data?.series ?? []).map((s) => ({
     ...s,
     packChart: s.pack != null ? s.pack : s.hasPack === true ? PACK_OUT : null,
     label: new Date(s.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { Prisma } from '@/generated/prisma';
 import { getOwnerEngineKey } from '@/lib/engineKeysServer';
 import crypto from 'crypto';
 
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
   const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
   if (!site) return NextResponse.json({ error: 'Site not found' }, { status: 404 });
 
-  const data: any = {};
+  const data: Prisma.SiteUpdateInput = {};
   if (shareEnabled !== undefined) {
     data.shareEnabled = !!shareEnabled;
   }

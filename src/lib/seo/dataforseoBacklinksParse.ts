@@ -24,6 +24,10 @@
 //    unchanged. The one field Ahrefs has no slot for — the per-link spam score — rides along as
 //    `backlink_spam_score` and lands in `SiteBacklink.apiSpamScore`.
 
+/** One parsed DataForSEO JSON object (task result, list item, appendix block): the API's docs
+ *  are the only schema, so every field is read through num()/str()/dfsDay(), never directly. */
+type DfsJson = Record<string, unknown>;
+
 /** "login:password" → Base64; an already-Base64 dashboard token is used as is. */
 export function dfsAuth(credential: string): string {
   const cred = String(credential ?? "").trim();
@@ -48,7 +52,7 @@ export function dfsStatusToHttp(code: number): number {
 }
 
 export type DfsEnvelope =
-  | { ok: true; result: any; costUsd: number | null }
+  | { ok: true; result: DfsJson; costUsd: number | null }
   | { ok: false; status: number; error: string; costUsd: number | null };
 
 /**
@@ -56,8 +60,8 @@ export type DfsEnvelope =
  * phrased `dataforseo <3-digit>: <message>` so `gatewayStatusFromError` can read them. `costUsd`
  * is read before any check, because a task that failed inside a 200 may still have been billed.
  */
-export function parseDfsEnvelope(httpStatus: number, data: any): DfsEnvelope {
-  const costUsd = Number.isFinite(Number(data?.cost)) ? Number(data.cost) : null;
+export function parseDfsEnvelope(httpStatus: number, data: DfsJson | null | undefined): DfsEnvelope {
+  const costUsd = Number.isFinite(Number(data?.cost)) ? Number(data?.cost) : null;
   if (httpStatus < 200 || httpStatus >= 300) {
     const msg = String(data?.status_message ?? "").slice(0, 200) || `HTTP ${httpStatus}`;
     return { ok: false, status: httpStatus, error: `dataforseo ${httpStatus}: ${msg}`, costUsd };
@@ -122,7 +126,7 @@ export interface DfsSummary {
   firstSeen: string;
 }
 
-export function mapDfsSummary(result: any): DfsSummary {
+export function mapDfsSummary(result: DfsJson | null | undefined): DfsSummary {
   return {
     rank: num(result?.rank),
     backlinks: num(result?.backlinks),
@@ -158,7 +162,7 @@ export interface DfsRefDomain {
   spamScore: number | null;
 }
 
-export function mapDfsRefDomain(item: any): DfsRefDomain | null {
+export function mapDfsRefDomain(item: DfsJson | null | undefined): DfsRefDomain | null {
   const refDomain = str(item?.domain).trim().toLowerCase().replace(/^www\./, "");
   if (!refDomain.includes(".")) return null;
   const pages = num(item?.referring_pages);
@@ -186,7 +190,7 @@ export function mapDfsRefDomain(item: any): DfsRefDomain | null {
  *   domain_from_rank is NOT copied into domain_rating_source: it is not DR, and the toxicity
  *   classifier's sitewide-low-DR rule is calibrated on Ahrefs DR.
  */
-export function dfsBacklinkToExportRow(item: any): Record<string, unknown> | null {
+export function dfsBacklinkToExportRow(item: DfsJson | null | undefined): Record<string, unknown> | null {
   const urlFrom = str(item?.url_from).trim();
   if (!/^https?:\/\//i.test(urlFrom)) return null;
   const attrs = Array.isArray(item?.attributes) ? item.attributes.map((a: unknown) => str(a).toLowerCase()) : [];
@@ -230,7 +234,7 @@ export interface DfsBacklinksPage {
   searchAfterToken: string | null;
 }
 
-export function mapDfsBacklinksResult(result: any): DfsBacklinksPage {
+export function mapDfsBacklinksResult(result: DfsJson | null | undefined): DfsBacklinksPage {
   const items = Array.isArray(result?.items) ? result.items : [];
   return {
     rows: items.map(dfsBacklinkToExportRow).filter(Boolean) as Record<string, unknown>[],
@@ -254,10 +258,10 @@ export interface DfsHistoryPoint {
 }
 
 /** Monthly history, oldest first; rows without a date are dropped. */
-export function mapDfsHistory(result: any): DfsHistoryPoint[] {
+export function mapDfsHistory(result: DfsJson | null | undefined): DfsHistoryPoint[] {
   const items = Array.isArray(result?.items) ? result.items : [];
   return items
-    .map((i: any) => ({
+    .map((i: DfsJson) => ({
       date: dfsDay(i?.date),
       rank: num(i?.rank),
       backlinks: num(i?.backlinks),
@@ -283,11 +287,11 @@ export interface DfsNewLostPoint {
  * New/lost per period, oldest first. Here the API's own zero is a real zero ("periods with no
  * data return 0" per its docs), so missing numbers become 0 rather than null.
  */
-export function mapDfsNewLost(result: any): DfsNewLostPoint[] {
+export function mapDfsNewLost(result: DfsJson | null | undefined): DfsNewLostPoint[] {
   const items = Array.isArray(result?.items) ? result.items : [];
   const z = (v: unknown) => num(v) ?? 0;
   return items
-    .map((i: any) => ({
+    .map((i: DfsJson) => ({
       date: dfsDay(i?.date),
       newBacklinks: z(i?.new_backlinks),
       lostBacklinks: z(i?.lost_backlinks),
@@ -301,8 +305,8 @@ export function mapDfsNewLost(result: any): DfsNewLostPoint[] {
 // ─── appendix/user_data (free) ─────────────────────────────────────────────────
 
 /** Account balance in dollars from the free `user_data` answer, or null. */
-export function dfsBalanceUsd(result: any): number | null {
-  return num(result?.money?.balance);
+export function dfsBalanceUsd(result: DfsJson | null | undefined): number | null {
+  return num((result?.money as DfsJson | null | undefined)?.balance);
 }
 
 /** `YYYY-MM-DD` of the first day of the month `months` before `now`. */

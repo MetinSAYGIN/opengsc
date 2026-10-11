@@ -188,6 +188,25 @@ test("plan: sources already containing the origin yields a no-op update", () => 
 
 // ─── filters and sort ──────────────────────────────────────────────────────────
 
+/**
+ * buildBacklinkWhere's `Record<string, unknown>` answer as these tests walk it. The AND/OR
+ * nesting IS the thing under test, so the container fields are typed present (every assertion
+ * only walks branches the builder really produced) and the leaves stay loose — equality with
+ * the literal the filter should have built is the oracle, never the static type.
+ */
+interface WhereSpy {
+  siteId?: unknown;
+  checkStatus?: { not?: unknown };
+  sources?: { contains?: unknown };
+  domainFrom?: { contains?: unknown };
+  apiDr?: { gte?: unknown; lte?: unknown };
+  favorite?: unknown;
+  apiLost?: unknown;
+  AND: WhereSpy[];
+  OR: WhereSpy[];
+  NOT?: WhereSpy;
+}
+
 const sp = (qs: string) => new URLSearchParams(qs);
 
 test("filters: rejects unknown enum values", () => {
@@ -213,12 +232,12 @@ test("where: every filter lands on the query", () => {
   const f = parseBacklinkFilters(sp("status=blocked&source=manual&domain=donor.ru&drMin=5&favorite=1&lost=1"));
   assert.ok(f.ok);
   if (f.ok) {
-    const w = buildBacklinkWhere("site1", f) as any;
+    const w = buildBacklinkWhere("site1", f) as unknown as WhereSpy;
     assert.equal(w.siteId, "site1");
     assert.equal(w.checkStatus, "blocked");
-    assert.equal(w.sources.contains, "manual");
-    assert.equal(w.domainFrom.contains, "donor.ru");
-    assert.equal(w.apiDr.gte, 5);
+    assert.equal(w.sources!.contains, "manual");
+    assert.equal(w.domainFrom!.contains, "donor.ru");
+    assert.equal(w.apiDr!.gte, 5);
     assert.equal(w.favorite, true);
     assert.equal(w.apiLost, true);
   }
@@ -228,16 +247,16 @@ test("where: rel=nofollow prefers our check when found, Ahrefs otherwise", () =>
   const f = parseBacklinkFilters(sp("rel=nofollow"));
   assert.ok(f.ok);
   if (f.ok) {
-    const w = buildBacklinkWhere("s", f) as any;
+    const w = buildBacklinkWhere("s", f) as unknown as WhereSpy;
     const [base, cond] = w.AND;
     assert.equal(base.siteId, "s");
-    const checked = cond.OR[0].AND[1].OR.map((c: any) => Object.keys(c)[0]).sort();
-    const fromApi = cond.OR[1].AND[1].OR.map((c: any) => Object.keys(c)[0]).sort();
+    const checked = cond.OR[0].AND[1].OR.map((c: WhereSpy) => Object.keys(c)[0]).sort();
+    const fromApi = cond.OR[1].AND[1].OR.map((c: WhereSpy) => Object.keys(c)[0]).sort();
     assert.deepEqual(checked, ["checkNofollow", "checkSponsored", "checkUgc"]);
     // the api side reads the same fields the UI cell does: dofollow=false IS nofollow
     assert.deepEqual(fromApi, ["apiDofollow", "apiNofollow", "apiSponsored", "apiUgc"]);
     assert.equal(cond.OR[0].AND[0].checkStatus, "found");
-    assert.equal(cond.OR[1].AND[0].checkStatus.not, "found");
+    assert.equal(cond.OR[1].AND[0].checkStatus!.not, "found");
   }
 });
 
@@ -246,8 +265,8 @@ test("where: rel=dofollow is the negation of rel=nofollow", () => {
   const df = parseBacklinkFilters(sp("rel=dofollow"));
   assert.ok(nf.ok && df.ok);
   if (nf.ok && df.ok) {
-    const a = buildBacklinkWhere("s", nf) as any;
-    const b = buildBacklinkWhere("s", df) as any;
+    const a = buildBacklinkWhere("s", nf) as unknown as WhereSpy;
+    const b = buildBacklinkWhere("s", df) as unknown as WhereSpy;
     assert.deepEqual(b.AND[1].NOT, a.AND[1]);
   }
 });

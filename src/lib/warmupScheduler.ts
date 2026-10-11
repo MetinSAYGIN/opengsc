@@ -61,10 +61,10 @@ async function readSettings(userId: string): Promise<{
 }> {
   const blank = { schedule: DEFAULT_WARMUP_SCHEDULE, provider: "ahrefs" as MetricsProvider, apiKey: "" };
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ seoSettings?: string | null }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.seoSettings;
     if (!raw) return blank;
-    const s = JSON.parse(raw) as Record<string, any>;
+    const s = JSON.parse(raw) as Record<string, unknown>;
 
     // Warmup loads keyword weights, which Majestic cannot serve (nor Keys.so, whose keywords
     // are Yandex's). An active link-only provider
@@ -101,7 +101,7 @@ async function readSettings(userId: string): Promise<{
 
 async function saveLastRun(userId: string, at: string): Promise<void> {
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ seoSettings?: string | null }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const s = JSON.parse(rows?.[0]?.seoSettings ?? "{}");
     s.seoWarmupSchedule = { ...DEFAULT_WARMUP_SCHEDULE, ...(s.seoWarmupSchedule ?? {}), lastRunAt: at };
     // `rawExec`, not `rawQuery`: the latter is for SELECTs and returns rows. Writing through it

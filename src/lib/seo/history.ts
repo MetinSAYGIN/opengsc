@@ -9,6 +9,7 @@
 "use client";
 
 import type { SeoDiagnostics } from "@/lib/seo/historyShared";
+import type { SerpIntentAnalysis } from "@/lib/seo/serpAnalysis";
 
 export type HistoryType = "outline" | "text" | "analysis" | "landing" | "cluster" | "googlebot";
 export type HistoryStatus = "processing" | "completed" | "error";
@@ -19,10 +20,11 @@ export interface HistoryItem {
   keyword: string;
   createdAt: number;
   status: HistoryStatus;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- readers outside this pass read the field loosely (googlebot page: item.data.url, SeoTextDetail: item.data?.article, history/[id] hands it to OutlineData/AnalysisReport props); an honest `unknown` breaks their compile until they are re-typed in their own pass
   data: any; // outline object | article string | gap report object
   meta?: {
     tone?: string; promptType?: string; version?: string; error?: string; outlineId?: string;
-    factcheck?: any; images?: any; serpIntent?: any; jobId?: string;
+    factcheck?: unknown; images?: unknown; serpIntent?: SerpIntentAnalysis | null; jobId?: string;
     /**
      * What the pipeline noticed about this result but could not fix by itself.
      *
@@ -54,7 +56,7 @@ const DIRTY_KEY = "seoHistoryDirty";
 // cache and never mark anything dirty, so a freshly-wiped browser can never clobber the
 // server copy, and a restored record is never re-pushed in a loop.
 let historyPulled = false;
-let pushTimer: any = null;
+let pushTimer: ReturnType<typeof setTimeout> | undefined;
 let flushInFlight = false;
 
 function readDirty(): string[] {
@@ -171,7 +173,7 @@ export function loadHistory(): HistoryItem[] {
   }
 }
 
-export function addHistory(item: { id?: string; type: HistoryType; keyword: string; data: any; status?: HistoryStatus; meta?: HistoryItem["meta"]; createdAt?: number }): HistoryItem {
+export function addHistory(item: { id?: string; type: HistoryType; keyword: string; data: unknown; status?: HistoryStatus; meta?: HistoryItem["meta"]; createdAt?: number }): HistoryItem {
   const rec: HistoryItem = {
     // An explicit id (the server uses the job id for imported jobs) converges browser and
     // server on one row; everything else keeps the generated id.
@@ -218,7 +220,7 @@ export async function resolveHistoryItem(id: string): Promise<HistoryItem | null
   } catch { return null; }
 }
 
-export function updateHistory(id: string, data: any) {
+export function updateHistory(id: string, data: unknown) {
   if (typeof window === "undefined") return;
   persist(loadHistory().map(h => h.id === id ? { ...h, data } : h));
   markDirty([id]);
@@ -245,6 +247,7 @@ export function stashForView(item: HistoryItem) {
   sessionStorage.setItem("seoView", JSON.stringify({ type: item.type, data: item.data, keyword: item.keyword }));
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the outline/analysis pages read v.data?.article / v.data?.main_keyword and feed v.data to typed setters; `unknown` breaks their compile until they are re-typed in their own pass
 export function takeView(): { type: HistoryType; data: any; keyword: string } | null {
   if (typeof window === "undefined") return null;
   const raw = sessionStorage.getItem("seoView");

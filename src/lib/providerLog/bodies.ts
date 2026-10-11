@@ -67,7 +67,7 @@ export async function resolveCaptureBodies(userId: string | null | undefined): P
   if (override !== null) return override;
   if (!userId) return false;
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ seoSettings?: string | null }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.seoSettings;
     return raw ? enabledIn(JSON.parse(raw)) : false;
   } catch {

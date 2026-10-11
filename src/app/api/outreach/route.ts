@@ -9,9 +9,11 @@ return workspaceUserId(capability);
 
 const errorStatus = (message: string) => message.endsWith("_not_found") ? 404 : message.endsWith("_exists") ? 409 : message.includes("required") || message.startsWith("invalid_") ? 400 : 500;
 
-function outreachSchemaMissing(error: any): boolean {
-  if (error?.code === "P2021" || error?.code === "P2022") return true;
-  const message = String(error?.message ?? "");
+/** A Prisma "table does not exist" answer, read by code and message — the shape a catch hands over. */
+function outreachSchemaMissing(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null | undefined;
+  if (e?.code === "P2021" || e?.code === "P2022") return true;
+  const message = String(e?.message ?? "");
   return /Outreach(?:Campaign|Prospect|StageEvent).*(?:does not exist|no such table)/i.test(message);
 }
 

@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma";
 
-function parsedSyncDetail(detail: string | null): any | null {
+/** The parsed sitemap_sync detail, typed by exactly what the response reads of it. */
+function parsedSyncDetail(detail: string | null): { summary?: unknown; failures?: unknown[]; invalidExamples?: unknown[] } | null {
   if (!detail?.trim().startsWith("{")) return null;
   try { return JSON.parse(detail); } catch { return null; }
 }
@@ -55,7 +57,7 @@ export async function GET(req: Request) {
     : [];
   const auditByUrl = new Map(auditPages.map(row => [row.url.replace(/\/$/, ""), row]));
 
-  const where: any = { siteId: siteDbId };
+  const where: Prisma.SitemapUrlWhereInput = { siteId: siteDbId };
   if (search) where.url = { contains: search };
   if (statusFilter === "indexed") {
     where.OR = [

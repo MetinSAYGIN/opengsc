@@ -67,7 +67,7 @@ export async function POST(req: Request) {
   const ownerId = await workspaceUserId("manageSecrets");
   if (!ownerId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const b = await req.json().catch(() => ({} as any));
+  const b: Record<string, unknown> = await req.json().catch(() => ({}));
   const op = String(b?.op ?? "ping");
 
   const settings = await getUserSettings(ownerId);
@@ -204,7 +204,7 @@ export async function POST(req: Request) {
   // ── batch: queue on the instance's own schedule, poll, fetch the results file ──
   if (op === "add_task") {
     const parser = String(b?.parser ?? "").trim();
-    const queries = Array.isArray(b?.queries) ? b.queries.map((q: any) => String(q)).filter((q: string) => q.trim()) : [];
+    const queries = Array.isArray(b?.queries) ? b.queries.map((q: unknown) => String(q)).filter((q: string) => q.trim()) : [];
     if (!parser) return NextResponse.json({ error: "no_parser" }, { status: 400 });
     if (!queries.length) return NextResponse.json({ error: "no_queries" }, { status: 400 });
     const r = await aparserAddTask(creds, {
@@ -255,7 +255,7 @@ export async function POST(req: Request) {
     if (!parser) return NextResponse.json({ error: "no_parser" }, { status: 400 });
     if (!query) return NextResponse.json({ error: "no_query" }, { status: 400 });
     const options: AparserOption[] = Array.isArray(b?.options)
-      ? b.options.filter((o: any) => o && typeof o.id === "string").map((o: any) => ({
+      ? b.options.filter((o: { id?: unknown }) => o && typeof o.id === "string").map((o: { type?: unknown; id?: unknown; value?: unknown }) => ({
           type: o.type === "set" ? "set" : "override", id: String(o.id), value: o.value,
         }))
       : [];

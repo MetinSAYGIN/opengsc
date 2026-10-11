@@ -155,7 +155,7 @@ export async function POST(req: Request) {
 
   const readCache = async (): Promise<{ rows: DemandRow[]; source: string; at: string } | null> => {
     try {
-      const rows: any[] = await rawQuery(
+      const rows: { rows: string; source: string | null; createdAt: string }[] = await rawQuery(
         `SELECT rows, source, createdAt FROM "DemandSearch" WHERE userId = ? AND cacheKey = ?`,
         userId, cacheKey,
       );

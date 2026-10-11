@@ -70,11 +70,18 @@ export function retentionCutoffs(
 
 // The table is reached through a loose handle for the same reason log.ts does it: `ProviderCall`
 // is absent from the generated client until `prisma generate` re-runs, and an instance that has
-// not migrated should sweep nothing rather than crash its alert scheduler.
+// not migrated should sweep nothing rather than crash its alert scheduler. The handle is typed
+// by exactly the three statements the sweep issues; the test stub implements the same.
+interface ProviderCallTable {
+  findMany(q: { where: unknown; select: { id: true }; take: number }): Promise<{ id: string }[]>;
+  updateMany(q: { where: unknown; data: unknown }): Promise<{ count?: number } | undefined>;
+  deleteMany(q: { where: unknown }): Promise<{ count?: number } | undefined>;
+}
+
 let tableOverride: unknown;
 
-function table(): any {
-  if (tableOverride !== undefined) return tableOverride;
+function table(): ProviderCallTable | undefined {
+  if (tableOverride !== undefined) return tableOverride as ProviderCallTable | undefined;
   return dbAny.providerCall;
 }
 
@@ -92,7 +99,7 @@ export function __setTableForTests(t?: unknown): void {
  * ceiling, leaving the rest for the next tick.
  */
 async function sweepIn(
-  t: any,
+  t: ProviderCallTable,
   where: Record<string, unknown>,
   act: (ids: string[]) => Promise<{ count?: number } | undefined>,
 ): Promise<number> {

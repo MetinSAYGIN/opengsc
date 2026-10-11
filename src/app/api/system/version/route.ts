@@ -64,13 +64,13 @@ export async function GET() {
         changelog = (cmp.commits ?? [])
           .slice(-30)
           .reverse()
-          .map((c: any) => ({
+          .map((c: { sha?: unknown; commit?: { message?: unknown; author?: { date?: string } } }) => ({
             sha: String(c.sha ?? "").slice(0, 7),
             message: String(c.commit?.message ?? "").split("\n")[0],
             date: c.commit?.author?.date ?? "",
           }))
           // Hide noise
-          .filter((c: any) => c.message && !/^merge /i.test(c.message));
+          .filter((c: { message: string }) => c.message && !/^merge /i.test(c.message));
       }
     } catch { /* compare is best-effort — the update flag still works without it */ }
 

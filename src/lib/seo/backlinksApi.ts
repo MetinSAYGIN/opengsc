@@ -129,6 +129,9 @@ export function monthSlices(now: Date, months: number = SLICE_LOOKBACK_MONTHS): 
 
 // ─── Normalization ─────────────────────────────────────────────────────────────
 
+/** One raw gateway row: unvalidated JSON, read only through str()/flag()/numOrNull(). */
+type RawRow = Record<string, unknown>;
+
 /**
  * Dedup key for url_from. The raw string is stored as it arrived (the contractor's table must
  * join against it); this is the normalized twin used by the unique constraint.
@@ -217,7 +220,7 @@ const numOrNull = (v: unknown): number | null => {
 };
 
 /** One raw all-backlinks row → the api* column group. Rows without url_from are not links. */
-export function mapApiRow(raw: any): MappedBacklinkRow | null {
+export function mapApiRow(raw: RawRow | null | undefined): MappedBacklinkRow | null {
   const urlFrom = str(raw?.url_from);
   if (!urlFrom) return null;
   const nofollow = flag(raw?.is_nofollow);
@@ -359,7 +362,7 @@ const probeParams = (target: string, offset: number) => new URLSearchParams({
   select: "url_from", order_by: "first_seen_link:desc",
 });
 
-const urlFromList = (rows: any[]): string[] =>
+const urlFromList = (rows: RawRow[]): string[] =>
   rows.map(r => str(r?.url_from)).filter(Boolean);
 
 export async function probePagination(
@@ -401,7 +404,7 @@ export async function probePagination(
 // ─── Page and stats fetches (network) ──────────────────────────────────────────
 
 export interface PageFetch {
-  rows: any[];
+  rows: RawRow[];
   /** Units this page actually bills — rows returned × 20 fields, floored at 50. Zero on failure. */
   units: number;
   /** HTTP status of a failed page. 400 on a cursor page is the signal to fall back to slices. */
@@ -462,7 +465,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
  * of this module keep one request in flight, which stays under any ceiling by construction.
  */
 async function gatewayGet(url: string, apiKey: string): Promise<Response> {
-  let lastErr: any = null;
+  let lastErr: unknown = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       // One row per attempt, numbered: a retried 429 is a second request, and the ladder is the

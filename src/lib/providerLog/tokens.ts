@@ -23,19 +23,33 @@ const NULL_USAGE: Usage = { promptTokens: null, completionTokens: null, costUsd:
 
 const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 
+/** The usage corner of a provider response, as this module reads it: every dialect's field
+ *  names, all `unknown` — num() is the only reader, so a wrong or missing name is just null. */
+interface UsageViews {
+  usage?: {
+    input_tokens?: unknown; output_tokens?: unknown;
+    prompt_tokens?: unknown; completion_tokens?: unknown;
+    cost?: unknown;
+  };
+  usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown };
+}
+
 // input_tokens / output_tokens — Anthropic's own wire format, and also what Kie's Responses API
 // (llm.ts:580) happens to use for the same two fields under the same names.
-function anthropicShape(data: any): Pick<Usage, "promptTokens" | "completionTokens"> {
-  return { promptTokens: num(data?.usage?.input_tokens), completionTokens: num(data?.usage?.output_tokens) };
+function anthropicShape(data: unknown): Pick<Usage, "promptTokens" | "completionTokens"> {
+  const d = data as UsageViews | null | undefined;
+  return { promptTokens: num(d?.usage?.input_tokens), completionTokens: num(d?.usage?.output_tokens) };
 }
 
 // prompt_tokens / completion_tokens — the OpenAI chat-completions dialect, shared verbatim by
 // deepseek, qwen, cheaperinference, kimi and custom gateways (llm.ts:418, 528, 561, 610).
-function openAiShape(data: any): Pick<Usage, "promptTokens" | "completionTokens"> {
-  return { promptTokens: num(data?.usage?.prompt_tokens), completionTokens: num(data?.usage?.completion_tokens) };
+function openAiShape(data: unknown): Pick<Usage, "promptTokens" | "completionTokens"> {
+  const d = data as UsageViews | null | undefined;
+  return { promptTokens: num(d?.usage?.prompt_tokens), completionTokens: num(d?.usage?.completion_tokens) };
 }
 
-export function usageFrom(provider: string, data: any): Usage {
+export function usageFrom(provider: string, data: unknown): Usage {
+  const d = data as UsageViews | null | undefined;
   switch (provider) {
     case "anthropic":
     case "kie":
@@ -43,15 +57,15 @@ export function usageFrom(provider: string, data: any): Usage {
 
     case "gemini":
       return {
-        promptTokens: num(data?.usageMetadata?.promptTokenCount),
-        completionTokens: num(data?.usageMetadata?.candidatesTokenCount),
+        promptTokens: num(d?.usageMetadata?.promptTokenCount),
+        completionTokens: num(d?.usageMetadata?.candidatesTokenCount),
         costUsd: null,
       };
 
     case "openrouter":
       // The one provider that states what it charged. Nothing else in this switch ever sets
       // costUsd, and that asymmetry is deliberate — see the module comment.
-      return { ...openAiShape(data), costUsd: num(data?.usage?.cost) };
+      return { ...openAiShape(data), costUsd: num(d?.usage?.cost) };
 
     case "zai": {
       // Try the shape the anthropic branch would have produced first; only a response that

@@ -51,7 +51,7 @@ export default function KeywordSourceSettings() {
   const choose = (v: KwSourceSetting) => { setSetting(v); setKwSourceSetting(v); refresh(); };
 
   const configured = resolved.apiKey.length > 4;
-  const price = mounted ? priceExpand(resolved.source as any, limit, withKd) : { units: 0, usd: 0 };
+  const price = mounted ? priceExpand(resolved.source, limit, withKd) : { units: 0, usd: 0 };
 
   return (
     <div className="panel">

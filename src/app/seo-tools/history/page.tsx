@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search, Eye, Trash2, FileText, ScrollText, BarChart3, LayoutTemplate, Loader2, AlertTriangle, X, Boxes, Bot, Fingerprint, Wand2, ChevronLeft, ChevronRight, Send } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { loadHistory, removeHistory, clearHistory, HistoryItem } from "@/lib/seo/history";
 import { listJobs, importJob, deleteJob, clearFailedJobs, SeoJobRec } from "@/lib/seo/jobs";
@@ -31,7 +32,7 @@ function publishFallback(item: HistoryItem): { title: string; markdown?: string 
 // Job rows come from the server, and the server accepts types this local table doesn't know
 // (outline_auto over the jobs API, rewrite inserted directly by MCP) — plus whatever a future
 // release adds. The lookup must stay total or one unknown row takes the whole page down.
-const TYPE_META: Record<string, { labelKey: string; color: string; icon: any }> = {
+const TYPE_META: Record<string, { labelKey: string; color: string; icon: LucideIcon }> = {
   outline: { labelKey: "seoBadgeOutline", color: "#2997ff", icon: FileText },
   // batch SERP→scrape→outline; completes into History as a regular outline
   outline_auto: { labelKey: "seoBadgeOutline", color: "#2997ff", icon: FileText },
@@ -107,7 +108,7 @@ export default function HistoryPage() {
       if (!res.ok) return;
       const d = await res.json();
       const thin: HistoryItem[] = Array.isArray(d?.rows)
-        ? d.rows.map((r: any) => ({ id: r.id, type: r.type, keyword: r.keyword, status: r.status, createdAt: r.createdAt, data: undefined }))
+        ? d.rows.map((r: Pick<HistoryItem, "id" | "type" | "keyword" | "status" | "createdAt">) => ({ id: r.id, type: r.type, keyword: r.keyword, status: r.status, createdAt: r.createdAt, data: undefined }))
         : [];
       mergeIntoRows(thin);
     } catch { /* offline — the local cache still shows */ }
@@ -119,7 +120,7 @@ export default function HistoryPage() {
     setRows(loadHistory());
     void refreshIndex();
     let alive = true;
-    let timer: any;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     async function sync() {
       const list = await listJobs();
       if (!alive) return;
@@ -267,7 +268,7 @@ export default function HistoryPage() {
                 border: "none", background: on ? "var(--color-accent-blue)" : "transparent",
                 color: on ? "#fff" : "var(--color-text-secondary)",
               }}>
-                {t(f.labelKey as any)} ({f.count})
+                {t(f.labelKey as Parameters<typeof t>[0])} ({f.count})
               </button>
             );
           })}
@@ -284,7 +285,7 @@ export default function HistoryPage() {
             return (
               <div key={job.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 4px", borderBottom: "1px solid var(--color-border)", background: isErr ? "rgba(255,69,58,0.04)" : "rgba(41,151,255,0.04)" }}>
                 {isErr ? <AlertTriangle size={16} color="var(--color-accent-red)" style={{ flexShrink: 0 }} /> : <Loader2 size={16} className="spin" color="var(--color-accent-blue)" style={{ flexShrink: 0 }} />}
-                <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 700, padding: "3px 9px", borderRadius: "6px", color: m.color, background: `${m.color}1a`, flexShrink: 0 }}><Icon size={12} /> {m.labelKey ? t(m.labelKey as any) : job.type}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 700, padding: "3px 9px", borderRadius: "6px", color: m.color, background: `${m.color}1a`, flexShrink: 0 }}><Icon size={12} /> {m.labelKey ? t(m.labelKey as Parameters<typeof t>[0]) : job.type}</span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: "14px", color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{job.keyword || "—"}</span>
                 <span style={{ fontSize: "12px", color: isErr ? "var(--color-accent-red)" : "var(--color-accent-blue)", flexShrink: 0, maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{isErr ? (job.error || t("seoStatusError")) : `${t("seoStatusGenerating")}${typeof job.progress === "number" && job.progress > 0 ? ` · ${job.progress}%` : ""}`}</span>
                 {isErr && <button onClick={() => dismissJob(job.id)} title={t("seoDelete")} style={{ ...iconBtn, color: "var(--color-accent-red)" }}><X size={14} /></button>}
@@ -297,11 +298,11 @@ export default function HistoryPage() {
               <div key={item.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "13px 4px", borderBottom: "1px solid var(--color-border)" }}>
                 <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: item.status === "processing" ? "var(--color-accent-blue)" : item.status === "error" ? "var(--color-accent-red)" : "var(--color-accent-green)" }} />
                 <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 700, padding: "3px 9px", borderRadius: "6px", color: m.color, background: `${m.color}1a`, flexShrink: 0 }}>
-                  <Icon size={12} /> {m.labelKey ? t(m.labelKey as any) : item.type}
+                  <Icon size={12} /> {m.labelKey ? t(m.labelKey as Parameters<typeof t>[0]) : item.type}
                 </span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: "14px", color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.keyword}</span>
                 {scores[item.id] !== undefined && (
-                  <span title={t("hmProxyWarning" as any)} style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", flexShrink: 0, color: sColor(scores[item.id]), background: `${sColor(scores[item.id])}1f` }}>
+                  <span title={t("hmProxyWarning")} style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", flexShrink: 0, color: sColor(scores[item.id]), background: `${sColor(scores[item.id])}1f` }}>
                     <Fingerprint size={11} /> {scores[item.id]}%
                   </span>
                 )}

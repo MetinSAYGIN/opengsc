@@ -58,11 +58,11 @@ export async function GET() {
     // `sqlite_master` does not exist outside SQLite, and this check would otherwise report every
     // table as missing on MySQL — turning the "run prisma db push" banner into a permanent false
     // alarm on exactly the setup that is hardest to debug.
-    const rows: any[] = currentDialect() === "mysql"
-      ? await rawQuery(
+    const rows = currentDialect() === "mysql"
+      ? await rawQuery<{ name: string }[]>(
           `SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()`,
         )
-      : await rawQuery(
+      : await rawQuery<{ name: string }[]>(
           `SELECT name FROM sqlite_master WHERE type = 'table'`,
         );
     // Lower-cased on both sides, because MySQL on Windows runs with lower_case_table_names=1 and
