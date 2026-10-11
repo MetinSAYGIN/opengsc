@@ -13,7 +13,37 @@ function parseJson(value: unknown) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
-export function sourceAuditDto(run: any) {
+/** A SourceAuditRun row with its repository relation, as the DTO reads it. */
+interface SourceAuditRunRow {
+  id: string;
+  repositoryId: string;
+  ref: string;
+  commitSha: string | null;
+  framework: string;
+  status: string;
+  stage: string;
+  progress: number;
+  attempt: number;
+  heartbeatAt: Date | null;
+  filesScanned: number;
+  totalFiles: number;
+  truncated: boolean;
+  score: number | null;
+  summary: string | null;
+  findings: string | null;
+  error: string | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  repository?: {
+    id: string;
+    name: string;
+    owner: string;
+    repo: string;
+    baseBranch: string;
+  } | null;
+}
+
+export function sourceAuditDto(run: SourceAuditRunRow) {
   return {
     id: run.id,
     repositoryId: run.repositoryId,

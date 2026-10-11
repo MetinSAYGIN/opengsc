@@ -8,6 +8,8 @@ import { SlidersHorizontal } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { SEO_TOOLS } from "@/lib/seo/toolsNav";
 
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
 // Same order as the tab bar, because it is the same array. Settings is appended rather than
 // listed among the tools: it configures them, it is not one of them.
 const TILES = [
@@ -33,8 +35,8 @@ export default function SeoToolsIndex() {
             <div style={{ width: 40, height: 40, borderRadius: "10px", background: `${color}1a`, border: `1px solid ${color}40`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <Icon size={20} color={color} />
             </div>
-            <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t(key as any)}</div>
-            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{t(desc as any)}</div>
+            <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t(key as TKey)}</div>
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{t(desc as TKey)}</div>
           </div>
         </Link>
       ))}

@@ -44,7 +44,7 @@ async function presetKeys(creds: AparserCreds): Promise<Set<string> | null> {
 async function captchaRecipe(creds: AparserCreds): Promise<AparserOption[]> {
   const key = creds.baseUrl;
   if (captchaCache && captchaCache.key === key && Date.now() - captchaCache.at < PRESET_TTL_MS) return captchaCache.options;
-  let se: Record<string, any> | null = null;
+  let se: Record<string, unknown> | null = null;
   for (const preset of ["my", "default"]) {
     const r = await aparserParserPreset(creds, APARSER_SERP_PARSERS.google, preset).catch(() => null);
     if (r?.data && typeof r.data === "object") { se = r.data; break; }

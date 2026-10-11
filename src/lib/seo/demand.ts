@@ -198,16 +198,31 @@ interface DfsCall<T> {
   error?: string;
 }
 
+/** The DataForSEO envelope `dfsPost` checks: HTTP level lives in `res`, these are the other two. */
+interface DfsResponse {
+  cost?: unknown;
+  status_code?: number;
+  status_message?: string;
+  tasks?: DfsTask[] | null;
+}
+
+/** One task object. Labs nests rows as `result[0].items`; keywords_data puts them in `result` itself. */
+interface DfsTask {
+  status_code?: number;
+  status_message?: string;
+  result?: Record<string, unknown>[] | null;
+}
+
 /**
  * One POST to a DataForSEO v3 endpoint, with the three-level status check the API requires:
  * HTTP status, envelope `status_code`, and the per-task `status_code`. A task can fail inside a
  * 200 response — checking only the HTTP status silently turns an error into an empty result.
  */
-async function dfsPost<T = any>(
+async function dfsPost<T = unknown>(
   credential: string,
   path: string,
   body: unknown,
-  pick: (task: any) => T[],
+  pick: (task: DfsTask | undefined) => T[],
 ): Promise<DfsCall<T>> {
   let res: Response;
   let call: CallHandle;
@@ -232,7 +247,7 @@ async function dfsPost<T = any>(
     return { items: [], error };
   }
 
-  let data: any;
+  let data: DfsResponse;
   try {
     data = await res.json();
   } catch {
@@ -277,7 +292,10 @@ function normalizeIntent(raw: unknown): KeywordIntent {
   return "unknown";
 }
 
-function toTrend(entries: any[] | null | undefined): MonthlyPoint[] {
+/** One `monthly_searches` entry as DataForSEO returns it. */
+interface TrendPointRaw { year?: unknown; month?: unknown; search_volume?: unknown }
+
+function toTrend(entries: TrendPointRaw[] | null | undefined): MonthlyPoint[] {
   return (entries ?? [])
     .map((e) => ({
       year: Number(e?.year ?? 0),
@@ -288,21 +306,43 @@ function toTrend(entries: any[] | null | undefined): MonthlyPoint[] {
     .slice(-12);
 }
 
+/** Labs `keyword_info` / its clickstream-refined twin — the volume/difficulty/CPC block. */
+interface LabsKeywordInfo {
+  search_volume?: number | null;
+  keyword_difficulty?: number | null;
+  cpc?: number | null;
+  competition?: number | null;
+  competition_level?: string | null;
+  monthly_searches?: TrendPointRaw[] | null;
+}
+
+/** Labs keyword fields — shared by the nested (`keyword_data`) and flat item shapes. */
+interface LabsKeywordData {
+  keyword?: unknown;
+  keyword_info?: LabsKeywordInfo | null;
+  keyword_info_normalized_with_clickstream?: LabsKeywordInfo | null;
+  keyword_properties?: { keyword_difficulty?: number | null } | null;
+  search_intent_info?: { main_intent?: unknown } | null;
+}
+
+/** A Labs item: `related_keywords` nests under `keyword_data`, the other endpoints are flat. */
+type LabsItem = LabsKeywordData & { keyword_data?: LabsKeywordData | null };
+
 /**
  * Labs items arrive in two shapes: `related_keywords` nests everything under `keyword_data`,
  * while `keyword_suggestions` and `keyword_ideas` put it at the top level. One mapper handles
  * both by unwrapping first — the alternative is three near-identical mappers that drift apart.
  */
-function mapLabsRow(raw: any): DemandRow | null {
-  const kd = raw?.keyword_data ?? raw;
+function mapLabsRow(raw: LabsItem): DemandRow | null {
+  const kd: LabsKeywordData = raw?.keyword_data ?? raw;
   const keyword = String(kd?.keyword ?? "").trim();
   if (!keyword) return null;
 
-  const info = kd?.keyword_info ?? {};
+  const info: LabsKeywordInfo = kd?.keyword_info ?? {};
   // The clickstream block only exists when the caller opted in; it refines volume and nothing else.
   const clickstream = kd?.keyword_info_normalized_with_clickstream;
-  const props = kd?.keyword_properties ?? {};
-  const intentInfo = kd?.search_intent_info ?? {};
+  const props: { keyword_difficulty?: number | null } = kd?.keyword_properties ?? {};
+  const intentInfo: { main_intent?: unknown } = kd?.search_intent_info ?? {};
 
   return {
     keyword,
@@ -317,8 +357,18 @@ function mapLabsRow(raw: any): DemandRow | null {
   };
 }
 
+/** A Google Ads `keywords_for_keywords` / `search_volume` row — flat, no difficulty or intent. */
+interface AdsItem {
+  keyword?: unknown;
+  search_volume?: number | null;
+  cpc?: number | null;
+  competition_index?: number | null;
+  competition?: string | null;
+  monthly_searches?: TrendPointRaw[] | null;
+}
+
 /** Google Ads rows are flat and carry no difficulty or intent — that absence is meaningful, not a bug. */
-function mapAdsRow(raw: any): DemandRow | null {
+function mapAdsRow(raw: AdsItem): DemandRow | null {
   const keyword = String(raw?.keyword ?? "").trim();
   if (!keyword) return null;
   return {
@@ -372,7 +422,7 @@ async function fetchRelated(cred: string, seed: string, o: DiscoverOpts): Promis
       include_clickstream_data: o.clickstream ?? false,
       include_serp_info: false,
     }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as LabsItem[],
   );
   return { items: r.items.map(mapLabsRow).filter(Boolean) as DemandRow[], error: r.error };
 }
@@ -392,7 +442,7 @@ async function fetchSuggestions(cred: string, seed: string, o: DiscoverOpts): Pr
       ignore_synonyms: false,
       exact_match: false,
     }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as LabsItem[],
   );
   return { items: r.items.map(mapLabsRow).filter(Boolean) as DemandRow[], error: r.error };
 }
@@ -411,7 +461,7 @@ async function fetchIdeas(cred: string, seed: string, o: DiscoverOpts): Promise<
       ignore_synonyms: false,
       closely_variants: false,
     }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as LabsItem[],
   );
   return { items: r.items.map(mapLabsRow).filter(Boolean) as DemandRow[], error: r.error };
 }
@@ -428,7 +478,7 @@ async function fetchAdsIdeas(cred: string, seed: string, o: DiscoverOpts): Promi
       sort_by: "search_volume",
     }],
     // keywords_data returns rows directly in `result`, without the `items` wrapper Labs uses.
-    (task) => task?.result ?? [],
+    (task) => (task?.result ?? []) as AdsItem[],
   );
   const rows = (r.items.map(mapAdsRow).filter(Boolean) as DemandRow[]).slice(0, o.limit ?? 150);
   return { items: rows, error: r.error };
@@ -594,17 +644,60 @@ export function estimateDomainCost(keywordRows: number, pageRows: number): numbe
   );
 }
 
-function mapDomainKeyword(raw: any): DomainKeyword | null {
-  const kd = raw?.keyword_data ?? {};
+/** The `metrics.organic` block a `domain_rank_overview` / `relevant_pages` item carries. */
+interface OrganicMetrics {
+  etv?: number | null;
+  count?: number | null;
+  pos_1?: number | null;
+  pos_2_3?: number | null;
+  pos_4_10?: number | null;
+  pos_11_20?: number | null;
+  pos_21_30?: number | null;
+  pos_31_40?: number | null;
+  pos_41_50?: number | null;
+  pos_51_60?: number | null;
+  pos_61_70?: number | null;
+  pos_71_80?: number | null;
+  pos_81_90?: number | null;
+  pos_91_100?: number | null;
+}
+
+/** A `domain_rank_overview` item — only the single summary row's organic metrics are read. */
+interface DomainOverviewItem { metrics?: { organic?: OrganicMetrics | null } | null }
+
+/**
+ * A `ranked_keywords` item. Ranking data appears at two nesting depths under
+ * `ranked_serp_element` depending on item type, so `serp_item` repeats the same shape.
+ */
+interface RankedSerpElement {
+  rank_absolute?: number | null;
+  url?: unknown;
+  etv?: number | null;
+  serp_item?: RankedSerpElement | null;
+}
+interface RankedKeywordItem {
+  keyword?: unknown;
+  keyword_data?: LabsKeywordData | null;
+  ranked_serp_element?: RankedSerpElement | null;
+}
+
+/** A `relevant_pages` item — the page's URL and its organic metrics. */
+interface RelevantPageItem {
+  page_address?: unknown;
+  metrics?: { organic?: { count?: number | null; etv?: number | null } | null } | null;
+}
+
+function mapDomainKeyword(raw: RankedKeywordItem): DomainKeyword | null {
+  const kd: LabsKeywordData = raw?.keyword_data ?? {};
   const keyword = String(kd?.keyword ?? raw?.keyword ?? "").trim();
   if (!keyword) return null;
 
-  const info = kd?.keyword_info ?? {};
-  const props = kd?.keyword_properties ?? {};
-  const ranked = raw?.ranked_serp_element ?? {};
+  const info: LabsKeywordInfo = kd?.keyword_info ?? {};
+  const props: { keyword_difficulty?: number | null } = kd?.keyword_properties ?? {};
+  const ranked: RankedSerpElement = raw?.ranked_serp_element ?? {};
   // The SERP element carries the ranking data twice at different nesting depths depending on the
   // item type; reading both is cheaper than branching on a type enum that may grow.
-  const serp = ranked?.serp_item ?? {};
+  const serp: RankedSerpElement = ranked?.serp_item ?? {};
 
   return {
     keyword,
@@ -653,12 +746,12 @@ export async function domainOverview(
     credential,
     "/v3/dataforseo_labs/google/domain_rank_overview/live",
     [{ target: domain, location_code: loc, language_code: hl, limit: 1 }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as DomainOverviewItem[],
   );
   if (overview.error) return { ...blank, summary: { ...blank.summary, domain }, error: overview.error };
   cost += LABS_TASK_COST + LABS_ROW_COST;
 
-  const organic = (overview.items[0] as any)?.metrics?.organic ?? {};
+  const organic: OrganicMetrics = (overview.items[0] as DomainOverviewItem | undefined)?.metrics?.organic ?? {};
   const summary: DomainSummary = {
     domain,
     organicTraffic: organic?.etv == null ? null : Math.round(organic.etv),
@@ -693,7 +786,7 @@ export async function domainOverview(
       item_types: ["organic"],
       include_subdomains: true,
     }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as RankedKeywordItem[],
   );
   if (!ranked.error) cost += LABS_TASK_COST + LABS_ROW_COST * Math.max(1, ranked.items.length);
 
@@ -701,14 +794,14 @@ export async function domainOverview(
     credential,
     "/v3/dataforseo_labs/google/relevant_pages/live",
     [{ target: domain, location_code: loc, language_code: hl, limit: pageLimit }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as RelevantPageItem[],
   );
   if (!pages.error) cost += LABS_TASK_COST + LABS_ROW_COST * Math.max(1, pages.items.length);
 
   return {
     summary,
     keywords: (ranked.items.map(mapDomainKeyword).filter(Boolean) as DomainKeyword[]),
-    pages: pages.items.map((p: any) => ({
+    pages: pages.items.map((p: RelevantPageItem) => ({
       url: String(p?.page_address ?? ""),
       keywords: p?.metrics?.organic?.count ?? null,
       traffic: p?.metrics?.organic?.etv == null ? null : Math.round(p.metrics.organic.etv),
@@ -752,7 +845,7 @@ export async function keywordOverview(
         credential,
         "/v3/keywords_data/google_ads/search_volume/live",
         [{ keywords: batch, location_code: locationCode(gl), language_code: opts.hl || defaultLanguageFor(gl) }],
-        (task) => task?.result ?? [],
+        (task) => (task?.result ?? []) as AdsItem[],
       );
       if (r.error) return { rows: out, cost, error: r.error };
       cost += GOOGLE_ADS_CALL_COST;
@@ -774,7 +867,7 @@ export async function keywordOverview(
         language_code: opts.hl || defaultLanguageFor(gl),
         include_clickstream_data: opts.clickstream ?? false,
       }],
-      (task) => task?.result?.[0]?.items ?? [],
+      (task) => (task?.result?.[0]?.items ?? []) as LabsItem[],
     );
     if (r.error) return { rows: out, cost, error: r.error };
     cost += estimateOverviewCost(batch.length, opts.clickstream);

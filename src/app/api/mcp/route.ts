@@ -59,7 +59,7 @@ async function authUserId(req: Request): Promise<string | null> {
   }
   if (!token || !token.startsWith("ogsc_")) return null;
   try {
-    const rows: any[] = await rawQuery(`SELECT id FROM "User" WHERE mcpToken = ?`, token);
+    const rows = await rawQuery<{ id: string }[]>(`SELECT id FROM "User" WHERE mcpToken = ?`, token);
     return rows?.[0]?.id ?? null;
   } catch {
     return null; // mcpToken column missing (prisma db push not run yet)
@@ -76,7 +76,7 @@ async function tokenWorkspace(actorId: string): Promise<{ ownerId: string; role:
   if (!owner) return null;
   if (owner.id === actorId) return { ownerId: owner.id, role: "owner" };
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<{ role: string; status: string }[]>(
       `SELECT role, status FROM "Membership" WHERE ownerId = ? AND userId = ? LIMIT 1`,
       owner.id, actorId,
     );
@@ -109,7 +109,8 @@ function describeTool(t: McpTool) {
   };
 }
 
-type RpcMsg = { jsonrpc?: string; id?: number | string | null; method?: string; params?: any };
+/** A JSON-RPC 2.0 message; `tools/call` params carry the tool name and its `arguments` object. */
+type RpcMsg = { jsonrpc?: string; id?: number | string | null; method?: string; params?: Record<string, unknown> & { arguments?: Record<string, unknown> } };
 
 const rpcResult = (id: RpcMsg["id"], result: unknown) => ({ jsonrpc: "2.0", id: id ?? null, result });
 const rpcError = (id: RpcMsg["id"], code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });

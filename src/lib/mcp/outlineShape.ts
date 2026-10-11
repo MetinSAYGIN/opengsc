@@ -11,16 +11,18 @@
 // Pure on purpose: no imports, so it is trivially unit-testable and safe to load anywhere.
 
 /** Return the outline object inside `input`, or null when nothing outline-shaped is there. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- toolsOptimize.ts unions this return with `unknown` (fetchSavedOutline's outline field) and then reads `.meta` off the result; any honest return type collapses that union to unknown and breaks this caller's compile until it is re-typed in its own pass
 export function coerceOutline(input: unknown, depth = 0): any | null {
   let v = input;
   if (typeof v === "string") {
     try { v = JSON.parse(v); } catch { return null; }
   }
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  if (Array.isArray((v as any).sections) && (v as any).sections.length) return v;
+  const rec = v as Record<string, unknown>;
+  if (Array.isArray(rec.sections) && rec.sections.length) return rec;
   if (depth >= 4) return null;
   for (const k of ["data", "result", "outline"]) {
-    const inner = coerceOutline((v as any)[k], depth + 1);
+    const inner = coerceOutline(rec[k], depth + 1);
     if (inner) return inner;
   }
   return null;

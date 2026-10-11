@@ -24,7 +24,7 @@ export default function UpdateBanner() {
   // silence tells the owner to look at the server.
   const [lastSeen, setLastSeen] = useState(0);
   const [now, setNow] = useState(0);
-  const pollRef = useRef<any>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const logBoxRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   candleGranularity, candleRanges, candleImproved, ohlcChain, buildCandleRows, readChartTypePref, pctChange,
+  type MetricCandle,
 } from "./chartCandles";
 
 test("granularity: daily up to ~6 weeks, weekly to ~6 months, monthly beyond", () => {
@@ -72,8 +73,8 @@ test("buildCandleRows: daily candles, previous-period ghost, missing metric days
   assert.equal(rows[1].gran, "day");
   assert.equal(rows[1].date, "d2");
   assert.deepEqual(rows[1].clicks, { open: 19, close: 9, high: 19, low: 9, chained: true, prev: { open: 5, close: 5, high: 5, low: 5, chained: false } });
-  assert.deepEqual((rows[2].clicks as any).prev, { open: 5, close: 7, high: 7, low: 5, chained: true });
-  assert.equal((rows[2].clicks as any).close, (rows[2].clicks as any).open); // flat day = doji
+  assert.deepEqual((rows[2].clicks as MetricCandle).prev, { open: 5, close: 7, high: 7, low: 5, chained: true });
+  assert.equal((rows[2].clicks as MetricCandle).close, (rows[2].clicks as MetricCandle).open); // flat day = doji
   assert.equal(rows[3].position, undefined);
 });
 

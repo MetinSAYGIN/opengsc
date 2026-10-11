@@ -12,10 +12,28 @@ import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { usePersistedState } from "@/lib/usePersistedState";
 import { markdownToHtml } from "@/lib/seo/outlineFormat";
 import DigestView from "@/components/DigestView";
-import type { DigestData } from "@/lib/digest";
+import type { DigestData, DigestSettings } from "@/lib/digest";
+
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
+/** One saved digest row from GET /api/digest — the fields the history list reads. */
+interface DigestHistoryRow {
+  id: string;
+  content: string;
+  createdAt: string | Date;
+  tag: string | null;
+  days: number;
+  sentTo?: string | null;
+}
+
+/**
+ * The schedule form's client-side copy: same fields as DigestSettings, but the selects write
+ * plain strings, so `frequency` is not narrowed to the API's union until save.
+ */
+type DigestSettingsForm = Omit<Partial<DigestSettings>, "frequency"> & { frequency?: string };
 
 // Period options — labels resolved via i18n at render (see PERIOD_LABEL keys).
-const PERIODS: { value: number; key: string }[] = [
+const PERIODS: { value: number; key: TKey }[] = [
   { value: 7,   key: "digestPeriod7" },
   { value: 14,  key: "digestPeriod14" },
   { value: 30,  key: "digestPeriod30" },
@@ -32,11 +50,11 @@ const CHANNEL_LABEL: Record<string, string> = {
 };
 
 export default function DigestPage() {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   const [tags, setTags] = useState<string[]>([]);
   const [telegram, setTelegram] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
-  const [settings, setSettings] = useState<any>(null);
+  const [history, setHistory] = useState<DigestHistoryRow[]>([]);
+  const [settings, setSettings] = useState<DigestSettingsForm | null>(null);
 
   const [tag, setTag] = useState("");
   // Digest days is saved automation config (the settings load below restores it), but the
@@ -111,7 +129,7 @@ export default function DigestPage() {
     return { sites: d.sites || [] };
   };
 
-  const saveSchedule = async (patch: any) => {
+  const saveSchedule = async (patch: Partial<DigestSettingsForm>) => {
     const next = { ...settings, ...patch, lang: language };
     setSettings(next);
     setBusy("save");
@@ -196,7 +214,7 @@ export default function DigestPage() {
           <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
             {PERIODS.map(p => (
               <button key={p.value} onClick={() => setDays(p.value)} style={pillBtn(days === p.value)}>
-                {t(p.key as any)}
+                {t(p.key)}
               </button>
             ))}
           </div>
@@ -292,7 +310,7 @@ export default function DigestPage() {
 
               <select value={settings.days ?? 7} onChange={e => saveSchedule({ days: parseInt(e.target.value) })}
                 style={{ padding: "7px 10px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px" }}>
-                {PERIODS.map(p => <option key={p.value} value={p.value}>{t(p.key as any)}</option>)}
+                {PERIODS.map(p => <option key={p.value} value={p.value}>{t(p.key)}</option>)}
               </select>
 
               <label style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--color-text-secondary)", cursor: "pointer" }}>

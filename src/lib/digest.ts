@@ -73,7 +73,7 @@ export interface DigestData {
 
 export async function getDigestSettings(userId: string): Promise<DigestSettings> {
   try {
-    const rows: any[] = await rawQuery(`SELECT digestSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ digestSettings: string | null }[]>(`SELECT digestSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.digestSettings;
     return raw ? { ...DEFAULT_DIGEST_SETTINGS, ...JSON.parse(raw) } : DEFAULT_DIGEST_SETTINGS;
   } catch {
@@ -174,13 +174,15 @@ export async function buildDigestData(
     where: { siteId: { in: siteIds }, ...dateOnly, date: lt ? { gte, lt } : { gte, lte: now } },
     _sum: { clicks: true, impressions: true },
   });
+  // One grouped row per site: Prisma's groupBy output narrowed to the two sums this reads.
+  type SiteAggRow = Awaited<ReturnType<typeof siteAgg>>[number];
   const [curSites, prevSites] = await Promise.all([
     siteAgg(effectiveCurStart, undefined),
-    showDelta ? siteAgg(effectivePrevStart, effectiveCurStart) : Promise.resolve([] as any[]),
+    showDelta ? siteAgg(effectivePrevStart, effectiveCurStart) : Promise.resolve([] as SiteAggRow[]),
   ]);
-  const prevBySite = new Map<string, number>(prevSites.map((r: any) => [r.siteId, r._sum.clicks ?? 0]));
-  base.portfolio.prevImpr = (prevSites as any[]).reduce((s, r) => s + (r._sum.impressions ?? 0), 0);
-  const perSite: DigestSiteRow[] = curSites.map((r: any) => {
+  const prevBySite = new Map<string, number>(prevSites.map((r: SiteAggRow) => [r.siteId, r._sum.clicks ?? 0]));
+  base.portfolio.prevImpr = prevSites.reduce((s, r) => s + (r._sum.impressions ?? 0), 0);
+  const perSite: DigestSiteRow[] = curSites.map((r: SiteAggRow) => {
     const cur = r._sum.clicks ?? 0, prev = prevBySite.get(r.siteId) ?? 0;
     return { id: r.siteId, name: nameOf.get(r.siteId) ?? r.siteId, cur, impr: r._sum.impressions ?? 0, prev, d: cur - prev, pctNum: pctNum(cur, prev) };
   });
@@ -492,7 +494,7 @@ export async function buildDigest(
 // user's own AI key (User.seoSettings); silently skipped when no key is configured.
 export async function aiSummary(userId: string, digestMarkdown: string, lang: NotifyLang = "en"): Promise<string | null> {
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ seoSettings: string | null }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const s = rows?.[0]?.seoSettings ? JSON.parse(rows[0].seoSettings) : null;
     if (!s) return null;
     const provider = s.seoProvider || s.aiProvider || "anthropic";

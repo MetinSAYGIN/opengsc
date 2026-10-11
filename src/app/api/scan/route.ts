@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { dbAny } from "@/lib/prisma";
 import { createScan, scanDto } from "@/lib/scanner/service";
 import { requireWorkspace } from "@/lib/team/workspace";
+import type { SiteScan } from "@/generated/prisma";
 
 function notMigrated(error: unknown): boolean {
-  const value = error as any;
+  const value = error as { code?: unknown; message?: unknown };
   return value?.code === "P2021" || /SiteScan.*(?:does not exist|no such table)/i.test(String(value?.message ?? ""));
 }
 
@@ -18,7 +19,7 @@ export async function GET() {
       orderBy: { createdAt: "desc" },
       take: 50,
     });
-    return NextResponse.json({ scans: rows.map((row: any) => scanDto(row)) });
+    return NextResponse.json({ scans: rows.map((row: SiteScan) => scanDto(row)) });
   } catch (error) {
     if (notMigrated(error)) return NextResponse.json({ scans: [], notMigrated: true });
     return NextResponse.json({ error: "scan_list_failed" }, { status: 500 });

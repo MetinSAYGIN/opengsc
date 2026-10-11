@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   const userId = await workspaceUserId("act");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const b: any = await req.json().catch(() => ({}));
+  const b: { siteIds?: unknown } = await req.json().catch(() => ({}));
   const siteIds = [...new Set<string>(Array.isArray(b.siteIds) ? b.siteIds.map((id: unknown) => String(id)) : [])];
   if (!siteIds.length) return NextResponse.json({ error: "no_sites" }, { status: 400 });
 

@@ -312,8 +312,19 @@ async function callOpenAi(apiKey: string, question: string, o: AeoRunOptions): P
   return { error: lastErr || "chatgpt: unknown error" };
 }
 
-function parseOpenAi(data: any, model: string): EngineTrace {
-  const out: any[] = Array.isArray(data?.output) ? data.output : [];
+/** An OpenAI Responses API answer — only the fields the AEO parse reads. */
+interface OpenAiResponses {
+  output?: OpenAiOutputItem[] | null;
+  output_text?: string | null;
+}
+interface OpenAiOutputItem {
+  type?: string;
+  action?: { url?: string | null; sources?: (string | { url?: string })[] | null } | null;
+  content?: { text?: string | null; annotations?: { type?: string; url?: string; title?: string | null }[] | null }[] | null;
+}
+
+function parseOpenAi(data: OpenAiResponses, model: string): EngineTrace {
+  const out: OpenAiOutputItem[] = Array.isArray(data?.output) ? data.output : [];
   const citations: AeoCitation[] = [];
   const scanned: string[] = [];
   let text = "";
@@ -384,9 +395,9 @@ export async function checkPerplexity(apiKey: string, question: string, domain: 
     const text: string = data?.choices?.[0]?.message?.content ?? "";
     // `search_results` is the current shape; `citations` is the older string[] form. Both are
     // still returned by some deployments, so read whichever is present.
-    const results: any[] = Array.isArray(data?.search_results) ? data.search_results : [];
+    const results: { url?: string; title?: string | null }[] = Array.isArray(data?.search_results) ? data.search_results : [];
     const citations: AeoCitation[] = results
-      .filter(r => r?.url)
+      .filter((r): r is { url: string; title?: string | null } => !!r?.url)
       .map(r => ({ url: r.url, domain: domainOf(r.url), title: r.title ?? "" }));
     if (!citations.length && Array.isArray(data?.citations)) {
       for (const u of data.citations) if (typeof u === "string") citations.push({ url: u, domain: domainOf(u), title: "" });
@@ -462,7 +473,8 @@ export async function checkClaude(apiKey: string, question: string, domain: stri
 
     const data = await res.json();
     logged?.finish({ ...usageFrom("anthropic", data), responseBody: data });
-    const blocks: any[] = Array.isArray(data?.content) ? data.content : [];
+    /** A Claude Messages answer block — text blocks and web_search_tool_result blocks are read. */
+    const blocks: { type?: string; text?: string | null; citations?: { url?: string; title?: string | null }[] | null; content?: { url?: string }[] | null }[] = Array.isArray(data?.content) ? data.content : [];
     const citations: AeoCitation[] = [];
     const scanned: string[] = [];
     let text = "";
@@ -530,10 +542,11 @@ export async function checkGrok(apiKey: string, question: string, domain: string
     // xAI speaks the chat-completions dialect.
     call.finish({ ...usageFrom("openai", data), responseBody: data });
     const text: string = data?.choices?.[0]?.message?.content ?? "";
-    const raw: any[] = Array.isArray(data?.citations) ? data.citations : [];
+    // Live Search returns citation URLs either as bare strings or as { url } objects.
+    const raw: (string | { url?: string })[] = Array.isArray(data?.citations) ? data.citations : [];
     const citations: AeoCitation[] = raw
       .map(c => (typeof c === "string" ? c : c?.url))
-      .filter(Boolean)
+      .filter((u): u is string => !!u)
       .map((u: string) => ({ url: u, domain: domainOf(u), title: "" }));
     return verdict(hostOf(domain), brandTerms, { text, citations, scanned: citations.map(c => c.domain), searched: true, model });
   } catch (e) {

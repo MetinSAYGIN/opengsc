@@ -26,7 +26,17 @@ export interface SeoJobRec {
   updatedAt: string;
 }
 
-export async function startJob(type: HistoryType | "outline_auto", payload: any, meta?: any): Promise<{ jobId?: string; error?: string }> {
+/**
+ * The POST body of a generation job — the shape varies by tool, and only the keyword is read
+ * here (top-level, or nested in an outline when the Text generator posts `outline.data`).
+ */
+interface StartJobPayload {
+  keyword?: unknown;
+  outline?: { meta?: { keyword?: unknown } } | null;
+  [field: string]: unknown;
+}
+
+export async function startJob(type: HistoryType | "outline_auto", payload: StartJobPayload, meta?: unknown): Promise<{ jobId?: string; error?: string }> {
   try {
     const keyword = payload?.keyword || payload?.outline?.meta?.keyword || "";
     const res = await fetch("/api/seo/jobs", {
@@ -68,7 +78,8 @@ export async function clearFailedJobs(): Promise<number> {
   } catch { return 0; }
 }
 
-function safeParse(s?: string | null): any { if (!s) return undefined; try { return JSON.parse(s); } catch { return undefined; } }
+/** Parsed job JSON — a text job's result carries the article under `text`; meta is spread as-is. */
+function safeParse(s?: string | null): { text?: unknown } | undefined { if (!s) return undefined; try { return JSON.parse(s); } catch { return undefined; } }
 
 // Job types this browser History owns, and may therefore consume and delete server-side.
 //

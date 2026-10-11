@@ -80,11 +80,45 @@ function dfsAuth(cred: string): string {
   return c.includes(":") ? Buffer.from(c).toString("base64") : c;
 }
 
-async function post<T = any>(
+/** One element of a `platform` group array — keys/values are read defensively and coerced. */
+type PlatformGroup = Record<string, unknown>;
+
+/** The DataForSEO response envelope `post` checks before handing the task to `pick`. */
+interface DfsResponse {
+  cost?: unknown;
+  status_code?: number;
+  status_message?: string;
+  tasks?: DfsTask[] | null;
+}
+
+/** One task object. Every endpoint here nests its payload as `result[0]` (`total` or `items`). */
+interface DfsTask {
+  status_code?: number;
+  status_message?: string;
+  result?: Array<{ total?: { platform?: PlatformGroup[] | null } | null; items?: unknown[] | null } | null> | null;
+}
+
+/** One `llm_mentions/search` item: the question, its volume, and the cited sources. */
+interface MentionItemRaw {
+  question?: unknown;
+  ai_search_volume?: number | null;
+  first_response_at?: string | null;
+  last_response_at?: string | null;
+  sources?: SourceItemRaw[] | null;
+}
+interface SourceItemRaw { url?: unknown; title?: unknown; domain?: unknown }
+
+/** A `top_pages` / cross-aggregated item: the row key plus its per-platform groups. */
+interface KeyedPlatformItem {
+  key?: unknown;
+  platform?: PlatformGroup[] | null;
+}
+
+async function post<T = unknown>(
   credential: string,
   path: string,
   body: unknown,
-  pick: (task: any) => T,
+  pick: (task: DfsTask | undefined) => T,
 ): Promise<{ data: T | null; error?: string }> {
   let res: Response;
   let call: CallHandle;
@@ -104,7 +138,7 @@ async function post<T = any>(
     return { data: null, error };
   }
 
-  let json: any;
+  let json: DfsResponse;
   try { json = await res.json(); } catch {
     call.finish({ error: "dataforseo: ответ не JSON" });
     return { data: null, error: "dataforseo: ответ не JSON" };
@@ -145,8 +179,8 @@ function targetFor(kind: "domain" | "brand", value: string) {
 }
 
 /** Group elements come back as `[{ key: "chat_gpt", mentions, ... }]`; flatten to one row per platform. */
-function readGroups(arr: any[] | null | undefined): { key: string; mentions: number; volume: number; impressions: number }[] {
-  return (arr ?? []).map((g: any) => ({
+function readGroups(arr: PlatformGroup[] | null | undefined): { key: string; mentions: number; volume: number; impressions: number }[] {
+  return (arr ?? []).map((g) => ({
     key: String(g?.key ?? ""),
     mentions: Number(g?.mentions ?? 0),
     volume: Number(g?.ai_search_volume ?? 0),
@@ -190,7 +224,7 @@ export async function brandMentions(
 
   let cost = 0;
 
-  const agg = await post(
+  const agg = await post<{ platform?: PlatformGroup[] | null }>(
     credential,
     "/v3/ai_optimization/llm_mentions/aggregated_metrics/live",
     [{ ...base, internal_list_limit: 10 }],
@@ -216,18 +250,18 @@ export async function brandMentions(
     credential,
     "/v3/ai_optimization/llm_mentions/search/live",
     [{ ...base, limit: Math.max(10, Math.min(1000, opts.limit ?? 100)) }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as MentionItemRaw[],
   );
   if (!search.error) cost += MENTIONS_CALL_COST;
 
-  const mentions: MentionRow[] = (search.data ?? []).map((m: any) => ({
+  const mentions: MentionRow[] = (search.data ?? []).map((m) => ({
     question: String(m?.question ?? ""),
     aiSearchVolume: m?.ai_search_volume ?? null,
-    sources: (m?.sources ?? []).map((s: any) => ({
+    sources: (m?.sources ?? []).map((s) => ({
       url: String(s?.url ?? ""),
       title: String(s?.title ?? ""),
       domain: String(s?.domain ?? ""),
-    })).filter((s: any) => s.url),
+    })).filter((s) => s.url),
     firstSeen: m?.first_response_at ?? null,
     lastSeen: m?.last_response_at ?? null,
   })).filter((m: MentionRow) => m.question);
@@ -236,11 +270,11 @@ export async function brandMentions(
     credential,
     "/v3/ai_optimization/llm_mentions/top_pages/live",
     [{ ...base, links_scope: "sources", items_list_limit: 10, internal_list_limit: 5 }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as KeyedPlatformItem[],
   );
   if (!pages.error) cost += MENTIONS_CALL_COST;
 
-  const topPages: TopPage[] = (pages.data ?? []).map((p: any) => {
+  const topPages: TopPage[] = (pages.data ?? []).map((p) => {
     const g = readGroups(p?.platform).find(x => x.key === opts.platform) ?? { mentions: 0, volume: 0 };
     return { url: String(p?.key ?? ""), mentions: g.mentions, aiSearchVolume: g.volume };
   }).filter((p: TopPage) => p.url);
@@ -298,17 +332,17 @@ export async function shareOfVoice(
       language_code: opts.hl || defaultLanguageFor(gl),
       internal_list_limit: 5,
     }],
-    (task) => task?.result?.[0]?.items ?? [],
+    (task) => (task?.result?.[0]?.items ?? []) as KeyedPlatformItem[],
   );
   if (res.error) return { rows: [], cost: 0, error: res.error };
 
-  const raw = (res.data ?? []).map((item: any) => {
+  const raw = (res.data ?? []).map((item) => {
     const g = readGroups(item?.platform).find(x => x.key === opts.platform) ?? { mentions: 0, volume: 0 };
     return { brand: String(item?.key ?? ""), mentions: g.mentions, aiSearchVolume: g.volume };
-  }).filter((r: any) => r.brand);
+  }).filter((r) => r.brand);
 
-  const total = raw.reduce((s: number, r: any) => s + r.mentions, 0);
-  const byBrand = new Map(raw.map((r: any) => [r.brand, r]));
+  const total = raw.reduce((s: number, r) => s + r.mentions, 0);
+  const byBrand = new Map(raw.map((r) => [r.brand, r]));
 
   // Ordered by the caller's list, not by the API's: the user's own brand is first, and a brand
   // the index has never seen must still appear as a zero rather than silently vanish.

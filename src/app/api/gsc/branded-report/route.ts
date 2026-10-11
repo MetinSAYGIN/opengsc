@@ -30,8 +30,8 @@ export async function GET(req: Request) {
     select: { access_token: true, refresh_token: true, expires_at: true },
   });
 
-  // Fetch query+date breakdown from GSC
-  let rows: any[] = [];
+  // Fetch query+date breakdown from GSC. Only the aggregated fields are read below.
+  let rows: { keys?: string[] | null; clicks?: number | null; impressions?: number | null }[] = [];
   for (const account of accounts) {
     try {
       const oauth2 = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);

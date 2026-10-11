@@ -146,8 +146,8 @@ async function resolveAhrefsCreds(
     return { provider: "ahrefs", apiKey, baseUrl: String(body.baseUrl ?? "").trim() || undefined };
   }
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
-    const s = JSON.parse(rows?.[0]?.seoSettings ?? "{}") as Record<string, any>;
+    const rows = await rawQuery<{ seoSettings: string | null }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const s = JSON.parse(rows?.[0]?.seoSettings ?? "{}") as Record<string, unknown>;
     const mode = String(s.seoMetricsMode_ahrefs ?? "");
     const slot = mode === "reseller" || mode === "custom"
       ? "seoKey_ahrefs__" + mode

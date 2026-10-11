@@ -55,7 +55,7 @@ export async function POST(req: Request) {
 
   const readCache = async () => {
     try {
-      const rows: any[] = await rawQuery(
+      const rows = await rawQuery<{ points: string | null; fetchedAt: string | Date }[]>(
         `SELECT points, fetchedAt FROM "KeywordVolumeHistory" WHERE keyword = ? AND country = ? AND provider = ?`,
         keyword, country, provider,
       );

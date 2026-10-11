@@ -1,14 +1,15 @@
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import type { Site } from '@/generated/prisma';
 
 export async function verifyAuthOrShare(
   req: Request,
   siteIdOrDomain: string,
   isDomain = false
-): Promise<{ userId: string; site: any } | null> {
+): Promise<{ userId: string; site: Site } | null> {
   const session = await getServerSession(authOptions);
-  const loggedInUserId = (session?.user as any)?.id as string | undefined;
+  const loggedInUserId = session?.user?.id;
 
   const { searchParams } = new URL(req.url);
   const shareToken = searchParams.get('shareToken') ?? undefined;

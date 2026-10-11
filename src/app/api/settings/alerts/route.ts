@@ -18,7 +18,8 @@ export async function GET() {
   const userId = await uid("manageSecrets");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const settings = await getAlertSettings(userId);
-  let recent: any[] = [];
+  // The selected AlertEvent columns — the response just serializes them.
+  let recent: { id: string; type: string; title: string; message: string; sent: boolean; createdAt: Date }[] = [];
   try {
     recent = await prisma.alertEvent.findMany({
       where: { userId }, orderBy: { createdAt: "desc" }, take: 20,

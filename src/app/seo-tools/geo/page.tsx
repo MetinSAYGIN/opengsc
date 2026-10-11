@@ -360,8 +360,10 @@ export default function GeoAuditPage() {
   );
 }
 
-function StatusBadge({ status, t }: { status: string; t: (k: any) => string }) {
-  const map: Record<string, { c: string; k: string }> = {
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
+function StatusBadge({ status, t }: { status: string; t: (k: TKey) => string }) {
+  const map: Record<string, { c: string; k: TKey }> = {
     completed: { c: "var(--color-accent-green)", k: "geoStatusDone" },
     processing: { c: "var(--color-accent-orange)", k: "geoStatusProcessing" },
     error: { c: "var(--color-accent-red)", k: "geoStatusError" },
