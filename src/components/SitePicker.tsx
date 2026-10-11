@@ -1,33 +1,44 @@
 "use client";
 
-// Portfolio site picker for the Content Decay Map. Built for portfolios of hundreds to thousands
-// of sites: searchable, filterable by tag, and every site carries its own Lost/Critical/Warning
-// counts and total loss, so "which of my 800 sites is bleeding" is answered by the list order
-// before anything is selected. The counts come from the server over ALL sites (not just the
-// selected ones), so they stay meaningful while a filter is on.
+// Portfolio site picker for the GSC reports (Decay, Striking distance, Cannibalization). Built for
+// portfolios of hundreds to thousands of sites: searchable, filterable by tag, and every site
+// carries its own findings and a headline figure, so "which of my 800 sites needs work" is
+// answered by the list order before anything is selected. The figures come from the server over
+// ALL sites (not just the selected ones), so they stay meaningful while a filter is on.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Globe, Search, X } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
-export interface SiteSummary {
+export interface SiteOption {
   siteId: string;
   siteName: string;
   tags: string[];
-  examined: number;
-  lost: number;
-  critical: number;
-  warning: number;
-  change: number;
+  /** Has findings — drives "only sites with findings". */
+  active: boolean;
+  /** Default order, largest first. */
+  weight: number;
+  /** The right-aligned headline number. */
+  figure: string;
+  figureColor?: string;
+  badges: { n: number; color: string; title: string }[];
+}
+
+export interface SitePickerLabels {
+  /** "Only sites with declining pages" */
+  onlyActive: string;
+  /** "Biggest loss" — the default sort's name */
+  sortWeight: string;
+  /** Shown under a site with no findings: "nothing declining" */
+  none: string;
 }
 
 /** Rendering a thousand rows is fine; ten thousand DOM nodes of them is not worth it. */
 const RENDER_CAP = 300;
 
-const STATUS = { lost: "#A855F7", critical: "#EF4444", warning: "#F59E0B" } as const;
-
-export default function DecaySitePicker({ sites, selected, onChange }: {
-  sites: SiteSummary[];
+export default function SitePicker({ sites, selected, onChange, labels }: {
+  sites: SiteOption[];
+  labels: SitePickerLabels;
   /** null = every site. */
   selected: string[] | null;
   onChange: (next: string[] | null) => void;
@@ -66,9 +77,11 @@ export default function DecaySitePicker({ sites, selected, onChange }: {
       (!needle || s.siteName.toLowerCase().includes(needle)) &&
       (!tag || s.tags.includes(tag)) &&
       // A selected site never disappears from the list just because it has nothing flagged.
-      (!onlyDeclining || s.lost + s.critical + s.warning > 0 || sel.has(s.siteId)),
+      (!onlyDeclining || s.active || sel.has(s.siteId)),
     );
-    return byName ? [...list].sort((a, b) => a.siteName.localeCompare(b.siteName)) : list;
+    return byName
+      ? [...list].sort((a, b) => a.siteName.localeCompare(b.siteName))
+      : [...list].sort((a, b) => b.weight - a.weight || a.siteName.localeCompare(b.siteName));
   }, [sites, q, tag, onlyDeclining, byName, sel]);
 
   const toggle = (id: string) => {
@@ -138,10 +151,10 @@ export default function DecaySitePicker({ sites, selected, onChange }: {
             <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--color-text-secondary)", flexWrap: "wrap" }}>
               <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
                 <input type="checkbox" checked={onlyDeclining} onChange={e => setOnlyDeclining(e.target.checked)} />
-                {t("cdmSitesOnlyDeclining")}
+                {labels.onlyActive}
               </label>
               <span style={{ flex: 1 }} />
-              <button type="button" onClick={() => setByName(false)} style={chip(!byName)}>{t("cdmSitesSortLoss")}</button>
+              <button type="button" onClick={() => setByName(false)} style={chip(!byName)}>{labels.sortWeight}</button>
               <button type="button" onClick={() => setByName(true)} style={chip(byName)}>A–Z</button>
             </div>
           </div>
@@ -161,15 +174,13 @@ export default function DecaySitePicker({ sites, selected, onChange }: {
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--color-text-primary)", fontWeight: 500 }} title={s.siteName}>{s.siteName}</span>
                     <span style={{ display: "flex", gap: 8, fontSize: 11, color: "var(--color-text-tertiary)" }}>
-                      {count(s.lost, STATUS.lost, t("cdmStatusLost"))}
-                      {count(s.critical, STATUS.critical, t("cdmStatusCritical"))}
-                      {count(s.warning, STATUS.warning, t("cdmStatusWarning"))}
-                      {s.lost + s.critical + s.warning === 0 && <span>{t("cdmSitesNoDecline")}</span>}
+                      {s.badges.map((b, i) => <span key={i}>{count(b.n, b.color, b.title)}</span>)}
+                      {!s.active && <span>{labels.none}</span>}
                       {s.tags.length > 0 && <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.tags.map(x => `#${x}`).join(" ")}</span>}
                     </span>
                   </span>
-                  <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, color: s.change < 0 ? "#EF4444" : "var(--color-text-tertiary)" }}>
-                    {s.change < 0 ? s.change.toLocaleString() : "0"}
+                  <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600, color: s.active ? (s.figureColor ?? "var(--color-text-primary)") : "var(--color-text-tertiary)" }}>
+                    {s.figure}
                   </span>
                 </label>
               );
@@ -204,7 +215,7 @@ export default function DecaySitePicker({ sites, selected, onChange }: {
 
 /** The selected sites as removable chips under the toolbar. */
 export function SelectedSiteChips({ sites, selected, onChange }: {
-  sites: SiteSummary[]; selected: string[] | null; onChange: (next: string[] | null) => void;
+  sites: { siteId: string; siteName: string }[]; selected: string[] | null; onChange: (next: string[] | null) => void;
 }) {
   const { t } = useLanguage();
   if (!selected?.length) return null;

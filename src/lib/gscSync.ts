@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { bumpReportCacheVersion } from "@/lib/gsc/reportCache";
 import { google } from 'googleapis';
 import { recordSyncCompleted } from '@/lib/syncSchedule';
 
@@ -70,6 +71,8 @@ const GSC_ROW_LIMIT = 25_000;
 const URL_DAILY_DAYS = 120;
 /** Upper bound on date×page pages per site per sync (×25k rows). */
 const URL_DAILY_MAX_PAGES = 8;
+/** Upper bound on query×page pages per site per sync (×25k rows) — see Step 4. */
+const QUERY_PAGE_MAX_PAGES = 8;
 
 /**
  * Retry a Google call that came back over quota.
@@ -438,19 +441,33 @@ export async function runGscSync() {
         // No date dimension — returns aggregated totals over the 90-day window.
         // Stored with date=endDate so tools querying date>=since always find it.
         try {
-          const qpRes = await withQuotaRetry(hostname, () => wm.searchanalytics.query({
-            siteUrl: gscUrl,
-            requestBody: {
-              startDate:  url90StartStr,
-              endDate:    endDateStr,
-              dimensions: ['query', 'page'],
-              rowLimit:   25000,
-              dataState:  'all',
-            },
-          }));
-
-          const qpRows = qpRes.data.rows ?? [];
-          note.push(`${qpRows.length} query+page`);
+          // Paged like Step 3, for the same reason and with sharper consequences: Search Console
+          // returns these rows by clicks, so a single 25k request dropped exactly the
+          // impressions-without-clicks tail that Striking Distance exists to find, and the
+          // second ranking URL of a query that Cannibalization needs.
+          const qpRows: { keys?: string[] | null; clicks?: number | null; impressions?: number | null; ctr?: number | null; position?: number | null }[] = [];
+          let qpCapped = false;
+          for (let page = 0; ; page++) {
+            if (page >= QUERY_PAGE_MAX_PAGES) { qpCapped = true; break; }
+            const qpRes = await withQuotaRetry(hostname, () => wm.searchanalytics.query({
+              siteUrl: gscUrl,
+              requestBody: {
+                startDate:  url90StartStr,
+                endDate:    endDateStr,
+                dimensions: ['query', 'page'],
+                rowLimit:   GSC_ROW_LIMIT,
+                startRow:   page * GSC_ROW_LIMIT,
+                dataState:  'all',
+              },
+            }));
+            const batch = qpRes.data.rows ?? [];
+            qpRows.push(...batch);
+            if (batch.length < GSC_ROW_LIMIT) break;
+          }
+          note.push(`${qpRows.length} query+page${qpCapped ? ` (capped at ${QUERY_PAGE_MAX_PAGES * GSC_ROW_LIMIT})` : ''}`);
+          if (qpCapped) {
+            console.warn(`[GSC Sync]     ${hostname}: query+page rows hit the ${QUERY_PAGE_MAX_PAGES * GSC_ROW_LIMIT}-row cap — the lowest-click pairs are missing.`);
+          }
 
           if (qpRows.length > 0) {
             // Delete all prior query+url summary rows for this site, then re-insert
@@ -480,6 +497,9 @@ export async function runGscSync() {
           console.error(`[GSC Sync]     Error syncing query+page data for ${hostname}: ${err.message}`);
         }
 
+        // Reports computed from these rows (cannibalization, …) are cached per site; this
+        // site's rows just changed.
+        bumpReportCacheVersion();
         console.log(`[GSC Sync]   ${hostname}: ${note.join(', ')}`);
       };
 

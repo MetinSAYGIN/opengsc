@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ChevronRight, ExternalLink, Loader2, ShieldCheck } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { withShare } from "@/lib/shareParam";
-import { usePersistedState, isReportDays } from "@/lib/usePersistedState";
+import { WindowNote, idsKey, type DataWindow } from "@/components/report/ReportKit";
 import type { IntentKind, IntentRecommendation, PageRole, RelatedIntentGroup } from "@/lib/cannibalization/relatedIntent";
 
 const intentKey: Record<IntentKind, string> = {
@@ -33,14 +33,13 @@ function confidenceColor(level: RelatedIntentGroup["confidenceLevel"]) {
   return level === "high" ? "#ef4444" : level === "medium" ? "#f59e0b" : "#60a5fa";
 }
 
-export default function RelatedIntentCannibalization({ siteDbId, initialDays, onDaysChange }: { siteDbId: string; initialDays?: number; onDaysChange?: (days: number) => void }) {
+// `sites` is the portfolio picker's selection, shared with the exact tab (null = every site).
+// There is no period selector: the rows are one 90-day total per pair; WindowNote says which.
+export default function RelatedIntentCannibalization({ siteDbId, sites = null }: { siteDbId: string; sites?: string[] | null }) {
   const { t, language } = useLanguage() as any;
   const [groups, setGroups] = useState<RelatedIntentGroup[]>([]);
-  // Stored window (gsc_report_days, shared with the other report panels); the ?days= pin
-  // arrives as initialDays when a standalone page passes it through the parent component.
-  const [storedDays, setStoredDays] = usePersistedState<number>("gsc_report_days", 90, isReportDays);
-  const days    = initialDays ?? storedDays;
-  const setDays = (d: number) => { setStoredDays(d); onDaysChange?.(d); };
+  const sitesKey = idsKey(sites);
+  const [dataWindow, setDataWindow] = useState<{ window: DataWindow | null; mixed: boolean } | null>(null);
   const [search, setSearch] = useState("");
   const [confidence, setConfidence] = useState<"all" | "high" | "medium">("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -52,16 +51,20 @@ export default function RelatedIntentCannibalization({ siteDbId, initialDays, on
     if (!siteDbId) return;
     setLoading(true); setError("");
     try {
-      const response = await fetch(withShare(`/api/gsc/cannibalization?siteId=${encodeURIComponent(siteDbId)}&mode=related&days=${days}&minImpressions=30&limit=60`));
+      const response = await fetch(withShare("/api/gsc/cannibalization"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId: siteDbId, mode: "related", minImpressions: 30, limit: 200, ...(sitesKey ? { sites: sitesKey.split(",") } : {}) }),
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "related_intent_failed");
       const next = result.groups ?? [];
       setGroups(next);
       setExpanded(new Set(next.slice(0, 12).map((group: RelatedIntentGroup) => group.id)));
       setTruncated(result.truncated === true);
+      setDataWindow({ window: result.window ?? null, mixed: result.mixedWindows === true });
     } catch { setError(t("kcIntentError")); }
     setLoading(false);
-  }, [days, siteDbId, t]);
+  }, [sitesKey, siteDbId, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -100,14 +103,11 @@ export default function RelatedIntentCannibalization({ siteDbId, initialDays, on
             <option value="high">{t("kcIntentConfidenceHigh")}</option>
             <option value="medium">{t("kcIntentConfidenceMediumPlus")}</option>
           </select>
-          <select className="tool-input" value={days} onChange={event => setDays(Number(event.target.value))} style={{ width: "auto" }}>
-            {[30, 60, 90].map(value => <option key={value} value={value}>{value} {t("clarityDays")}</option>)}
-            <option value={180}>{t("period6Months")}</option>
-          </select>
           {loading && <Loader2 className="spin" size={16} color="#60a5fa" />}
         </div>
 
         {error && <div style={{ display: "flex", gap: "7px", alignItems: "center", color: "#f87171", fontSize: "12px" }}><AlertTriangle size={13} /> {error}</div>}
+        <WindowNote window={dataWindow?.window} mixed={dataWindow?.mixed} />
         {truncated && <div style={{ color: "#f59e0b", fontSize: "11px" }}>{t("kcIntentTruncated")}</div>}
 
         {!loading && (

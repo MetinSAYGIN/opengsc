@@ -1,84 +1,47 @@
 import { NextResponse } from 'next/server';
-import { authOptions } from '@/lib/auth';
-import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from '@/lib/prisma';
+import { findStriking } from '@/lib/striking/query';
+import {
+  intParam, parseSiteSelection, reportParams, resolveReportSites, resolveReportUserId,
+} from '@/lib/gsc/reportScope';
 
-// GET /api/gsc/striking?siteId=&posFrom=4&posTo=20&days=90&minImpressions=10&limit=100
-export async function GET(req: Request) {
-  let userId = await workspaceUserId();
-  if (!userId) {
-    // Guest access via a share link: the token must match the requested site (never 'all').
-    const sp = new URL(req.url).searchParams;
-    const shareToken = sp.get('shareToken') ?? '';
-    const sharedSiteId = sp.get('siteId') ?? '';
-    if (shareToken && sharedSiteId && sharedSiteId !== 'all') {
-      const shared = await prisma.site.findFirst({ where: { id: sharedSiteId, shareToken, shareEnabled: true } });
-      if (shared) userId = shared.userId;
-    }
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+// GET|POST /api/gsc/striking  { siteId, posFrom=4, posTo=20, minImpressions=10, limit=10000, sites? }
+//
+// Every query+page pair in the position band, from every site (see src/lib/striking/query.ts),
+// plus a per-site summary for the portfolio picker. POST carries the picker's selection, which can
+// be hundreds of ids. `days` is still accepted and ignored: the rows are one 90-day total per
+// pair, and the response says which 90 days (`window`).
+async function handle(req: Request) {
+  const p = await reportParams(req);
+  if (!p) return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
+  const siteId = String(p.siteId ?? '');
+  const userId = await resolveReportUserId(req, siteId);
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const sites = await resolveReportSites(userId, siteId);
+  if (!sites) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const { searchParams } = new URL(req.url);
-  const siteId      = searchParams.get('siteId') ?? '';
-  const posFrom     = Math.max(1,   parseFloat(searchParams.get('posFrom') ?? '4'));
-  const posTo       = Math.min(100, parseFloat(searchParams.get('posTo')   ?? '20'));
-  const days        = Math.min(365, parseInt(searchParams.get('days')       ?? '90'));
-  const minImpr     = parseInt(searchParams.get('minImpressions') ?? '10');
-  const limit       = Math.min(500, parseInt(searchParams.get('limit')      ?? '100'));
-
-  let siteIds: string[];
-  let siteMap: Map<string, any>;
-
-  if (siteId === 'all' || !siteId) {
-    // Portfolio-wide means live properties the user actually works on: archived sites have no
-    // new data by definition, and a hidden one is shelved — either way their rows would only
-    // overstate the report. An explicit siteId still reaches archived/hidden sites on purpose.
-    const sites = await prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null } });
-    siteIds = sites.map(s => s.id);
-    siteMap = new Map(sites.map(s => [s.id, s]));
-  } else {
-    const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
-    if (!site) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    siteIds = [site.id];
-    siteMap = new Map([[site.id, site]]);
-  }
-
-  const since = new Date();
-  since.setDate(since.getDate() - days);
-
-  // Aggregate (query, url) pairs within position band
-  type StrikingRow = { siteId: string; url: string; query: string; _sum: { clicks: number | null; impressions: number | null }; _avg: { ctr: number | null; position: number | null } };
-  const rawRows = await prisma.dailyMetric.groupBy({
-    by: ['siteId', 'query', 'url'],
-    where: {
-      siteId: { in: siteIds },
-      date:     { gte: since },
-      position: { gte: posFrom, lte: posTo },
+  const posFrom = intParam(p.posFrom, 4, 1, 100);
+  const posTo = Math.max(posFrom, intParam(p.posTo, 20, 1, 100));
+  const res = await findStriking(
+    sites.map(s => ({ id: s.id, url: s.url, tags: s.tags })),
+    {
+      posFrom,
+      // The band is inclusive of the whole last position: 20 means "up to 20.9", not "≤ 20.0".
+      posTo: posTo + 0.99,
+      minImpressions: intParam(p.minImpressions, 10, 1, 1_000_000),
+      limit: intParam(p.limit, 10000, 1, 20000),
+      onlySites: parseSiteSelection(p.sites),
     },
-    _sum: { clicks: true, impressions: true },
-    _avg: { ctr: true, position: true },
-    having: { impressions: { _sum: { gte: minImpr } } },
-    orderBy: { _sum: { impressions: 'desc' } },
-    take: limit,
+  );
+
+  return NextResponse.json({
+    keywords: res.rows,
+    total: res.total,
+    truncated: res.truncated,
+    window: res.window,
+    mixedWindows: res.mixedWindows,
+    sites: res.sites,
   });
-
-  const rows: StrikingRow[] = (rawRows as unknown as StrikingRow[]).filter(r => r.url !== '' && r.query !== '');
-
-  const keywords = rows.map(r => {
-    const site = siteMap.get(r.siteId);
-    const domain = site ? site.url.replace("sc-domain:", "").replace(/^https?:\/\//, "").replace(/\/$/, "") : "";
-    return {
-      query:       r.query,
-      page:        r.url.replace(/^https?:\/\/[^/]+/, '') || '/',
-      fullUrl:     r.url,
-      siteId:      r.siteId,
-      siteName:    domain,
-      impressions: r._sum.impressions ?? 0,
-      clicks:      r._sum.clicks ?? 0,
-      ctr:         Math.round((r._avg.ctr ?? 0) * 1000) / 10,
-      position:    Math.round((r._avg.position ?? 0) * 10) / 10,
-    };
-  });
-
-  return NextResponse.json({ keywords, total: keywords.length });
 }
+
+export const GET = handle;
+export const POST = handle;

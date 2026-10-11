@@ -5,6 +5,17 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Fixed — Striking distance and Cannibalization: fake period, rollup rows eating the budget, small sites left out, truncated sync
+
+- **The period selector (30/60/90/180 days) changed nothing.** Query+page rows are stored as one 90-day total per pair, dated on the sync day, so every choice showed the same 90 days. The selector is gone; both reports say which 90 days they cover ("Search Console, 90 days: Jul 11 – Oct 9").
+- **Rollup rows ate the row budget.** Both queries let the site-level rollup and per-day page rows into their `take` (200 rows for Striking, 10 000 for Cannibalization) and filtered them out afterwards — on a portfolio, fewer real rows or none. Only query+page rows are read now.
+- **Small sites were left out of portfolio reports.** One `take` for the whole portfolio let the biggest sites fill it. Every site now contributes all of its rows (Related intent: its own 30 000-row budget per site instead of 30 000 for everyone).
+- **Sync dropped the long tail.** Query+page rows stopped at 25 000 per site. Search Console returns them by clicks, so what was dropped was exactly the impressions-without-clicks tail Striking distance looks for. They're paged now (up to 200 000 per site). Takes effect on the next sync.
+- **Striking distance:** all pairs in the band with pagination (was 200), a free **Est. +clicks** column (extra clicks at position 3 with today's impressions, benchmark CTR — sorts thousands of rows before paying for volumes; the default order), a minimum-impressions filter, CSV, full URLs with copy, translated proximity labels. Paid volume lookups are limited to the top 300 filtered keywords (it was every row, harmless at 200 rows, not at thousands). "Select all" for link purchases selects the rows on screen.
+- **Cannibalization:** every group (was 60), keyed by site + query so the same query on two sites no longer opens and closes together; pagination, severity chips with counts, minimum impressions, expand/collapse all, CSV (one row per competing page, with share and the page's own top query), full URLs with copy, share bars that show each page's real share. Brand filter ignores ports and 1–2-letter labels (a 1-letter brand dropped every query containing that letter).
+- **Site picker on /striking and /cannibalization**, the same one as /decay: search, tags, per-site counts, worst-first; a row's site badge narrows to that site. Cannibalization results are cached per site and dropped on every sync, so a large portfolio is computed once per sync. Site pages (Optimize tab) get the same tables.
+- Both endpoints accept POST (the site selection can be long); GET still works. No schema change.
+
 ### Fixed — Content Decay: the decaying-pages table compared a partial month, saw only 20 pages, and showed URLs you couldn't open (#28)
 
 - "Last 2 months" was the last two calendar buckets with the current one included: on Oct 11 it compared 11 days of October plus September against all of July and August, so almost every page read as decaying. It now compares two equal, complete windows (8 weeks vs the 8 before, or 2 vs 2), ending at the site's latest synced day minus the 2 provisional days Search Console is still filling in. The dates are shown above the table.

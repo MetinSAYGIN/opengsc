@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { workspaceUserId } from "@/lib/team/workspace";
+import { resolveReportSites as resolveSites, resolveReportUserId as resolveUserId } from '@/lib/gsc/reportScope';
 import { prisma } from '@/lib/prisma';
 import { findDecayingPages } from '@/lib/decay/query';
 import { DEFAULT_MIN_PREVIOUS } from '@/lib/decay/logic';
@@ -56,29 +56,6 @@ function bucketIndex(date: Date, buckets: ReturnType<typeof buildBuckets>): numb
 //  • decay   — every page whose traffic fell, compared over two equal complete windows. See
 //    src/lib/decay/logic.ts for why that is no longer "the last two buckets of the heatmap".
 // `parts` lets each caller ask for only its half; omitted, both are returned as before.
-/** The workspace owner, or — via a share link — the owner of that one shared site (never 'all'). */
-async function resolveUserId(req: Request, siteId: string): Promise<string | null> {
-  const userId = await workspaceUserId();
-  if (userId) return userId;
-  const shareToken = new URL(req.url).searchParams.get('shareToken') ?? '';
-  if (shareToken && siteId && siteId !== 'all') {
-    const shared = await prisma.site.findFirst({ where: { id: siteId, shareToken, shareEnabled: true } });
-    if (shared) return shared.userId;
-  }
-  return null;
-}
-
-/** The sites a request covers: one explicit site, or the live portfolio. null = not this user's. */
-async function resolveSites(userId: string, siteId: string) {
-  if (siteId === 'all' || !siteId) {
-    // Archived and hidden sites stay out of portfolio-wide reports (see striking/route.ts);
-    // an explicit siteId still reaches them on purpose.
-    return prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null } });
-  }
-  const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
-  return site ? [site] : null;
-}
-
 const asMetric = (v: unknown): Metric => (v === 'impressions' ? 'impressions' : 'clicks');
 const asPeriod = (v: unknown): 'month' | 'week' => (v === 'week' ? 'week' : 'month');
 function asMin(v: unknown, metric: Metric): number {

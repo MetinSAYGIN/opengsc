@@ -22,7 +22,7 @@ import { usePersistedState } from "@/lib/usePersistedState";
 import { getKeywordCapableCreds } from "@/lib/seo/metricsClient";
 import { redirectHops, toCsv, type DecayStatus, type HttpCheckResult, type HttpVerdict } from "@/lib/decay/logic";
 import UrlCell from "@/components/UrlCell";
-import DecaySitePicker, { SelectedSiteChips, type SiteSummary } from "@/components/DecaySitePicker";
+import SitePicker, { SelectedSiteChips, type SiteOption } from "@/components/SitePicker";
 
 type Metric = "clicks" | "impressions";
 type Period = "month" | "week";
@@ -52,6 +52,10 @@ interface DecayResponse {
   error?: string;
 }
 type HttpResult = HttpCheckResult & { siteId: string };
+interface SiteSummary {
+  siteId: string; siteName: string; tags: string[];
+  examined: number; lost: number; critical: number; warning: number; change: number;
+}
 
 const MIN_CHOICES: Record<Metric, number[]> = {
   clicks: [1, 5, 10, 25, 50, 100, 500],
@@ -205,6 +209,18 @@ export default function DecayingPagesTable({ siteDbId, defaultPeriod, selectedSi
   if (data?.decaySites && data.decaySites !== siteList) setSiteList(data.decaySites);
   const siteSummaries = data?.decaySites ?? siteList;
   const selectSites = (next: string[] | null) => { onSelectSites?.(next); setPage(0); };
+  const siteOptions = useMemo<SiteOption[]>(() => siteSummaries.map(s => ({
+    siteId: s.siteId, siteName: s.siteName, tags: s.tags,
+    active: s.lost + s.critical + s.warning > 0,
+    weight: -s.change,
+    figure: s.change < 0 ? s.change.toLocaleString() : "0",
+    figureColor: "#EF4444",
+    badges: [
+      { n: s.lost, color: STATUS_COLOR.Lost, title: t("cdmStatusLost") },
+      { n: s.critical, color: STATUS_COLOR.Critical, title: t("cdmStatusCritical") },
+      { n: s.warning, color: STATUS_COLOR.Warning, title: t("cdmStatusWarning") },
+    ],
+  })), [siteSummaries, t]);
   const win = data?.decayWindows ?? null;
   // On a portfolio, a site badge per row — unless every row is the same site anyway.
   const multiSite = useMemo(() => new Set(rows.map(r => r.siteId)).size > 1, [rows]);
@@ -376,7 +392,8 @@ export default function DecayingPagesTable({ siteDbId, defaultPeriod, selectedSi
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           {isPortfolio && onSelectSites && siteSummaries.length > 0 && (
             <>
-              <DecaySitePicker sites={siteSummaries} selected={selectedSites} onChange={selectSites} />
+              <SitePicker sites={siteOptions} selected={selectedSites} onChange={selectSites}
+                labels={{ onlyActive: t("cdmSitesOnlyDeclining"), sortWeight: t("cdmSitesSortLoss"), none: t("cdmSitesNoDecline") }} />
               <span style={{ width: 1, height: 18, background: "var(--color-border)", margin: "0 2px" }} />
             </>
           )}

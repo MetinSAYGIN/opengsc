@@ -1,22 +1,41 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { ExternalLink, ShoppingCart } from "lucide-react";
+// Striking distance — queries ranking just off the top, per page, for one site or a portfolio.
+//
+// Reworked (#28 follow-up): every in-band pair of every site (it was 200 rows across the whole
+// portfolio, with rollup rows eating the budget), real pagination, a site picker for large
+// portfolios, CSV, full URLs, a free "est. +clicks" estimate to sort thousands of rows by before
+// paying for volumes, and no fake period — the rows are one 90-day total per pair, and the
+// header says which 90 days.
+
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { Download, ShoppingCart, Loader2, Search } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { withShare, isGuestView } from "@/lib/shareParam";
-import { usePersistedState, isReportDays } from "@/lib/usePersistedState";
+import { usePersistedState } from "@/lib/usePersistedState";
 import KeywordWeightsBar from "@/components/KeywordWeightsBar";
 import BuyLinksModal, { type BuyRow } from "@/components/magiclinks/BuyLinksModal";
 import { useKeywordWeights, type KeywordWeight, type UseKeywordWeights } from "@/lib/seo/useKeywordWeights";
+import UrlCell from "@/components/UrlCell";
+import SitePicker, { SelectedSiteChips, type SiteOption } from "@/components/SitePicker";
+import { Pager, WindowNote, chipBtn, downloadCsv, fileSlug, ghostBtn, idsKey, selectStyle, PAGE_SIZES, type DataWindow } from "@/components/report/ReportKit";
+import { toCsv } from "@/lib/decay/logic";
+import { proximity, TARGET_POSITION, type Proximity } from "@/lib/striking/logic";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface StrikingKeyword {
   query: string; page: string; fullUrl: string;
   impressions: number; clicks: number; ctr: number; position: number;
-  siteId?: string; siteName?: string;
+  gain: number;
+  siteId: string; siteName: string;
+}
+interface SiteSummary { siteId: string; siteName: string; tags: string[]; keywords: number; impressions: number; gain: number }
+interface StrikingResponse {
+  keywords?: StrikingKeyword[]; total?: number; truncated?: boolean;
+  window?: DataWindow | null; mixedWindows?: boolean; sites?: SiteSummary[]; error?: string;
 }
 
-type SortKey = "impressions" | "clicks" | "position" | "ctr" | "potential";
+type SortKey = "gain" | "impressions" | "clicks" | "position" | "ctr" | "potential";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 function fmtK(n: number) { return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
@@ -42,6 +61,13 @@ const CTR_AT_TOP = 0.1;
  */
 const wKey = (q: string) => q.trim().toLowerCase();
 
+/**
+ * Keyword volumes are a paid lookup. The list used to be capped at 200 rows, so "load volumes"
+ * could never cost more than 200 keywords; now that every pair is listed, the paid scope is the
+ * top of the current filtered list instead of all of it.
+ */
+const WEIGHT_CAP = 300;
+
 /** Clicks left on the table: what the keyword could bring near the top, minus what it brings now. */
 function potentialOf(k: StrikingKeyword, w?: KeywordWeight): number | null {
   if (!w || w.volume == null) return null;
@@ -63,30 +89,28 @@ function posColor(p: number) {
   return "#EF4444";
 }
 
-// Position "closeness" badge: how many positions away from page 1 top-10
-function proximityLabel(pos: number): { label: string; color: string; bg: string } {
-  if (pos <= 5)  return { label: "Top 5 🎯",  color: "#10B981", bg: "rgba(16,185,129,0.1)" };
-  if (pos <= 10) return { label: "Page 1",     color: "#3B82F6", bg: "rgba(59,130,246,0.1)" };
-  if (pos <= 15) return { label: "~Page 2",    color: "#F97316", bg: "rgba(249,115,22,0.1)" };
-  return             { label: "Page 2+",       color: "#EF4444", bg: "rgba(239,68,68,0.1)"  };
-}
+const PROX = {
+  top5:      { key: "sdkProxTop5",      color: "#10B981", bg: "rgba(16,185,129,0.1)" },
+  page1:     { key: "sdkProxPage1",     color: "#3B82F6", bg: "rgba(59,130,246,0.1)" },
+  nearPage2: { key: "sdkProxNearPage2", color: "#F97316", bg: "rgba(249,115,22,0.1)" },
+  page2plus: { key: "sdkProxPage2Plus", color: "#EF4444", bg: "rgba(239,68,68,0.1)" },
+} as const satisfies Record<Proximity, { key: string; color: string; bg: string }>;
+
+const MIN_IMPR_CHOICES = [1, 10, 30, 50, 100, 500, 1000];
 
 // ─── Info block ────────────────────────────────────────────────────────────────
-function InfoBlock({
-  posFrom, setPosFrom, posTo, setPosTo, days, setDays,
-}: {
+function InfoBlock({ posFrom, setPosFrom, posTo, setPosTo, minImpr, setMinImpr }: {
   posFrom: number; setPosFrom: (v: number) => void;
   posTo: number;   setPosTo:   (v: number) => void;
-  days: number;    setDays:    (v: number) => void;
+  minImpr: number; setMinImpr: (v: number) => void;
 }) {
   const { t } = useLanguage();
+  const numInput: React.CSSProperties = { width: "70px", padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "14px", fontWeight: 600, outline: "none", textAlign: "center" };
   return (
-    <div style={{
-      display: "grid", gridTemplateColumns: "1fr 1fr", gap: "32px",
-      padding: "24px 28px", borderBottom: "1px solid var(--color-border)",
-      background: "var(--color-card)",
+    <div className="report-info-grid" style={{
+      display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "32px",
+      padding: "24px 28px", borderBottom: "1px solid var(--color-border)", background: "var(--color-card)",
     }}>
-      {/* Position range + period */}
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
           <div style={{ width: "28px", height: "28px", borderRadius: "6px", background: "rgba(245,158,11,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -103,28 +127,19 @@ function InfoBlock({
         <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)" }}>{t("sdkFrom")}</span>
           <input type="number" value={posFrom} min={1} max={100}
-            onChange={e => setPosFrom(Math.max(1, Number(e.target.value)))}
-            style={{ width: "70px", padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "14px", fontWeight: 600, outline: "none", textAlign: "center" }} />
+            onChange={e => setPosFrom(Math.min(100, Math.max(1, Number(e.target.value) || 1)))} style={numInput} />
           <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)" }}>{t("sdkTo")}</span>
           <input type="number" value={posTo} min={1} max={100}
-            onChange={e => setPosTo(Math.max(1, Number(e.target.value)))}
-            style={{ width: "70px", padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "14px", fontWeight: 600, outline: "none", textAlign: "center" }} />
-        </div>
-        <div style={{ marginTop: "14px", display: "flex", alignItems: "center", gap: "10px" }}>
-          <span style={{ fontSize: "13px", color: "var(--color-text-secondary)", fontWeight: 500 }}>Period:</span>
-          {([30, 60, 90, 180] as const).map(d => (
-            <button key={d} onClick={() => setDays(d)} style={{
-              padding: "4px 11px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
-              border: `1px solid ${days === d ? "#F59E0B" : "var(--color-border)"}`,
-              background: days === d ? "rgba(245,158,11,0.1)" : "transparent",
-              color: days === d ? "#F59E0B" : "var(--color-text-secondary)",
-              cursor: "pointer", transition: "all 0.15s",
-            }}>{d}d</button>
-          ))}
+            onChange={e => setPosTo(Math.min(100, Math.max(1, Number(e.target.value) || 1)))} style={numInput} />
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--color-text-secondary)", fontWeight: 600 }} title={t("sdkMinImprHint")}>
+            {t("sdkMinImpr")}
+            <select value={minImpr} onChange={e => setMinImpr(Number(e.target.value))} style={selectStyle}>
+              {[...new Set([...MIN_IMPR_CHOICES, minImpr])].sort((a, b) => a - b).map(n => <option key={n} value={n}>{n.toLocaleString()}</option>)}
+            </select>
+          </label>
         </div>
       </div>
 
-      {/* What to do */}
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
           <div style={{ width: "28px", height: "28px", borderRadius: "6px", background: "rgba(16,185,129,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -147,37 +162,46 @@ function InfoBlock({
   );
 }
 
-// Two more numeric columns than before (volume, KD, potential). They are always present, even
-// with no data behind them: a column that appears only once you have paid for it is a feature
-// nobody discovers. The leading checkbox and the trailing buy button belong to the link
-// purchase flow — both hidden for guests on share links, like the Track buttons.
-const GRID = "34px 1.3fr 0.9fr 92px 78px 68px 62px 74px 82px 54px 80px 44px";
+// The leading checkbox and the trailing buy button belong to the link purchase flow — both
+// hidden for guests on share links, like the Track buttons.
+const GRID = "34px minmax(160px,1.3fr) minmax(160px,1fr) 92px 74px 62px 58px 66px 76px 72px 50px 76px 44px";
 
 // ─── Table ─────────────────────────────────────────────────────────────────────
-function KeywordsTable({ data, loading, siteDbId, weights, country }: {
-  data: StrikingKeyword[]; loading: boolean; siteDbId: string;
+function KeywordsTable({
+  rows, loading, siteDbId, weights, country, sortKey, setSortKey, search, setSearch,
+  multiSite, onSelectSite, onExport, header,
+}: {
+  rows: StrikingKeyword[]; loading: boolean; siteDbId: string;
   weights: UseKeywordWeights; country: string;
+  sortKey: SortKey; setSortKey: (k: SortKey) => void;
+  search: string; setSearch: (s: string) => void;
+  multiSite: boolean; onSelectSite?: (siteId: string) => void;
+  onExport: () => void;
+  header?: React.ReactNode;
 }) {
   const { t } = useLanguage();
-  const [search,  setSearch]  = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("impressions");
+  const guest = isGuestView();
+  const [pageSize, setPageSize] = usePersistedState<number>("gsc_striking_page_size", 25, v => typeof v === "number" && PAGE_SIZES.includes(v));
+  const [page, setPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const visible = rows.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
   // Rank tracker integration: one-click "Track" per keyword
   const [tracked, setTracked] = useState<Set<string>>(new Set());
   useEffect(() => {
-    if (!siteDbId) return;
-    if (isGuestView()) return; // guests don't see the Track buttons
+    if (!siteDbId || guest) return;
     fetch(`/api/rank/keywords?siteId=${encodeURIComponent(siteDbId)}`)
       .then(r => r.json())
-      .then(d => { if (Array.isArray(d.keywords)) setTracked(new Set(d.keywords.map((k: any) => String(k.keyword).toLowerCase()))); })
+      .then(d => { if (Array.isArray(d.keywords)) setTracked(new Set(d.keywords.map((k: { keyword: string }) => String(k.keyword).toLowerCase()))); })
       .catch(() => {});
-  }, [siteDbId]);
+  }, [siteDbId, guest]);
 
   const track = (query: string, siteIdOverride?: string) => {
-    if (isGuestView()) return;
+    if (guest) return;
     const targetSiteId = siteIdOverride || siteDbId;
     const kw = query.trim().toLowerCase();
-    if (!kw || tracked.has(kw) || !targetSiteId) return;
+    if (!kw || tracked.has(kw) || !targetSiteId || targetSiteId === "all") return;
     setTracked(prev => new Set(prev).add(kw));
     fetch("/api/rank/keywords", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -190,27 +214,6 @@ function KeywordsTable({ data, loading, siteDbId, weights, country }: {
       .catch(() => {});
   };
 
-  const filtered = useMemo(() => {
-    const rows = data.filter(k =>
-      !search ||
-      k.query.toLowerCase().includes(search.toLowerCase()) ||
-      k.page.toLowerCase().includes(search.toLowerCase()));
-
-    if (sortKey === "potential") {
-      // Rows without a weight sort last rather than as zero — "unknown" and "nothing to gain"
-      // are different answers, and mixing them hides the keywords worth loading next.
-      return [...rows].sort((a, b) => {
-        const pa = potentialOf(a, weights.get(a.query, country));
-        const pb = potentialOf(b, weights.get(b.query, country));
-        if (pa == null && pb == null) return b.impressions - a.impressions;
-        if (pa == null) return 1;
-        if (pb == null) return -1;
-        return pb - pa;
-      });
-    }
-    return [...rows].sort((a, b) => sortKey === "position" ? a[sortKey] - b[sortKey] : b[sortKey] - a[sortKey]);
-  }, [data, search, sortKey, weights, country]);
-
   // ── Link purchases ──────────────────────────────────────────────────────────
   // The pair key is query + full URL: exactly the unit a purchase covers, so the badge means
   // "this pair has money on it", not "this keyword was bought for some other page".
@@ -221,7 +224,7 @@ function KeywordsTable({ data, loading, siteDbId, weights, country }: {
   const [bought, setBought] = useState<Map<string, { quantity: number; lastAt: string }>>(new Map());
 
   const loadPurchases = useCallback(() => {
-    if (!siteDbId || isGuestView()) return;
+    if (!siteDbId || guest) return;
     fetch(`/api/magiclinks/purchases?siteId=${encodeURIComponent(siteDbId)}`)
       .then(r => (r.ok ? r.json() : null))
       .then(d => {
@@ -232,326 +235,392 @@ function KeywordsTable({ data, loading, siteDbId, weights, country }: {
         setBought(map);
       })
       .catch(() => {});
-  }, [siteDbId]);
+  }, [siteDbId, guest]);
   useEffect(() => { loadPurchases(); }, [loadPurchases]);
 
   const toggleRowSel = (k: StrikingKeyword) => {
     const key = rowKey(k);
     setSelected(prev => {
       const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
+      if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
   };
 
-  const allFilteredSelected = filtered.length > 0 && filtered.every(k => selected.has(rowKey(k)));
-  const toggleAllFiltered = () => {
+  // The header checkbox covers the page on screen: with thousands of rows, "everything" would
+  // put an order for thousands of pairs one click away.
+  const allVisibleSelected = visible.length > 0 && visible.every(k => selected.has(rowKey(k)));
+  const toggleAllVisible = () => {
     setSelected(prev => {
-      if (allFilteredSelected) {
-        const next = new Set(prev);
-        for (const k of filtered) next.delete(rowKey(k));
-        return next;
-      }
       const next = new Set(prev);
-      for (const k of filtered) next.add(rowKey(k));
+      for (const k of visible) { if (allVisibleSelected) next.delete(rowKey(k)); else next.add(rowKey(k)); }
       return next;
     });
   };
 
-  const selectedRows = useMemo(
-    () => filtered.filter(k => selected.has(rowKey(k))),
-    [filtered, selected],
-  );
+  const selectedRows = useMemo(() => rows.filter(k => selected.has(rowKey(k))), [rows, selected]);
 
-  const openBuy = (rows: StrikingKeyword[]) => {
-    setBuyRows(rows.map(k => ({ query: k.query, targetUrl: k.fullUrl, siteId: k.siteId || siteDbId })));
+  const openBuy = (list: StrikingKeyword[]) => {
+    setBuyRows(list.map(k => ({ query: k.query, targetUrl: k.fullUrl, siteId: k.siteId || siteDbId })));
   };
 
-  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
-    <button onClick={() => setSortKey(k)} style={{
-      padding: "4px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
-      border: `1px solid ${sortKey === k ? "#3B82F6" : "var(--color-border)"}`,
-      background: sortKey === k ? "rgba(59,130,246,0.1)" : "transparent",
-      color: sortKey === k ? "#3B82F6" : "var(--color-text-secondary)",
-      cursor: "pointer", transition: "all 0.15s",
-    }}>{label}</button>
+  const sortBtn = (k: SortKey, label: string, title?: string) => (
+    <button key={k} type="button" onClick={() => { setSortKey(k); setPage(0); }} title={title} style={{ ...chipBtn(sortKey === k), borderRadius: 6, padding: "4px 10px" }}>{label}</button>
   );
 
   return (
     <div style={{ padding: "20px 28px" }}>
+      {header}
+
       {/* Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
-        <div style={{ position: "relative", flex: "1 1 200px", maxWidth: "320px" }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-secondary)" strokeWidth="2" style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)" }}>
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder={t("sdkSearch")}
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px", flexWrap: "wrap" }}>
+        <label style={{ position: "relative", flex: "1 1 220px", maxWidth: "340px" }}>
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--color-text-tertiary)" }} />
+          <input value={search} onChange={e => { setSearch(e.target.value); setPage(0); }} placeholder={t("sdkSearch")}
             style={{ width: "100%", padding: "7px 12px 7px 30px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "13px", outline: "none", boxSizing: "border-box" }} />
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
+        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
           <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("kcSortBy")}</span>
-          <SortBtn k="impressions" label={t("impressions")} />
-          <SortBtn k="clicks"      label={t("clicks")} />
-          <SortBtn k="position"    label={t("position")} />
-          <SortBtn k="ctr"         label="CTR" />
-          <SortBtn k="potential"   label={t("kwColPotential")} />
+          {sortBtn("gain", t("sdkColGain"), t("sdkGainHint").replace("{pos}", String(TARGET_POSITION)))}
+          {sortBtn("impressions", t("impressions"))}
+          {sortBtn("clicks", t("clicks"))}
+          {sortBtn("position", t("position"))}
+          {sortBtn("ctr", "CTR")}
+          {sortBtn("potential", t("kwColPotential"))}
         </div>
-        {loading && (
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--color-text-secondary)" }}>
-            <div style={{ width: "14px", height: "14px", border: "2px solid var(--color-border)", borderTopColor: "#F59E0B", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-          </div>
-        )}
+        <div style={{ flex: 1 }} />
+        {loading && <Loader2 size={14} style={{ animation: "spin 0.8s linear infinite", color: "var(--color-text-secondary)" }} />}
+        <button type="button" onClick={onExport} disabled={!rows.length} style={{ ...ghostBtn, opacity: rows.length ? 1 : 0.5 }} title={t("exportCsv")}>
+          <Download size={13} /> CSV
+        </button>
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       </div>
 
-      {/* Summary badge */}
-      <div style={{ marginBottom: "16px", display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-        <div style={{ display: "inline-block", padding: "4px 12px", borderRadius: "20px", background: "rgba(245,158,11,0.1)", fontSize: "12px", fontWeight: 600, color: "#F59E0B" }}>
-          {filtered.length} {t("sdkBadge")}
-        </div>
-        {/* Bulk buy bar — appears only with a selection; the label says exactly what will be
-            ordered (N pairs), never a silent subset of it. */}
-        {!isGuestView() && selectedRows.length > 0 && (
+      {/* Bulk buy bar — appears only with a selection; the label says exactly what will be
+          ordered (N pairs), never a silent subset of it. */}
+      {!guest && selectedRows.length > 0 && (
+        <div style={{ marginBottom: "12px" }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: "10px", padding: "4px 6px 4px 12px", borderRadius: "20px", background: "rgba(124,58,237,0.1)", fontSize: "12px", fontWeight: 600, color: "#7C3AED" }}>
             <span>{t("mlSelected").replace("{n}", String(selectedRows.length))}</span>
-            <button onClick={() => openBuy(selectedRows)}
+            <button type="button" onClick={() => openBuy(selectedRows)}
               style={{ display: "flex", alignItems: "center", gap: "5px", padding: "4px 11px", borderRadius: "14px", border: "none", background: "#7C3AED", color: "#fff", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>
               <ShoppingCart size={12} /> {t("mlBuy")}
             </button>
+            <button type="button" onClick={() => setSelected(new Set())}
+              style={{ border: "none", background: "transparent", color: "#7C3AED", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
+              {t("cdmSitesClear")}
+            </button>
           </div>
-        )}
-      </div>
-
-      {/* Table header */}
-      <div style={{
-        display: "grid", gridTemplateColumns: GRID,
-        padding: "8px 14px", background: "var(--color-bg)",
-        borderRadius: "8px 8px 0 0", border: "1px solid var(--color-border)", borderBottom: "none",
-        fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)",
-        textTransform: "uppercase", letterSpacing: "0.05em", gap: "10px",
-      }}>
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <input type="checkbox" checked={allFilteredSelected} onChange={toggleAllFiltered}
-            title={t("mlSelectAll")}
-            style={{ width: "14px", height: "14px", accentColor: "#7C3AED", cursor: "pointer" }} />
-        </div>
-        <div>{t("sdkColQuery")}</div>
-        <div>{t("cdmPage")}</div>
-        <div>Proximity</div>
-        <div style={{ textAlign: "right" }}>{t("impressions")}</div>
-        <div style={{ textAlign: "right" }}>{t("clicks")}</div>
-        <div style={{ textAlign: "right" }}>CTR</div>
-        <div style={{ textAlign: "right" }}>{t("position")}</div>
-        <div style={{ textAlign: "right" }}>{t("kwColVolume")}</div>
-        <div style={{ textAlign: "right" }}>{t("kwColKd")}</div>
-        <div style={{ textAlign: "right" }} title={t("kwPotentialHint")}>{t("kwColPotential")}</div>
-      </div>
-
-      {/* Rows */}
-      {!loading && filtered.length === 0 ? (
-        <div style={{ border: "1px solid var(--color-border)", borderRadius: "0 0 8px 8px", padding: "60px 32px", textAlign: "center", background: "var(--color-card)" }}>
-          <div style={{ fontSize: "32px", marginBottom: "12px" }}>🎯</div>
-          <p style={{ fontSize: "16px", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 6px" }}>
-            No keywords in this range
-          </p>
-          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: 0 }}>
-            Try adjusting the position range or syncing GSC data first.
-          </p>
-        </div>
-      ) : (
-        <div className="privacy-blur-all" style={{ border: "1px solid var(--color-border)", borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
-          {filtered.map((item, i) => {
-            const prox = proximityLabel(item.position);
-            const w = weights.get(item.query, country);
-            const potential = potentialOf(item, w);
-            const key = rowKey(item);
-            const isSel = selected.has(key);
-            const purchase = bought.get(key);
-            return (
-              <div key={`${item.query}-${item.page}-${i}`} style={{
-                display: "grid", gridTemplateColumns: GRID,
-                padding: "11px 14px", gap: "10px",
-                borderBottom: i < filtered.length - 1 ? "1px solid var(--color-border)" : "none",
-                background: isSel ? "rgba(124,58,237,0.06)" : i % 2 === 0 ? "var(--color-card)" : "rgba(255,255,255,0.02)",
-                alignItems: "center", fontSize: "13px",
-                }}>
-                {/* Select for bulk buy */}
-                <div style={{ display: "flex", alignItems: "center" }}>
-                  <input type="checkbox" checked={isSel} onChange={() => toggleRowSel(item)}
-                    style={{ width: "14px", height: "14px", accentColor: "#7C3AED", cursor: "pointer" }} />
-                </div>
-                {/* Query */}
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden" }}>
-                  {tracked.has(item.query.toLowerCase()) ? (
-                    <span title={t("rankTracked")} style={{ color: "#10B981", flexShrink: 0, fontSize: "12px" }}>✓</span>
-                  ) : (
-                    <button onClick={() => track(item.query, item.siteId)} title={t("rankTrack")}
-                      style={{ width: "17px", height: "17px", borderRadius: "4px", border: "1px solid var(--color-border)", background: "none", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px", lineHeight: 1, padding: 0, flexShrink: 0 }}
-                      onMouseEnter={e => { e.currentTarget.style.color = "#3B82F6"; e.currentTarget.style.borderColor = "#3B82F6"; }}
-                      onMouseLeave={e => { e.currentTarget.style.color = "var(--color-text-secondary)"; e.currentTarget.style.borderColor = "var(--color-border)"; }}>+</button>
-                  )}
-                  <span style={{ fontWeight: 600, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.query}>
-                    {item.query}
-                  </span>
-                  {/* Already-bought mark: this exact query+URL pair has paid links behind it —
-                      the badge says how many and when the last batch landed, so buying round
-                      two is a decision, not an accident (date = last purchase, dd.MM). */}
-                  {purchase && (
-                    <span title={t("mlBoughtN").replace("{n}", String(purchase.quantity)) + ` · ${purchase.lastAt.slice(0, 10)}`}
-                      style={{ flexShrink: 0, fontSize: "10px", fontWeight: 700, color: "#7C3AED", background: "rgba(124,58,237,0.12)", padding: "2px 6px", borderRadius: "10px", marginLeft: "4px", whiteSpace: "nowrap" }}>
-                      ✦ {purchase.quantity} · {purchase.lastAt.slice(5, 10).split("-").reverse().join(".")}
-                    </span>
-                  )}
-                  {item.siteName && (
-                    <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: "4px", marginLeft: "4px", flexShrink: 0 }} title={item.siteName}>
-                      {item.siteName}
-                    </span>
-                  )}
-                </div>
-                {/* Page */}
-                <div style={{ display: "flex", alignItems: "center", gap: "4px", overflow: "hidden" }}>
-                  <a href={item.fullUrl} target="_blank" rel="noreferrer"
-                    style={{ color: "#3B82F6", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, textDecoration: "none" }}
-                    title={item.fullUrl}
-                    onMouseOver={e => (e.currentTarget.style.textDecoration = "underline")}
-                    onMouseOut={e => (e.currentTarget.style.textDecoration = "none")}
-                  >{item.page}</a>
-                  <ExternalLink size={11} style={{ flexShrink: 0, opacity: 0.4 }} />
-                </div>
-                {/* Proximity badge */}
-                <div>
-                  <span style={{ fontSize: "11px", fontWeight: 600, padding: "2px 8px", borderRadius: "20px", color: prox.color, background: prox.bg, whiteSpace: "nowrap" }}>
-                    {prox.label}
-                  </span>
-                </div>
-                {/* Metrics */}
-                <div style={{ textAlign: "right", fontWeight: 600 }}>{fmtK(item.impressions)}</div>
-                <div style={{ textAlign: "right", color: "var(--color-text-secondary)" }}>{item.clicks}</div>
-                <div style={{ textAlign: "right", color: "var(--color-text-secondary)" }}>{item.ctr}%</div>
-                <div style={{ textAlign: "right", fontWeight: 700, color: posColor(item.position) }}>
-                  {item.position.toFixed(1)}
-                </div>
-
-                {/* Weights. An em dash rather than a zero: no data and no demand must not look
-                    the same, or the whole point of loading them is lost. */}
-                <div style={{ textAlign: "right", fontWeight: 600, color: w?.volume != null ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}
-                  title={w ? `${w.cpc != null ? `CPC ${w.cpc}` : ""}${w.cpc != null ? " · " : ""}${w.source === "csv" ? t("kwSourceCsv") : t("kwSourceApi")}` : undefined}>
-                  {w?.volume != null ? fmtK(w.volume) : "—"}
-                </div>
-                <div style={{ textAlign: "right", fontWeight: 700, color: w?.difficulty != null ? kdColor(w.difficulty) : "var(--color-text-tertiary)" }}>
-                  {w?.difficulty != null ? w.difficulty : "—"}
-                </div>
-                <div style={{ textAlign: "right", fontWeight: 600, color: potential != null && potential > 0 ? "var(--color-success)" : "var(--color-text-tertiary)" }}>
-                  {potential != null ? `+${fmtK(potential)}` : "—"}
-                </div>
-                {/* Buy one pair */}
-                {!isGuestView() && (
-                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                    <button onClick={() => openBuy([item])} title={t("mlBuyOne")}
-                      style={{ width: "26px", height: "26px", borderRadius: "7px", border: "1px solid rgba(124,58,237,0.35)", background: "rgba(124,58,237,0.08)", color: "#7C3AED", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-                      <ShoppingCart size={12} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
         </div>
       )}
 
-      {/* The buy window — mounted from this table so both the single-row and bulk paths share
-          one component and one money flow. */}
+      <div style={{ overflowX: "auto", opacity: loading && rows.length ? 0.6 : 1, transition: "opacity 0.15s" }}>
+        <div style={{ minWidth: 1180 }}>
+          {/* Table header */}
+          <div style={{
+            display: "grid", gridTemplateColumns: GRID,
+            padding: "8px 14px", background: "var(--color-bg)",
+            borderRadius: "8px 8px 0 0", border: "1px solid var(--color-border)", borderBottom: "none",
+            fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)",
+            textTransform: "uppercase", letterSpacing: "0.05em", gap: "10px",
+          }}>
+            <div style={{ display: "flex", alignItems: "center" }}>
+              {!guest && (
+                <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} title={t("sdkSelectPage")}
+                  style={{ width: "14px", height: "14px", accentColor: "#7C3AED", cursor: "pointer" }} />
+              )}
+            </div>
+            <div>{t("sdkColQuery")}</div>
+            <div>{t("cdmPage")}</div>
+            <div>{t("sdkColProximity")}</div>
+            <div style={{ textAlign: "right" }}>{t("impressions")}</div>
+            <div style={{ textAlign: "right" }}>{t("clicks")}</div>
+            <div style={{ textAlign: "right" }}>CTR</div>
+            <div style={{ textAlign: "right" }}>{t("position")}</div>
+            <div style={{ textAlign: "right" }} title={t("sdkGainHint").replace("{pos}", String(TARGET_POSITION))}>{t("sdkColGain")}</div>
+            <div style={{ textAlign: "right" }}>{t("kwColVolume")}</div>
+            <div style={{ textAlign: "right" }}>{t("kwColKd")}</div>
+            <div style={{ textAlign: "right" }} title={t("kwPotentialHint")}>{t("kwColPotential")}</div>
+            <div />
+          </div>
+
+          {/* Rows */}
+          <div className="privacy-blur-all" style={{ border: "1px solid var(--color-border)", borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
+            {loading && !rows.length ? (
+              <div style={{ padding: "48px 32px", textAlign: "center", fontSize: 13, color: "var(--color-text-secondary)", display: "flex", justifyContent: "center", gap: 8, alignItems: "center" }}>
+                <Loader2 size={14} style={{ animation: "spin 0.8s linear infinite" }} /> {t("loading")}
+              </div>
+            ) : !rows.length ? (
+              <div style={{ padding: "60px 32px", textAlign: "center", background: "var(--color-card)" }}>
+                <div style={{ fontSize: "32px", marginBottom: "12px" }}>🎯</div>
+                <p style={{ fontSize: "16px", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 6px" }}>{t("sdkEmptyTitle")}</p>
+                <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: 0 }}>{t("sdkEmptyDesc")}</p>
+              </div>
+            ) : visible.map((item, i) => {
+              const prox = PROX[proximity(item.position)];
+              const w = weights.get(item.query, country);
+              const potential = potentialOf(item, w);
+              const key = rowKey(item);
+              const isSel = selected.has(key);
+              const purchase = bought.get(key);
+              return (
+                <div key={`${item.siteId}\n${key}`} style={{
+                  display: "grid", gridTemplateColumns: GRID,
+                  padding: "10px 14px", gap: "10px",
+                  borderBottom: i < visible.length - 1 ? "1px solid var(--color-border)" : "none",
+                  background: isSel ? "rgba(124,58,237,0.06)" : i % 2 === 0 ? "var(--color-card)" : "rgba(255,255,255,0.02)",
+                  alignItems: "center", fontSize: "13px", fontVariantNumeric: "tabular-nums",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    {!guest && (
+                      <input type="checkbox" checked={isSel} onChange={() => toggleRowSel(item)}
+                        style={{ width: "14px", height: "14px", accentColor: "#7C3AED", cursor: "pointer" }} />
+                    )}
+                  </div>
+                  {/* Query */}
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden", minWidth: 0 }}>
+                    {!guest && (tracked.has(item.query.toLowerCase()) ? (
+                      <span title={t("rankTracked")} style={{ color: "#10B981", flexShrink: 0, fontSize: "12px" }}>✓</span>
+                    ) : (
+                      <button type="button" onClick={() => track(item.query, item.siteId)} title={t("rankTrack")}
+                        style={{ width: "17px", height: "17px", borderRadius: "4px", border: "1px solid var(--color-border)", background: "none", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "12px", lineHeight: 1, padding: 0, flexShrink: 0 }}>+</button>
+                    ))}
+                    <span style={{ fontWeight: 600, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.query}>
+                      {item.query}
+                    </span>
+                    {/* Already-bought mark: this exact query+URL pair has paid links behind it. */}
+                    {purchase && (
+                      <span title={t("mlBoughtN").replace("{n}", String(purchase.quantity)) + ` · ${purchase.lastAt.slice(0, 10)}`}
+                        style={{ flexShrink: 0, fontSize: "10px", fontWeight: 700, color: "#7C3AED", background: "rgba(124,58,237,0.12)", padding: "2px 6px", borderRadius: "10px", whiteSpace: "nowrap" }}>
+                        ✦ {purchase.quantity} · {purchase.lastAt.slice(5, 10).split("-").reverse().join(".")}
+                      </span>
+                    )}
+                    {multiSite && item.siteName && (
+                      <button type="button" onClick={() => onSelectSite?.(item.siteId)} disabled={!onSelectSite} title={onSelectSite ? t("cdmSitesFilterHint") : item.siteName}
+                        style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0, border: "none", cursor: onSelectSite ? "pointer" : "default" }}>
+                        {item.siteName}
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ minWidth: 0, display: "flex" }}>
+                    <UrlCell label={item.page} href={item.fullUrl} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: "11px", fontWeight: 600, padding: "2px 8px", borderRadius: "20px", color: prox.color, background: prox.bg, whiteSpace: "nowrap" }}>
+                      {t(prox.key)}
+                    </span>
+                  </div>
+                  <div style={{ textAlign: "right", fontWeight: 600 }}>{fmtK(item.impressions)}</div>
+                  <div style={{ textAlign: "right", color: "var(--color-text-secondary)" }}>{item.clicks}</div>
+                  <div style={{ textAlign: "right", color: "var(--color-text-secondary)" }}>{item.ctr}%</div>
+                  <div style={{ textAlign: "right", fontWeight: 700, color: posColor(item.position) }}>{item.position.toFixed(1)}</div>
+                  <div style={{ textAlign: "right", fontWeight: 600, color: item.gain > 0 ? "var(--color-success)" : "var(--color-text-tertiary)" }}>
+                    {item.gain > 0 ? `+${fmtK(item.gain)}` : "—"}
+                  </div>
+                  {/* Weights. An em dash rather than a zero: no data and no demand must not look
+                      the same, or the whole point of loading them is lost. */}
+                  <div style={{ textAlign: "right", fontWeight: 600, color: w?.volume != null ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}
+                    title={w ? `${w.cpc != null ? `CPC ${w.cpc}` : ""}${w.cpc != null ? " · " : ""}${w.source === "csv" ? t("kwSourceCsv") : t("kwSourceApi")}` : undefined}>
+                    {w?.volume != null ? fmtK(w.volume) : "—"}
+                  </div>
+                  <div style={{ textAlign: "right", fontWeight: 700, color: w?.difficulty != null ? kdColor(w.difficulty) : "var(--color-text-tertiary)" }}>
+                    {w?.difficulty != null ? w.difficulty : "—"}
+                  </div>
+                  <div style={{ textAlign: "right", fontWeight: 600, color: potential != null && potential > 0 ? "var(--color-success)" : "var(--color-text-tertiary)" }}>
+                    {potential != null ? `+${fmtK(potential)}` : "—"}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    {!guest && (
+                      <button type="button" onClick={() => openBuy([item])} title={t("mlBuyOne")}
+                        style={{ width: "26px", height: "26px", borderRadius: "7px", border: "1px solid rgba(124,58,237,0.35)", background: "rgba(124,58,237,0.08)", color: "#7C3AED", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+                        <ShoppingCart size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <Pager page={safePage} pageCount={pageCount} pageSize={pageSize} total={rows.length} shown={visible.length}
+              onPage={setPage} onPageSize={n => { setPageSize(n); setPage(0); }} unit={t("sdkBadge")} />
+          </div>
+        </div>
+      </div>
+
       {buyRows && (
-        <BuyLinksModal
-          siteId={siteDbId}
-          rows={buyRows}
-          onClose={() => setBuyRows(null)}
-          onDone={loadPurchases}
-        />
+        <BuyLinksModal siteId={siteDbId} rows={buyRows} onClose={() => setBuyRows(null)} onDone={loadPurchases} />
       )}
     </div>
   );
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
-// The analysis window is stored (gsc_report_days, shared with the other report panels) so it
-// follows the user between the site page's tabs and this standalone report. A standalone page
-// can pin it via ?days= (initialDays) — a shared report link opens at the window it was read
-// at — while the selector keeps writing the last choice through for the next param-less visit.
-export default function StrikingDistanceKeywords({ siteDbId, initialDays, onDaysChange }: { siteDbId: string; initialDays?: number; onDaysChange?: (days: number) => void }) {
+// `initialDays` / `onDaysChange` are still accepted from the pages that pass them (a shared link
+// may carry ?days=), but there is no period to choose: the rows are one 90-day total per pair,
+// and the header states which 90 days.
+export default function StrikingDistanceKeywords({ siteDbId }: { siteDbId: string; initialDays?: number; onDaysChange?: (days: number) => void }) {
   const { t } = useLanguage();
-  const [posFrom, setPosFrom] = useState(4);
-  const [posTo,   setPosTo]   = useState(20);
-  const [storedDays, setStoredDays] = usePersistedState<number>("gsc_report_days", 90, isReportDays);
-  const days    = initialDays ?? storedDays;
-  const setDays = (d: number) => { setStoredDays(d); onDaysChange?.(d); };
+  const guest = isGuestView();
+  const isPortfolio = siteDbId === "all";
+  const [posFrom, setPosFrom] = usePersistedState<number>("gsc_striking_from", 4, v => typeof v === "number" && v >= 1 && v <= 100);
+  const [posTo, setPosTo] = usePersistedState<number>("gsc_striking_to", 20, v => typeof v === "number" && v >= 1 && v <= 100);
+  const [minImpr, setMinImpr] = usePersistedState<number>("gsc_striking_min_impr", 10, v => typeof v === "number" && v >= 1);
+  const [sites, setSites] = useState<string[] | null>(null);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("gain");
 
-  const [keywords, setKeywords] = useState<StrikingKeyword[]>([]);
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState("");
+  // ── data — debounced (typing a position fires on every keystroke); loading is derived ──
+  const sitesKey = idsKey(sites);
+  const reqKey = `${siteDbId}|${posFrom}|${posTo}|${minImpr}|${sitesKey}`;
+  const [resp, setResp] = useState<{ key: string; data: StrikingResponse } | null>(null);
+  useEffect(() => {
+    if (!siteDbId) return;
+    const ac = new AbortController();
+    const timer = setTimeout(() => {
+      fetch(withShare("/api/gsc/striking"), {
+        method: "POST", signal: ac.signal, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId: siteDbId, posFrom, posTo: Math.max(posFrom, posTo), minImpressions: minImpr, ...(sitesKey ? { sites: sitesKey.split(",") } : {}) }),
+      })
+        .then(async r => {
+          const j = await r.json().catch(() => ({}));
+          setResp({ key: reqKey, data: r.ok ? j : { error: j.error ?? `HTTP ${r.status}` } });
+        })
+        .catch(e => { if (!ac.signal.aborted) setResp({ key: reqKey, data: { error: String(e?.message ?? e) } }); });
+    }, 350);
+    return () => { clearTimeout(timer); ac.abort(); };
+  }, [reqKey, siteDbId, posFrom, posTo, minImpr, sitesKey]);
+  const loading = resp?.key !== reqKey;
+  const data = resp?.data;
+  const keywords = useMemo(() => data?.keywords ?? [], [data]);
+
+  const [siteList, setSiteList] = useState<SiteSummary[]>([]);
+  if (data?.sites && data.sites !== siteList) setSiteList(data.sites);
+  const multiSite = useMemo(() => new Set(keywords.map(k => k.siteId)).size > 1, [keywords]);
+
+  // ── filter (search) — before weights, so the paid scope follows what's on screen ──
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? keywords.filter(k => k.query.toLowerCase().includes(q) || k.fullUrl.toLowerCase().includes(q)) : keywords;
+  }, [keywords, search]);
 
   // Weights live beside the GSC rows rather than inside them: they arrive later, from a
   // different source, and may never arrive at all. All the paid-fetch logic is in the shared
   // hook so this view and Rank Tracker cannot drift apart on pricing or cache keys.
   const [country, setCountryS] = useState("us");
-
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
-
   // localStorage only after mount — reading it during render would make the first client pass
   // disagree with the server-rendered HTML.
   useEffect(() => { setCountryS(localStorage.getItem("seoMetricsCountry") || "us"); }, []);
   const setCountry = (v: string) => { setCountryS(v); localStorage.setItem("seoMetricsCountry", v); };
 
-  const queries = useMemo(
-    () => [...new Set(keywords.map(k => wKey(k.query)).filter(Boolean))],
-    [keywords],
-  );
-
-  // One market for the whole list here, chosen in the toolbar — unlike Rank Tracker, GSC rows
-  // carry no country of their own.
-  const targets = useMemo(
-    () => queries.map(keyword => ({ keyword, country })),
-    [queries, country],
-  );
-
+  const weightQueries = useMemo(() => {
+    // Rows arrive ordered by est. gain; the paid scope is the first WEIGHT_CAP distinct queries.
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const k of filtered) {
+      const q = wKey(k.query);
+      if (!q || seen.has(q)) continue;
+      seen.add(q); out.push(q);
+      if (out.length >= WEIGHT_CAP) break;
+    }
+    return out;
+  }, [filtered]);
+  const targets = useMemo(() => weightQueries.map(keyword => ({ keyword, country })), [weightQueries, country]);
   const weights = useKeywordWeights(targets, {
     // Guests on a share link have no session and the metrics endpoints are owner-scoped.
-    enabled: !isGuestView(),
+    enabled: !guest,
     onError: code => (code === "cap_exceeded" ? t("kwCapExceeded") : t("kwLoadFailed")),
   });
+  const distinctFiltered = useMemo(() => new Set(filtered.map(k => wKey(k.query))).size, [filtered]);
 
-  const fetchData = useCallback(async (from: number, to: number, d: number) => {
-    if (!siteDbId) return;
-    setLoading(true); setError("");
-    try {
-      const res = await fetch(withShare(
-        `/api/gsc/striking?siteId=${encodeURIComponent(siteDbId)}&posFrom=${from}&posTo=${to}&days=${d}&minImpressions=10&limit=200`
-      ));
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed");
-      setKeywords(data.keywords ?? []);
-    } catch (e: any) { setError(e.message); }
-    setLoading(false);
-  }, [siteDbId]);
+  const sorted = useMemo(() => {
+    if (sortKey === "potential") {
+      // Rows without a weight sort last rather than as zero — "unknown" and "nothing to gain"
+      // are different answers, and mixing them hides the keywords worth loading next.
+      return [...filtered].sort((a, b) => {
+        const pa = potentialOf(a, weights.get(a.query, country));
+        const pb = potentialOf(b, weights.get(b.query, country));
+        if (pa == null && pb == null) return b.gain - a.gain;
+        if (pa == null) return 1;
+        if (pb == null) return -1;
+        return pb - pa;
+      });
+    }
+    return [...filtered].sort((a, b) => sortKey === "position" ? a.position - b.position : b[sortKey] - a[sortKey]);
+  }, [filtered, sortKey, weights, country]);
 
-  // Debounce position changes
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => fetchData(posFrom, posTo, days), 400);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [posFrom, posTo, days, fetchData]);
+  const siteOptions = useMemo<SiteOption[]>(() => siteList.map(s => ({
+    siteId: s.siteId, siteName: s.siteName, tags: s.tags,
+    active: s.keywords > 0,
+    weight: s.gain,
+    figure: s.gain > 0 ? `+${fmtK(s.gain)}` : "0",
+    figureColor: "var(--color-success)",
+    badges: [{ n: s.keywords, color: "#F59E0B", title: t("sdkBadge") }],
+  })), [siteList, t]);
+
+  function exportCsv() {
+    const headers = [
+      "Query", "URL", ...(multiSite ? ["Site"] : []), "Impressions", "Clicks", "CTR %", "Position",
+      `Est. +clicks at #${TARGET_POSITION}`, "Volume", "KD", "Potential",
+    ];
+    const body = sorted.map(k => {
+      const w = weights.get(k.query, country);
+      return [
+        k.query, k.fullUrl, ...(multiSite ? [k.siteName] : []), k.impressions, k.clicks, k.ctr, k.position,
+        k.gain, w?.volume ?? "", w?.difficulty ?? "", potentialOf(k, w) ?? "",
+      ];
+    });
+    const name = !multiSite ? (keywords[0]?.siteName ?? "site") : "portfolio";
+    downloadCsv(`striking-distance-${fileSlug(name)}-${data?.window?.end ?? new Date().toISOString().slice(0, 10)}.csv`, toCsv(headers, body));
+  }
+
+  const header = (
+    <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ padding: "4px 12px", borderRadius: "20px", background: "rgba(245,158,11,0.1)", fontSize: "12px", fontWeight: 600, color: "#F59E0B" }}>
+              {(data?.total ?? keywords.length).toLocaleString()} {t("sdkBadge")}
+            </span>
+            {filtered.length > 0 && (
+              <span style={{ padding: "4px 12px", borderRadius: "20px", background: "rgba(16,185,129,0.1)", fontSize: "12px", fontWeight: 600, color: "#10B981" }}
+                title={t("sdkGainHint").replace("{pos}", String(TARGET_POSITION))}>
+                {t("sdkGainTotal").replace("{n}", fmtK(filtered.reduce((s, k) => s + k.gain, 0)))}
+              </span>
+            )}
+          </div>
+          <WindowNote window={data?.window} mixed={data?.mixedWindows} />
+          {data?.truncated && (
+            <div style={{ fontSize: 12, color: "var(--color-warning)" }}>
+              {t("sdkTruncated").replace("{n}", keywords.length.toLocaleString()).replace("{total}", (data.total ?? 0).toLocaleString())}
+            </div>
+          )}
+        </div>
+        {isPortfolio && siteOptions.length > 0 && (
+          <SitePicker sites={siteOptions} selected={sites} onChange={setSites}
+            labels={{ onlyActive: t("sdkSitesOnlyActive"), sortWeight: t("sdkColGain"), none: t("sdkSitesNone") }} />
+        )}
+      </div>
+      {isPortfolio && <SelectedSiteChips sites={siteList} selected={sites} onChange={setSites} />}
+      {data?.error && (
+        <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", fontSize: 12, color: "#f87171" }}>{data.error}</div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ border: "1px solid var(--color-border)", borderRadius: "12px", overflow: "hidden", marginTop: "20px", background: "var(--color-card)" }}>
-      {error && (
-        <div style={{ padding: "10px 20px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", fontSize: "12px", color: "#f87171" }}>
-          {error}
+      <InfoBlock posFrom={posFrom} setPosFrom={setPosFrom} posTo={posTo} setPosTo={setPosTo} minImpr={minImpr} setMinImpr={setMinImpr} />
+      {!guest && <KeywordWeightsBar w={weights} country={country} setCountry={setCountry} />}
+      {!guest && distinctFiltered > WEIGHT_CAP && (
+        <div style={{ padding: "6px 28px", fontSize: 12, color: "var(--color-text-tertiary)", borderBottom: "1px solid var(--color-border)" }}>
+          {t("sdkWeightScope").replace("{n}", String(WEIGHT_CAP)).replace("{total}", distinctFiltered.toLocaleString())}
         </div>
       )}
-      <InfoBlock posFrom={posFrom} setPosFrom={setPosFrom} posTo={posTo} setPosTo={setPosTo} days={days} setDays={setDays} />
-      {!isGuestView() && <KeywordWeightsBar w={weights} country={country} setCountry={setCountry} />}
-      <KeywordsTable data={keywords} loading={loading} siteDbId={siteDbId} weights={weights} country={country} />
+      <KeywordsTable
+        rows={sorted} loading={loading} siteDbId={siteDbId} weights={weights} country={country}
+        sortKey={sortKey} setSortKey={setSortKey} search={search} setSearch={setSearch}
+        multiSite={multiSite} onSelectSite={isPortfolio ? (id => setSites([id])) : undefined}
+        onExport={exportCsv} header={header}
+      />
     </div>
   );
 }
