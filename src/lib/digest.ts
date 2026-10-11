@@ -224,7 +224,10 @@ export async function buildDigestData(
       // "All time" = as far back as Search Analytics goes (16 months).
       const curFrom = days === 0 ? day(new Date(now.getTime() - 486 * 86_400_000)) : day(curStart);
       await pooledEach(gscSites, 4, async s => {
-        const opts = { dimensions: ["query"], rowLimit: 1000 };
+        // Rows come back ordered by clicks, and the striking list below is fed from the same
+        // response: a 4–20 query with many impressions but few clicks sits deep in it. 5000
+        // keeps those on large sites; rowLimit costs no extra quota (one request either way).
+        const opts = { dimensions: ["query"], rowLimit: 5000 };
         const [cur, prev] = await Promise.all([
           queryGscStrict(accounts, s.siteId!, { ...opts, startDate: curFrom, endDate: day(now) }),
           showDelta
