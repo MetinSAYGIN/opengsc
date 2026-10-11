@@ -22,7 +22,7 @@ import {
   algoChartLabel, algoImpact, withNeighbours, type AlgoImpactResult,
   type AlgoUpdate, type AlgoUpdateType,
 } from "@/lib/algoUpdates";
-import { buildCandleRows } from "@/lib/chartCandles";
+import { buildCandleRows, type MetricCandle } from "@/lib/chartCandles";
 import { CandlePanes, useChartTypePref } from "@/components/CandleChartParts";
 import { useParams, useRouter } from "next/navigation";
 import { usePrivacy } from "@/lib/PrivacyContext";
@@ -689,7 +689,7 @@ function ClusterTable({ title, data, blur = false }: { title: string; data: Clus
     .filter(r => tab === 'All' || (tab === 'Growing' ? r.clicksChange > 0 : r.clicksChange < 0))
     .sort((a, b) => {
       if (sortBy === 'position') return a.position - b.position;
-      return (b as any)[sortBy] - (a as any)[sortBy];
+      return b[sortBy] - a[sortBy];
     });
 
   const fmtN = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
@@ -838,10 +838,13 @@ function updateRules(item: SetupItem, patternStr: string): SetupItem {
 }
 
 // ─── Branded Chart ────────────────────────────────────────────────────────────
+// Row shape returned by /api/gsc/branded-report (one per day).
+interface BrandedRow { date: string; branded: number; nonBranded: number }
+
 function BrandedChart({ siteDbId, period, customDays, keywords }: { siteDbId: string; period: string; customDays?: number | null; keywords: string[] }) {
   const { t } = useLanguage();
   const [tab, setTab] = useState<'Trend' | 'Comparison'>('Trend');
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<BrandedRow[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -896,7 +899,7 @@ function BrandedChart({ siteDbId, period, customDays, keywords }: { siteDbId: st
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
             <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
             <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} width={32} />
-            <Tooltip formatter={(v: any, name: any) => [v, name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
+            <Tooltip formatter={(v, name) => [v, name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
             <Line type="monotone" dataKey="branded" stroke="#818cf8" strokeWidth={2} dot={false} name="branded" />
             <Line type="monotone" dataKey="nonBranded" stroke="#10b981" strokeWidth={2} dot={false} name="nonBranded" />
           </LineChart>
@@ -907,7 +910,7 @@ function BrandedChart({ siteDbId, period, customDays, keywords }: { siteDbId: st
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
             <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} width={40} />
-            <Tooltip formatter={(v: any, name: any) => [v.toLocaleString(), name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
+            <Tooltip formatter={(v, name) => [(v as number).toLocaleString(), name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
             <Bar dataKey="branded" fill="#818cf8" name="branded" radius={[4,4,0,0]} />
             <Bar dataKey="nonBranded" fill="#10b981" name="nonBranded" radius={[4,4,0,0]} />
           </BarChart>
@@ -1076,8 +1079,8 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? t("errFailed"));
-      setClusters((data.clusters ?? []).map((c: any) => ({ ...c, selected: true })));
-      setGroups((data.groups ?? []).map((g: any) => ({ ...g, selected: true })));
+      setClusters((data.clusters ?? []).map((c: SetupItem) => ({ ...c, selected: true })));
+      setGroups((data.groups ?? []).map((g: SetupItem) => ({ ...g, selected: true })));
       setAiUsed(data.clusters?.[0]?.aiGenerated ?? false);
       setStep(3);
     } catch (e) { setError((e as Error).message); setStep(1); }
@@ -1285,7 +1288,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
         {/* Footer */}
         <div style={{ padding: '14px 24px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <button
-            onClick={() => step > 1 && step !== 2 && setStep(s => (s - 1) as any)}
+            onClick={() => step > 1 && step !== 2 && setStep(s => (s - 1) as 1 | 2 | 3 | 4)}
             disabled={step <= 1 || step === 2}
             style={{ padding: '7px 18px', borderRadius: '8px', border: '1px solid var(--color-border)', background: 'var(--color-card)', color: 'var(--color-text-primary)', fontSize: '13px', fontWeight: 500, cursor: step <= 1 || step === 2 ? 'not-allowed' : 'pointer', opacity: step <= 1 || step === 2 ? 0.4 : 1 }}
           >
@@ -1319,13 +1322,20 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
 }
 
 // ─── Custom Chart Tooltip ─────────────────────────────────────────────────────
-function SiteTooltip({ active, payload, label }: any) {
+// Minimal recharts Tooltip-content props: `payload[i].payload` is the chart datum itself. The
+// datum stays a loose record because in candle mode the metric fields are MetricCandle objects,
+// not numbers.
+function SiteTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: Record<string, unknown> }>;
+  label?: string | number;
+}) {
   const { t } = useLanguage();
   if (!active || !payload?.length) return null;
   // Read the whole datum rather than reducing over dataKeys: position series use function
   // dataKeys (zero-guarded), whose stringification is not a field name.
-  const d = payload[0]?.payload ?? {};
-  const cell = (v: any, suffix = "") => (v == null || v === "" ? "—" : `${v}${suffix}`);
+  const d: Record<string, unknown> = payload[0]?.payload ?? {};
+  const cell = (v: unknown, suffix = "") => (v == null || v === "" ? "—" : `${v}${suffix}`);
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "10px", padding: "10px 14px", fontSize: "12px", color: "var(--color-text-primary)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
       <p style={{ fontWeight: 600, marginBottom: "6px", color: "var(--color-text-primary)" }}>{label}</p>
@@ -1455,11 +1465,16 @@ function PeriodDropdown({ period, onChange, rangeStart, rangeEnd, onRangeChange 
 // (Note adding/management itself lives on the "Заметки" tab — the old dropdown
 // here duplicated that with a couple of dead, unwired buttons, so it's gone.)
 // ─── AIO Impact tooltip: raw values + their index vs the base (=100) day ──────
-function AioTooltip({ active, payload, label }: any) {
+// Only mounted in AIO mode, where every series value is a number (clicksIdx / imprIdx).
+function AioTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ dataKey: string | number; value: number; payload?: Record<string, number> }>;
+  label?: string | number;
+}) {
   const { t } = useLanguage();
   if (!active || !payload?.length) return null;
-  const d = payload.reduce((acc: any, p: any) => { acc[p.dataKey] = p.value; return acc; }, {} as any);
-  const row = payload[0]?.payload ?? {};
+  const d = payload.reduce((acc: Record<string, number>, p: { dataKey: string | number; value: number }) => { acc[p.dataKey] = p.value; return acc; }, {} as Record<string, number>);
+  const row: Record<string, number> = payload[0]?.payload ?? {};
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "10px", padding: "10px 14px", fontSize: "12px", color: "var(--color-text-primary)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
       <p style={{ fontWeight: 600, marginBottom: "6px" }}>{label}</p>
@@ -1649,7 +1664,7 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
 
   // label holds an i18n KEY (rendered via t(label) below) so the dimension list stays single-
   // sourced while each language renders its own word for Query/Page/Country/Device.
-  const dims = [
+  const dims: { icon: React.ReactNode; v: string; label: string; disabled?: boolean }[] = [
     { icon: <Search size={14}/>,        v: "query",   label: "dimQuery" },
     { icon: <FileText size={14}/>,       v: "page",    label: "dimPage" },
     { icon: <Globe size={14}/>,          v: "country", label: "dimCountry" },
@@ -1669,7 +1684,7 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
       {open && (
         <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 300, minWidth: "260px", overflow: "hidden" }}>
           {/* Dimension */}
-          {dims.map(({ icon, v, label, disabled }: any) => (
+          {dims.map(({ icon, v, label, disabled }) => (
             <button key={label} disabled={disabled}
               onClick={() => { if (disabled) return; const same = filterDimension === v; onDimension(same ? null : v); onFilterText(""); }}
               style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 14px", fontSize: "13px", cursor: disabled ? "default" : "pointer", width: "100%", background: filterDimension === v && !disabled ? "rgba(59,130,246,0.1)" : "transparent", color: disabled ? "var(--color-text-secondary)" : filterDimension === v ? "#3B82F6" : "var(--color-text-primary)", border: "none", opacity: disabled ? 0.4 : 1 }}
@@ -2140,7 +2155,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions, customDays }: {
                   <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }} axisLine={false} tickLine={false} width={36} />
                   <Tooltip
                     contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value: any, name: any, item: any) => {
+                    formatter={(value, name, item) => {
                       const key = item?.dataKey as GA4Metric | undefined;
                       if (key === "engagement") return [`${value}%`, name];
                       if (key === "revenue") return [`$${value}`, name];
@@ -2229,6 +2244,17 @@ function timeAgo(date: string | Date): string {
   if (hours < 1)  return `${mins}m ago`;
   if (days < 1)   return `${hours}h ago`;
   return `${days}d ago`;
+}
+
+// One row of /api/indexing/sitemap/operations — the shared history shape rendered by both the
+// Backlinks tab (backlink_* ops) and the Indexing tab (everything else).
+interface IndexOpRow {
+  id: string;
+  type: string;
+  result?: string | null;
+  urlCount?: number | null;
+  detail?: string | null;
+  createdAt: string;
 }
 
 // ─── BacklinksTab ─────────────────────────────────────────────────────────────
@@ -2518,7 +2544,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
     } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
   };
 
-  const [ops, setOps] = useState<any[]>([]);
+  const [ops, setOps] = useState<IndexOpRow[]>([]);
   const [showOps, setShowOps] = useState(false);
   const [opsLoading, setOpsLoading] = useState(false);
 
@@ -2527,7 +2553,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
     try {
       const res = await fetch(`/api/indexing/sitemap/operations?siteDbId=${siteDbId}&limit=30`);
       const d = await res.json();
-      setOps((d.ops ?? []).filter((o: any) => o.type.startsWith("backlink")));
+      setOps((d.ops ?? []).filter((o: IndexOpRow) => o.type.startsWith("backlink")));
     } catch {}
     setOpsLoading(false);
   };
@@ -2941,7 +2967,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {ops.map((op: any, i: number) => (
+                  {ops.map((op: IndexOpRow, i: number) => (
                     <tr key={op.id} style={{ borderTop: "1px solid var(--color-border)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)" }}>
                       <td style={{ padding: "8px 14px", fontWeight: 600, color: "var(--color-text-primary)" }}>
                         {op.type === "backlink_check_alive" ? t("opCheck404") : op.type === "backlink_check_xr" ? t("opXmlRiver") : op.type}
@@ -2972,12 +2998,90 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
   );
 }
 
+// One row of /api/indexing/sitemap/urls — the Prisma SitemapUrl fields this tab reads (JSON
+// form: DateTime → ISO string, nullable column → null), plus the `audit` summary the route
+// always attaches.
+interface SitemapUrlRow {
+  id: string;
+  url: string;
+  sourceSitemap: string | null;
+  sitemapType: string;
+  lastmod: string | null;
+  lastmodValid: boolean | null;
+  imageCount: number;
+  videoCount: number;
+  newsCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  inventoryStatus: string;
+  changeStatus: string;
+  lastmodReliability: string;
+  googleStatus: string | null;
+  googleChecked: string | null;
+  xrStatus: string | null;
+  xrChecked: string | null;
+  twoIndexStatus: string | null;
+  neuralStatus: string | null;
+  neuralAt: string | null;
+  neuralQueue: string | null;
+  audit: { covered: boolean; issueCount: number };
+}
+
+// Per-status counts the same endpoint returns; every key is a number (0 when nothing matches).
+interface SitemapCounters {
+  total: number;
+  indexed: number;
+  notIndexed: number;
+  notChecked: number;
+  neuralSubmitted: number;
+  neuralChecked: number;
+  twoIndexSubmitted: number;
+  active: number;
+  added: number;
+  changed: number;
+  pendingMissing: number;
+  missing: number;
+  suspiciousLastmod: number;
+  auditCovered: number;
+}
+
+// Site-level sync metadata. `latestSync`/`summary` are non-optional in the type because the
+// render dereferences them directly under an `(…?.summary?.invalid ?? 0) > 0` guard; the state
+// starts empty (cast below), and that guard is what keeps the dereference safe before load.
+interface SitemapMeta {
+  lastSitemapSync?: string | null;
+  sitemapUrl?: string | null;
+  crawlInterval?: string | null;
+  siteUrl?: string | null;
+  latestSync: {
+    result: string | null;
+    summary: { invalid: number };
+    invalidExamples: string[];
+  };
+}
+
+// Doorway domain from /api/indexer/domains — only the picker fields are read here.
+interface IndexerDomainRow { id: string; domain: string }
+
+// Result banner of the NeuralIndexer / 2index submits (union of both response shapes).
+interface SubmitResultState {
+  ok?: boolean;
+  accepted?: number;
+  charged?: number | null;
+  balance?: number | null;
+  error?: string | null;
+  submitted?: number;
+  total?: number;
+}
+
 function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string }) {
   const { t } = useLanguage();
   // ── URL list state ──
-  const [urlRows,    setUrlRows]    = useState<any[]>([]);
-  const [counters,   setCounters]   = useState<any>({});
-  const [meta,       setMeta]       = useState<any>({});
+  const [urlRows,    setUrlRows]    = useState<SitemapUrlRow[]>([]);
+  // Cast: the counters/meta start genuinely empty and only arrive with the first loadUrls;
+  // every render that reads them is gated on counters.total > 0 or optional chains.
+  const [counters,   setCounters]   = useState<SitemapCounters>({} as SitemapCounters);
+  const [meta,       setMeta]       = useState<SitemapMeta>({} as SitemapMeta);
   const [total,      setTotal]      = useState(0);
   const [pages,      setPages]      = useState(1);
   const [page,       setPage]       = useState(1);
@@ -3008,7 +3112,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
   const [hasTwoIndex, setHasTwoIndex] = useState(false);
 
   // ── Custom Bot Farm Indexer ──
-  const [indexerDomains, setIndexerDomains] = useState<any[]>([]);
+  const [indexerDomains, setIndexerDomains] = useState<IndexerDomainRow[]>([]);
   // "all" mirrors the Indexer's own default: let the queue distribute URLs across every doorway
   // domain instead of making the operator pick one per submission.
   const [selectedFarmDomainId, setSelectedFarmDomainId] = useState("all");
@@ -3017,7 +3121,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   // ── Submit state ──
   const [submitting,   setSubmitting]   = useState(false);
-  const [submitResult, setSubmitResult] = useState<any>(null);
+  const [submitResult, setSubmitResult] = useState<SubmitResultState | null>(null);
   const [nnQueue,      setNnQueue]      = useState<"slow"|"fast"|"yandex">("slow");
 
   // ── Google check ──
@@ -3029,7 +3133,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
   const [xrCheckMsg,  setXrCheckMsg]  = useState("");
 
   // ── Operations history ──
-  const [ops,      setOps]      = useState<any[]>([]);
+  const [ops,      setOps]      = useState<IndexOpRow[]>([]);
   const [showOps,  setShowOps]  = useState(false);
   const [opsLoading, setOpsLoading] = useState(false);
 
@@ -3283,7 +3387,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
           setXrCheckMsg(pct > 0 ? `${prog} (${pct}%)` : prog);
         } catch { /* network error, retry */ }
       }
-    } catch (e) { setXrCheckMsg(`✗ ${(e as any).message}`); }
+    } catch (e) { setXrCheckMsg(`✗ ${(e as Error).message}`); }
     setXrChecking(false);
   };
 
@@ -3324,13 +3428,13 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
   // The list API caps `limit` at 200 per call, so "everything" means paging through. The 20k
   // guard mirrors the doorway queue's own ceiling, so a selection can never outgrow what a
   // submit can accept anyway.
-  const fetchAllRows = async (sf = statusFilter, sq = search): Promise<any[]> => {
-    const out: any[] = [];
+  const fetchAllRows = async (sf = statusFilter, sq = search): Promise<SitemapUrlRow[]> => {
+    const out: SitemapUrlRow[] = [];
     let pg = 1, pageCount = 1;
     while (pg <= pageCount && out.length < 20000) {
       const res = await fetch(`/api/indexing/sitemap/urls?${new URLSearchParams({ siteDbId, page: String(pg), limit: "200", status: sf, search: sq })}`);
       const d = await res.json();
-      const rows: any[] = d.rows ?? [];
+      const rows: SitemapUrlRow[] = d.rows ?? [];
       if (!rows.length) break;
       out.push(...rows);
       pageCount = d.pages ?? 1;
@@ -3376,7 +3480,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
     if (/blocked/i.test(s)) return t("idxBlocked");
     return s;
   };
-  const inventoryStatusLabel = (row: any) => {
+  const inventoryStatusLabel = (row: SitemapUrlRow) => {
     if (row.inventoryStatus === "missing") return t("idxMissing");
     if (row.inventoryStatus === "pending_missing") return t("idxPendingMissing");
     if (row.changeStatus === "added") return t("idxAdded");
@@ -3384,7 +3488,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
     if (row.changeStatus === "restored") return t("idxRestored");
     return t("idxInventoryActive");
   };
-  const inventoryStatusColor = (row: any) => row.inventoryStatus === "missing" ? "#F87171"
+  const inventoryStatusColor = (row: SitemapUrlRow) => row.inventoryStatus === "missing" ? "#F87171"
     : row.inventoryStatus === "pending_missing" ? "#FBBF24"
     : row.changeStatus === "added" ? "#4ADE80"
     : row.changeStatus === "changed" ? "#FBBF24"
@@ -3399,7 +3503,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
     };
     return m[type] ?? type;
   };
-  const operationDetail = (op: any) => {
+  const operationDetail = (op: IndexOpRow) => {
     if (!op.detail?.startsWith("{")) return op.detail ?? "—";
     try {
       const detail = JSON.parse(op.detail);
@@ -3853,7 +3957,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
                       </td>
                       <td style={{ padding: "8px 12px", color: "var(--color-text-secondary)", fontSize: "11px", whiteSpace: "nowrap" }}>
                         {(row.googleChecked || row.neuralAt || row.xrChecked)
-                          ? timeAgo(new Date(row.googleChecked ?? row.neuralAt ?? row.xrChecked))
+                          ? timeAgo(new Date((row.googleChecked ?? row.neuralAt ?? row.xrChecked) as string))
                           : "—"}
                       </td>
                     </tr>
@@ -4541,7 +4645,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
               {/* Position is inverted: rank 1 belongs at the top of the chart, and the default
                   scale would draw an improvement as a fall. */}
               {activeMetrics.has("position") && (
-                <Line yAxisId="pos" type="monotone" dataKey={(d: any) => d.position > 0 ? d.position : null} stroke={C.position}
+                <Line yAxisId="pos" type="monotone" dataKey={(d: { position: number }) => d.position > 0 ? d.position : null} stroke={C.position}
                   strokeWidth={1.5} dot={false} connectNulls name={t("avgPosition")} />
               )}
               {renderAlgoMarkers(algoMarkers ?? [], t as never)}
@@ -4781,8 +4885,8 @@ function OptimizeTab({ siteDbId }: { siteDbId: string }) {
     <div style={{ padding: "24px 32px", display: "flex", flexDirection: "column", gap: "0" }}>
       {OPTIMIZE_TOOLS.map(({ id, icon, iconBg, titleKey, descKey }, i) => {
         const isActive = active === id;
-        const title = t(titleKey as any);
-        const desc = t(descKey as any);
+        const title = t(titleKey as never);
+        const desc = t(descKey as never);
         return (
           <div key={id}>
             {/* Card header row */}
@@ -5058,6 +5162,24 @@ interface SitePageProps {
   guestEngines?: { bing: boolean; yandex: boolean }; // which engines the owner configured (guest view)
 }
 
+// Response of /api/gsc/site (src/app/api/gsc/site/route.ts) — the whole dashboard payload.
+// chartData rows always carry the comparison-period twins (*C, 0 = "no comparison row"); the
+// table row types (RankRow / CountryRow / DeviceRow) mirror what the route's mapRows produces.
+interface SiteData {
+  siteDbId: string;
+  chartData: { date: string; dateIso: string; clicks: number; impressions: number; ctr: number; position: number; clicksC: number; impressionsC: number; ctrC: number; positionC: number }[];
+  summary: Record<Metric, { value: number; change: number }>;
+  queries: RankRow[];
+  pages: RankRow[];
+  countries: CountryRow[];
+  devices: DeviceRow[];
+  newQueries: RankRow[];
+  newPages: RankRow[];
+  positionBuckets: { "1-3": number; "4-10": number; "11-20": number; "21+": number };
+  winnersLosers: WlData;
+  hasData: boolean;
+}
+
 export default function SitePage({
   siteDbId: propSiteDbId,
   domain: propDomain,
@@ -5135,7 +5257,7 @@ export default function SitePage({
       if (!s && !e && period === "custom") setPeriod("7d");
     }
   };
-  const [siteData, setSiteData]   = useState<any>(null);
+  const [siteData, setSiteData]   = useState<SiteData | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
 
   const TABS = useMemo(() => {
@@ -5268,7 +5390,7 @@ export default function SitePage({
 
   // Real data or empty fallback
   const chartData = useMemo(() => {
-    if (siteData?.chartData?.length > 0) return siteData.chartData;
+    if (siteData?.chartData && siteData.chartData.length > 0) return siteData.chartData;
     // Empty fallback (no fake numbers)
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - 7 + i);
@@ -5373,7 +5495,7 @@ export default function SitePage({
     // Owner: an engine is available if a global key OR at least one connected account exists.
     const has = (eng: string) => {
       if (localStorage.getItem(`seoKey_${eng}`)) return true;
-      try { return (JSON.parse(localStorage.getItem(`seoKey_${eng}_accounts_list`) || "[]") as any[]).length > 0; }
+      try { return (JSON.parse(localStorage.getItem(`seoKey_${eng}_accounts_list`) || "[]") as unknown[]).length > 0; }
       catch { return false; }
     };
     const list: AltEngine[] = [];
@@ -5382,7 +5504,7 @@ export default function SitePage({
     setAltEngines(list);
   }, [shareToken, guestEngines]);
   const aioChartData = useMemo(() => {
-    const rows: any[] = chartData ?? [];
+    const rows: (typeof chartData)[number][] = chartData ?? [];
     const baseClicks = rows.find(r => (r.clicks ?? 0) > 0)?.clicks ?? 0;
     const baseImpr = rows.find(r => (r.impressions ?? 0) > 0)?.impressions ?? 0;
     return rows.map(r => ({
@@ -5497,7 +5619,7 @@ export default function SitePage({
     fetch(getUrl(`/api/rank/keywords?siteId=${encodeURIComponent(siteDbId)}`))
       .then(r => r.json())
       .then(d => {
-        if (Array.isArray(d.keywords)) setTrackedKws(new Set(d.keywords.map((k: any) => String(k.keyword).toLowerCase())));
+        if (Array.isArray(d.keywords)) setTrackedKws(new Set(d.keywords.map((k: { keyword?: string }) => String(k.keyword).toLowerCase())));
       })
       .catch(() => {});
   }, [siteDbId, readOnly, shareToken]);
@@ -5517,37 +5639,41 @@ export default function SitePage({
       .catch(() => {});
   };
 
-  const applyPreset = (rows: any[]) => {
-    if (filterPreset === "paa")      return rows.filter((r: any) => r.label?.includes("?"));
-    if (filterPreset === "longtail") return rows.filter((r: any) => (r.label?.split(" ").length ?? 0) >= 3);
+  const applyPreset = (rows: RankRow[]) => {
+    if (filterPreset === "paa")      return rows.filter(r => r.label?.includes("?"));
+    if (filterPreset === "longtail") return rows.filter(r => (r.label?.split(" ").length ?? 0) >= 3);
     return rows;
   };
 
   const queryRows = useMemo(() => {
     let rows = siteData?.queries ?? [];
-    if (positionFilter)                                  rows = rows.filter((r: any) => r.pos <= positionFilter);
-    if (filterDimension === "query" && filterText.trim()) rows = rows.filter((r: any) => r.label?.toLowerCase().includes(filterText.toLowerCase()));
+    if (positionFilter)                                  rows = rows.filter(r => r.pos <= positionFilter);
+    if (filterDimension === "query" && filterText.trim()) rows = rows.filter(r => r.label?.toLowerCase().includes(filterText.toLowerCase()));
     rows = applyPreset(rows);
     return rows;
   }, [siteData, positionFilter, filterDimension, filterText, filterPreset]);
 
   const pageRows = useMemo(() => {
     let rows = siteData?.pages ?? [];
-    if (positionFilter)                                 rows = rows.filter((r: any) => r.pos <= positionFilter);
-    if (filterDimension === "page" && filterText.trim()) rows = rows.filter((r: any) => r.label?.toLowerCase().includes(filterText.toLowerCase()));
+    if (positionFilter)                                 rows = rows.filter(r => r.pos <= positionFilter);
+    if (filterDimension === "page" && filterText.trim()) rows = rows.filter(r => r.label?.toLowerCase().includes(filterText.toLowerCase()));
     return rows;
   }, [siteData, positionFilter, filterDimension, filterText]);
   const countryRows = useMemo(() => {
     let rows = siteData?.countries ?? [];
+    // `country` is read defensively (the API sends `name`): undefined falls through to the
+    // iso3ToName() half, exactly as before.
     if (filterDimension === "country" && filterText.trim())
-      rows = rows.filter((r: any) => r.country?.toLowerCase().includes(filterText.toLowerCase()) || iso3ToName(r.country ?? "", language).toLowerCase().includes(filterText.toLowerCase()));
+      rows = rows.filter((r: CountryRow & { country?: string }) => r.country?.toLowerCase().includes(filterText.toLowerCase()) || iso3ToName(r.country ?? "", language).toLowerCase().includes(filterText.toLowerCase()));
     return rows;
   }, [siteData, filterDimension, filterText]);
 
   const deviceRowsReal = useMemo(() => {
     let rows = siteData?.devices ?? [];
+    // Same defensive read: the API sends `name`, so `device` is undefined unless a future
+    // endpoint adds it.
     if (filterDimension === "device" && filterText)
-      rows = rows.filter((r: any) => r.device?.toUpperCase() === filterText.toUpperCase());
+      rows = rows.filter((r: DeviceRow & { device?: string }) => r.device?.toUpperCase() === filterText.toUpperCase());
     return rows;
   }, [siteData, filterDimension, filterText]);
   const newQueryRows   = useMemo(() => siteData?.newQueries     ?? [], [siteData]);
@@ -5832,7 +5958,7 @@ export default function SitePage({
                   kind: m === "ctr" ? "pct" as const : m === "position" ? "pos" as const : "count" as const,
                   label: m === "ctr" ? "CTR" : m === "position" ? t("avgPosition") : m === "clicks" ? t("clicks") : t("impressions"),
                 }))}
-              showPrev={candleData.some(r => ["clicks", "impressions", "ctr", "position"].some(k => (r[k] as any)?.prev))}
+              showPrev={candleData.some(r => ["clicks", "impressions", "ctr", "position"].some(k => (r[k] as MetricCandle | undefined)?.prev))}
               height={activeMetrics.size > 2 ? 360 : 300}
               topMargin={hasChartMarkers ? 26 : 6}
               renderMarkers={top => [
@@ -5847,7 +5973,7 @@ export default function SitePage({
                 half-drawn and unreadable. Only reserved when something needs it, so the plot
                 keeps its full height the rest of the time. */}
             <ComposedChart
-              data={aioMode ? aioChartData : chartData}
+              data={(aioMode ? aioChartData : chartData) as { date: string }[]}
               margin={{ top: hasChartMarkers ? 26 : 8, right: 0, left: 0, bottom: 0 }}
             >
               <defs>
@@ -5883,11 +6009,11 @@ export default function SitePage({
                   {activeMetrics.has("clicks")      && <Line yAxisId="left"  type="monotone" dataKey="clicksC"      stroke={C.clicks}       strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
                   {activeMetrics.has("impressions") && <Line yAxisId="right" type="monotone" dataKey="impressionsC" stroke={C.impressions}   strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
                   {activeMetrics.has("ctr")         && <Line yAxisId="left"  type="monotone" dataKey="ctrC"         stroke={C.ctr}           strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
-                  {activeMetrics.has("position")    && <Line yAxisId="pos"   type="monotone" dataKey={(d: any) => d.positionC > 0 ? d.positionC : null} stroke={C.position}      strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" name={t("avgPosition")} />}
+                  {activeMetrics.has("position")    && <Line yAxisId="pos"   type="monotone" dataKey={(d: { positionC: number }) => d.positionC > 0 ? d.positionC : null} stroke={C.position}      strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" name={t("avgPosition")} />}
                   {activeMetrics.has("clicks")      && <Area yAxisId="left"  type="monotone" dataKey="clicks"      stroke={C.clicks}       strokeWidth={2}   fill={`url(#sg-clicks)`}      dot={false} />}
                   {activeMetrics.has("impressions") && <Area yAxisId="right" type="monotone" dataKey="impressions" stroke={C.impressions}   strokeWidth={2}   fill={`url(#sg-impressions)`} dot={false} />}
                   {activeMetrics.has("ctr")         && <Line yAxisId="left"  type="monotone" dataKey="ctr"         stroke={C.ctr}           strokeWidth={1.5} dot={false} />}
-                  {activeMetrics.has("position")    && <Line yAxisId="pos"   type="monotone" dataKey={(d: any) => d.position > 0 ? d.position : null} stroke={C.position}    strokeWidth={1.5} dot={false} connectNulls name={t("avgPosition")} />}
+                  {activeMetrics.has("position")    && <Line yAxisId="pos"   type="monotone" dataKey={(d: { position: number }) => d.position > 0 ? d.position : null} stroke={C.position}    strokeWidth={1.5} dot={false} connectNulls name={t("avgPosition")} />}
                 </>
               )}
               {/* Google algorithm update markers (core / spam / discover) */}
