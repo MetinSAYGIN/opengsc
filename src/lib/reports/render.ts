@@ -294,6 +294,14 @@ function renderTraffic(data: ReportData, accent: string): string {
   return `<div class="kpis">${kpis}</div>${chart}`;
 }
 
+/** The Search Console dates a GSC section covers, when they differ from the header's period:
+ *  GSC data lags ~2 days, so these sections end earlier — exactly like the dashboard (issue #27). */
+export function searchDates(data: ReportData): string {
+  const { searchFrom, searchTo, from, to } = data.window;
+  if (!searchFrom || !searchTo || (searchFrom === from && searchTo === to)) return "";
+  return `<p class="meta">Google Search Console data: ${fmtDate(searchFrom)} — ${fmtDate(searchTo)} (Search Console reports with a ~2-day delay).</p>`;
+}
+
 function renderRows(rows: { key: string; clicks: number; impressions: number; delta: number | null }[], keyHeader: string): string {
   const body = rows.map(r => `<tr><td>${escapeHtml(r.key)}</td><td class="num">${fmtInt(r.clicks)}</td><td class="num">${fmtInt(r.impressions)}</td><td class="num">${deltaSpan(r.delta)}</td></tr>`).join("");
   return `<table><thead><tr><th>${escapeHtml(keyHeader)}</th><th class="num">Clicks</th><th class="num">Impressions</th><th class="num">Change</th></tr></thead><tbody>${body}</tbody></table>`;
@@ -458,9 +466,9 @@ export function renderReportHTML(input: RenderInput): string {
         body = `<div class="summary-lines">${lines || noData()}</div>`;
         break;
       }
-      case "traffic": body = d.traffic ? renderTraffic(d, accent) : noData(); break;
-      case "queries": body = d.queries ? renderRows(d.queries.rows, "Query") : noData(); break;
-      case "pages": body = d.pages ? renderRows(d.pages.rows, "Page") : noData(); break;
+      case "traffic": body = d.traffic ? renderTraffic(d, accent) + searchDates(d) : noData(); break;
+      case "queries": body = d.queries ? renderRows(d.queries.rows, "Query") + searchDates(d) : noData(); break;
+      case "pages": body = d.pages ? renderRows(d.pages.rows, "Page") + searchDates(d) : noData(); break;
       case "positions": body = d.positions ? renderPositions(d) : noData(); break;
       case "local_positions": body = d.local ? renderLocal(d) : noData(); break;
       case "indexing": body = d.indexing ? renderIndexing(d) : noData(); break;

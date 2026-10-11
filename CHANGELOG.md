@@ -5,6 +5,14 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Fixed — Client Reports: Top queries / Top pages showed ~90 days of data for any period (#27)
+
+- A 7-day report quoted 133 clicks / 1 371 impressions for a query the dashboard showed at 7 / 13 for the same week, and the homepage at 341 / 5 155 instead of 25 / 254. The tables read every stored row that had a query or a page — including the query+page rows the sync keeps as **90-day totals** dated on the sync day. Any period containing that day therefore counted 90 days (queries were also summed across every page they ranked on), and Top pages added those totals on top of its real per-day rows. The `www.` URLs in the report were the same leak: old addresses from 90 days back.
+- Both tables now come from Search Console for the report's exact dates — the same request the dashboard makes — so they match it. If Search Console can't be reached, Top pages falls back to the stored per-day page rows (exact for the last 90 days), and Top queries is left out rather than showing wrong numbers: the database has no per-day query data to fall back on.
+- Traffic, Top queries and Top pages now cover the same dates as the dashboard: the chosen period ending two days ago, because Search Console data lags ~2 days. Each of these sections says which dates it covers. Uptime, backlinks, indexing and reviews keep the period ending today.
+- Digests had the same flaw in "winning / losing queries": every query looked like a winner by its full 90-day clicks, and losers were always empty. Both lists now come from Search Console per site for the digest's two periods.
+- Reports and digests already sent stay as they were; the next preview or run uses the corrected numbers. No schema change.
+
 ### Fixed — Toxicity dashboard counted every clean donor as "not enough data" (#26)
 
 - The run classified correctly (its response said 42 clean / 7 suspicious / 1 unknown), but the dashboard folded each donor's rows starting from "unknown", and "unknown" deliberately outranks "clean" so an unjudged donor never reads as clean. A donor whose rows were all clean therefore never left the seed: 42 clean became 0 clean / 43 "not enough data". The fold now starts from the first row's own level (`worseLevel`, pinned by a test). Not DataForSEO-specific — every provider's clean donors were affected. No data was wrong; refreshing after the update shows the right counts without re-running anything.

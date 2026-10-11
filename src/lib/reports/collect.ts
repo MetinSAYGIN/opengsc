@@ -18,27 +18,14 @@ import { sovForSite } from "@/lib/visibility/store";
 import { AUDIT_RULES } from "@/lib/audit/rules";
 import type { PsiSummary } from "@/lib/audit/psi";
 import { normDomain } from "@/lib/mcp/shared";
+import { getUserGoogleAccounts, queryGscStrict, type GscAccount } from "@/lib/gscQuery";
+// The two windows (calendar vs Search Console) and their date math live in ./window, which
+// is pure and unit-tested; re-exported so existing imports keep working.
+import { DAY_MS, gscRowsToTop, mergeTopRows, reportWindow, type MetricRow, type ReportWindow, type TopRow } from "./window";
+export { reportWindow, type MetricRow, type ReportWindow };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
 const db = prisma as any;
-
-const DAY_MS = 86_400_000;
-
-export interface ReportWindow {
-  from: Date;
-  to: Date;
-  prevFrom: Date;
-  prevTo: Date;
-  days: number;
-}
-
-export function reportWindow(days: number, now = new Date()): ReportWindow {
-  const to = new Date(now);
-  const from = new Date(to.getTime() - days * DAY_MS);
-  const prevTo = new Date(from);
-  const prevFrom = new Date(prevTo.getTime() - days * DAY_MS);
-  return { from, to, prevFrom, prevTo, days };
-}
 
 // ─── traffic ──────────────────────────────────────────────────────────────────
 
@@ -78,11 +65,14 @@ function totalsOf(rows: { clicks: number; impressions: number; ctr: number; posi
 }
 
 export async function collectTraffic(siteId: string, w: ReportWindow): Promise<TrafficData | undefined> {
+  // Search window, not calendar window: the dashboard's KPIs end two days back (GSC lag), and
+  // the report must quote the same numbers for "the same 7 days" (issue #27).
+  const s = w.search;
   const [current, previous, seriesRows] = await Promise.all([
-    trafficTotals(siteId, w.from, w.to),
-    trafficTotals(siteId, w.prevFrom, w.prevTo),
+    trafficTotals(siteId, s.from, s.to),
+    trafficTotals(siteId, s.prevFrom, s.prevTo),
     db.dailyMetric.findMany({
-      where: { siteId, url: "", query: "", searchType: "web", date: { gte: w.from, lt: w.to } },
+      where: { siteId, url: "", query: "", searchType: "web", date: { gte: s.from, lt: s.to } },
       select: { date: true, clicks: true, impressions: true },
       orderBy: { date: "asc" },
     }) as { date: Date; clicks: number; impressions: number }[],
@@ -97,55 +87,92 @@ export async function collectTraffic(siteId: string, w: ReportWindow): Promise<T
 }
 
 // ─── queries / pages ──────────────────────────────────────────────────────────
-
-export interface MetricRow {
-  key: string;
-  clicks: number;
-  impressions: number;
-  prevClicks: number | null;
-  delta: number | null; // clicks vs previous period; null = the query is new or has no baseline
-}
+//
+// Issue #27: these used to groupBy DailyMetric over the report window with `query != ""` /
+// `url != ""`. That filter also catches the query+page rows of sync step 4 — 90-day TOTALS
+// with no date dimension, stamped date=endDate so "date >= since" readers find them. Any window
+// containing the sync day therefore summed 90 days of data (and, for queries, summed it again
+// across every page the query ranked on); Top pages double-counted on top of that, adding
+// those totals to the genuine per-day url rows. The www/non-www mix in the report was the
+// same bug: old URLs from 90 days back leaking into a 7-day table.
+//
+// Now: both come from Search Console live — the same call the dashboard makes, for the same
+// window — so the two agree by construction. There are no per-day query rows in the database
+// at all, so a query table without GSC is simply absent (never 90-day totals passed off as a
+// week). Pages can fall back to the per-day url rows (query = ""), which are exact for the
+// 90 days the sync keeps.
 
 export interface RowsData { rows: MetricRow[] }
 
-async function collectRows(siteId: string, w: ReportWindow, field: "query" | "url"): Promise<RowsData | undefined> {
-  const [cur, prev] = await Promise.all([
-    db.dailyMetric.groupBy({
-      by: [field],
-      where: { siteId, searchType: "web", date: { gte: w.from, lt: w.to }, [field]: { not: "" } },
-      _sum: { clicks: true, impressions: true },
-      orderBy: { _sum: { clicks: "desc" } },
-      take: 20,
-    }),
-    db.dailyMetric.groupBy({
-      by: [field],
-      where: { siteId, searchType: "web", date: { gte: w.prevFrom, lt: w.prevTo }, [field]: { not: "" } },
-      _sum: { clicks: true },
-      // Prisma requires an explicit orderBy whenever take/skip is used on groupBy; without one it
-      // falls back to the primary key (id), which is not in `by` → P2019, and Promise.all takes
-      // the whole Top queries / Top pages section down with it (issue #24).
-      orderBy: { _sum: { clicks: "desc" } },
-      take: 5000,
-    }),
-  ]);
-  if (!cur.length) return undefined;
-  const prevMap = new Map<string, number>(prev.map((r: Record<string, unknown>) => [String(r[field]), Number((r._sum as { clicks?: number })?.clicks) || 0]));
-  const rows: MetricRow[] = cur.map((r: Record<string, unknown>) => {
-    const clicks = Number((r._sum as { clicks?: number })?.clicks) || 0;
-    const prevClicks = prevMap.has(String(r[field])) ? prevMap.get(String(r[field])) ?? 0 : null;
-    return {
-      key: String(r[field]),
-      clicks,
-      impressions: Number((r._sum as { impressions?: number })?.impressions) || 0,
-      prevClicks,
-      delta: prevClicks === null ? null : clicks - prevClicks,
-    };
+const TOP_N = 20;
+/** Previous-period lookup depth: enough that a current top-20 key almost always finds its
+ *  baseline. One API call either way — rowLimit costs no extra quota. */
+const PREV_DEPTH = 5000;
+/** How many days of per-day url rows gscSync keeps (step 3). */
+const URL_ROWS_KEPT_DAYS = 90;
+
+interface GscSource { accounts: GscAccount[]; property: string }
+
+async function gscSource(userId: string, siteId: string): Promise<GscSource | null> {
+  const site: { siteId: string | null } | null = await db.site.findFirst({
+    where: { id: siteId, userId }, select: { siteId: true },
   });
-  return { rows };
+  if (!site?.siteId) return null;
+  const accounts = await getUserGoogleAccounts(userId).catch(() => [] as GscAccount[]);
+  return accounts.length ? { accounts, property: site.siteId } : null;
 }
 
-export const collectQueries = (siteId: string, w: ReportWindow) => collectRows(siteId, w, "query");
-export const collectPages = (siteId: string, w: ReportWindow) => collectRows(siteId, w, "url");
+async function liveTop(src: GscSource, dimension: "query" | "page", w: ReportWindow): Promise<RowsData | undefined | null> {
+  const s = w.search;
+  const [cur, prev] = await Promise.all([
+    queryGscStrict(src.accounts, src.property, { startDate: s.startStr, endDate: s.endStr, dimensions: [dimension], rowLimit: TOP_N }),
+    queryGscStrict(src.accounts, src.property, { startDate: s.prevStartStr, endDate: s.prevEndStr, dimensions: [dimension], rowLimit: PREV_DEPTH }),
+  ]);
+  if (cur === null) return null; // GSC unreachable — let the caller decide what is honest
+  const rows = mergeTopRows(gscRowsToTop(cur), prev === null ? null : gscRowsToTop(prev), TOP_N);
+  return rows.length ? { rows } : undefined;
+}
+
+/** Per-day url rows only (query = ""): sync step 3, exact, kept for 90 days. */
+async function storedPages(siteId: string, w: ReportWindow): Promise<RowsData | undefined> {
+  const s = w.search;
+  const sum = async (from: Date, to: Date, take: number): Promise<TopRow[]> => {
+    const rows: { url: string; _sum: { clicks: number | null; impressions: number | null } }[] =
+      await db.dailyMetric.groupBy({
+        by: ["url"],
+        where: { siteId, searchType: "web", query: "", url: { not: "" }, date: { gte: from, lt: to } },
+        _sum: { clicks: true, impressions: true },
+        // Prisma requires an explicit orderBy whenever take is used on groupBy (issue #24).
+        orderBy: { _sum: { clicks: "desc" } },
+        take,
+      });
+    return rows.map(r => ({ key: r.url, clicks: Number(r._sum?.clicks) || 0, impressions: Number(r._sum?.impressions) || 0 }));
+  };
+  const [cur, prev] = await Promise.all([sum(s.from, s.to, TOP_N), sum(s.prevFrom, s.prevTo, PREV_DEPTH)]);
+  if (!cur.length) return undefined;
+  // The sync only keeps 90 days of url rows: a previous window reaching past that has no
+  // baseline, which must read as "—", not as every page being new.
+  const oldestKept = s.to.getTime() - URL_ROWS_KEPT_DAYS * DAY_MS;
+  const prevCovered = s.prevFrom.getTime() >= oldestKept;
+  return { rows: mergeTopRows(cur, prevCovered ? prev : null, TOP_N) };
+}
+
+export async function collectQueries(userId: string, siteId: string, w: ReportWindow): Promise<RowsData | undefined> {
+  const src = await gscSource(userId, siteId);
+  if (!src) return undefined;
+  const live = await liveTop(src, "query", w);
+  if (live === null) console.warn(`[reports] Top queries: Search Console unreachable for site ${siteId}; section omitted`);
+  return live ?? undefined;
+}
+
+export async function collectPages(userId: string, siteId: string, w: ReportWindow): Promise<RowsData | undefined> {
+  const src = await gscSource(userId, siteId);
+  if (src) {
+    const live = await liveTop(src, "page", w);
+    if (live !== null) return live;
+  }
+  return storedPages(siteId, w);
+}
 
 // ─── positions (Rank Tracker) ─────────────────────────────────────────────────
 
@@ -417,7 +444,10 @@ export async function collectReviews(siteId: string, w: ReportWindow): Promise<R
 
 export interface ReportData {
   siteDomain: string;
-  window: { from: string; to: string; days: number; prevFrom: string; prevTo: string };
+  // `searchFrom`/`searchTo` (inclusive) are the Search Console dates the traffic / queries /
+  // pages sections cover — two days behind the calendar window, like the dashboard. Optional:
+  // snapshots frozen before issue #27 do not carry them.
+  window: { from: string; to: string; days: number; prevFrom: string; prevTo: string; searchFrom?: string; searchTo?: string };
   traffic?: TrafficData;
   queries?: RowsData;
   pages?: RowsData;
@@ -446,6 +476,7 @@ export async function collectReportData(
     window: {
       from: w.from.toISOString().slice(0, 10), to: w.to.toISOString().slice(0, 10), days: w.days,
       prevFrom: w.prevFrom.toISOString().slice(0, 10), prevTo: w.prevTo.toISOString().slice(0, 10),
+      searchFrom: w.search.startStr, searchTo: w.search.endStr,
     },
   };
   // Independent collectors; one failing section must not take the report down.
@@ -453,8 +484,8 @@ export async function collectReportData(
   const run = (p: Promise<unknown>, set: (v: unknown) => void) =>
     jobs.push(p.then(set).catch(e => console.warn("[reports] section collector failed:", e)));
   if (has("traffic")) run(collectTraffic(siteId, w), v => { data.traffic = v as TrafficData; });
-  if (has("queries")) run(collectQueries(siteId, w), v => { data.queries = v as RowsData; });
-  if (has("pages")) run(collectPages(siteId, w), v => { data.pages = v as RowsData; });
+  if (has("queries")) run(collectQueries(userId, siteId, w), v => { data.queries = v as RowsData; });
+  if (has("pages")) run(collectPages(userId, siteId, w), v => { data.pages = v as RowsData; });
   if (has("positions")) run(collectPositions(siteId), v => { data.positions = v as PositionsData; });
   if (has("local_positions")) run(collectLocal(siteId), v => { data.local = v as LocalData; });
   if (has("indexing")) run(collectIndexing(siteId, w), v => { data.indexing = v as IndexingData; });

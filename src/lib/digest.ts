@@ -4,7 +4,9 @@
 // show the FULL lists (all striking-distance queries, every attention site, etc.) and split
 // the view per search engine (Google / Bing / Yandex).
 //
-// Google numbers come from the local store (DailyMetric, TrackedKeyword). Bing/Yandex numbers
+// Google numbers come from the local store (DailyMetric, TrackedKeyword), except the query
+// winners/losers, which need per-period query data the store does not keep and are read from
+// Search Console live (issue #27). Bing/Yandex numbers
 // are fetched live (digestEngines.ts) only when requested — the page loads them lazily per tab.
 
 import { prisma } from "@/lib/prisma";
@@ -13,6 +15,7 @@ import { fetchLLM } from "@/lib/llm";
 import { NOTIFY_L, normalizeLang, type NotifyLang } from "@/lib/notifyI18n";
 import { buildBacklinkDigest, BASELINE_WINDOW_DAYS, type DigestBacklinks } from "@/lib/backlinkDigest";
 import { rawQuery, rawExec } from "@/lib/db/raw";
+import { getUserGoogleAccounts, queryGscStrict } from "@/lib/gscQuery";
 
 export interface DigestSettings {
   enabled: boolean;
@@ -94,6 +97,18 @@ const hasTag = (tagsField: string | null, tag: string): boolean => {
 const clean = (u: string) => u.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/\/$/, "");
 const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const day = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Run `worker` over `items` with at most `limit` in flight; a worker's failure is its own. */
+async function pooledEach<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const item = items[next++];
+      await worker(item).catch(() => undefined);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
 const fmtNum = (n: number) => {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -126,7 +141,7 @@ export async function buildDigestData(
   // Portfolio-wide means live properties the user actually works on: archived sites have no
   // new data by definition, and a hidden one is shelved — same rule the dashboard's portfolio
   // reports follow. Their rows would only overstate the totals the digest reports.
-  const allSites = await prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null }, select: { id: true, url: true, tags: true } });
+  const allSites = await prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null }, select: { id: true, url: true, tags: true, siteId: true } });
   const sites = tag ? allSites.filter(s => hasTag(s.tags, tag)) : allSites;
 
   const now = new Date();
@@ -194,17 +209,38 @@ export async function buildDigestData(
   }
 
   // ── winners / losers queries across the portfolio/tag
-  const agg = (gte: Date, lt?: Date) => prisma.dailyMetric.groupBy({
-    by: ["query"],
-    where: { siteId: { in: siteIds }, date: lt ? { gte, lt } : { gte, lte: now }, query: { not: "" } },
-    _sum: { clicks: true },
-  });
-  const [curQ, prevQ] = await Promise.all([agg(effectiveCurStart, undefined), showDelta ? agg(effectivePrevStart, effectiveCurStart) : Promise.resolve([])]);
-  const prevMap = new Map<string, number>(prevQ.map(r => [r.query, r._sum.clicks ?? 0] as [string, number]));
-  const curMap = new Map<string, number>(curQ.map(r => [r.query, r._sum.clicks ?? 0] as [string, number]));
+  // Live from Search Console, per site, for exactly the digest's two periods (issue #27).
+  // DailyMetric holds no per-day query rows: the only rows with a query are sync step 4's
+  // 90-day query+page TOTALS stamped with the sync date. Grouping those by a date window put
+  // all 90 days into the current period and nothing into the previous one — every query
+  // became a "winner" by its whole 90-day click count, and losers were always empty.
+  const curQ = new Map<string, number>(), prevQ = new Map<string, number>();
+  const gscSites = sites.filter(s => s.siteId);
+  if (gscSites.length) {
+    const accounts = await getUserGoogleAccounts(userId).catch(() => []);
+    if (accounts.length) {
+      const yesterday = (d: Date) => day(new Date(d.getTime() - 86_400_000));
+      // "All time" = as far back as Search Analytics goes (16 months).
+      const curFrom = days === 0 ? day(new Date(now.getTime() - 486 * 86_400_000)) : day(curStart);
+      await pooledEach(gscSites, 4, async s => {
+        const opts = { dimensions: ["query"], rowLimit: 1000 };
+        const [cur, prev] = await Promise.all([
+          queryGscStrict(accounts, s.siteId!, { ...opts, startDate: curFrom, endDate: day(now) }),
+          showDelta
+            ? queryGscStrict(accounts, s.siteId!, { ...opts, startDate: day(prevStart), endDate: yesterday(curStart) })
+            : Promise.resolve([]),
+        ]);
+        // A site whose either period failed is left out whole: half a comparison would show
+        // its every query as a winner (or loser) — exactly the bug this replaces.
+        if (cur === null || prev === null) return;
+        for (const r of cur) { const q = r.keys?.[0]; if (q) curQ.set(q, (curQ.get(q) ?? 0) + (r.clicks ?? 0)); }
+        for (const r of prev) { const q = r.keys?.[0]; if (q) prevQ.set(q, (prevQ.get(q) ?? 0) + (r.clicks ?? 0)); }
+      });
+    }
+  }
   const qDeltas: DigestQueryRow[] = [];
-  for (const [q, c] of curMap) qDeltas.push({ q, cur: c, prev: prevMap.get(q) ?? 0, d: c - (prevMap.get(q) ?? 0) });
-  for (const [q, p] of prevMap) if (!curMap.has(q)) qDeltas.push({ q, cur: 0, prev: p, d: -p });
+  for (const [q, c] of curQ) qDeltas.push({ q, cur: c, prev: prevQ.get(q) ?? 0, d: c - (prevQ.get(q) ?? 0) });
+  for (const [q, p] of prevQ) if (!curQ.has(q)) qDeltas.push({ q, cur: 0, prev: p, d: -p });
   base.winnersQ = qDeltas.filter(x => x.d > 0).sort((a, b) => b.d - a.d).slice(0, FULL.queries);
   base.losersQ = qDeltas.filter(x => x.d < 0).sort((a, b) => a.d - b.d).slice(0, FULL.queries);
 

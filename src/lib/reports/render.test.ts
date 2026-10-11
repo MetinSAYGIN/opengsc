@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildSummary, buildNextSteps, markdownToHtml, renderReportHTML, clicksSvg, fmtDeltaPct, escapeHtml,
+  buildSummary, buildNextSteps, markdownToHtml, renderReportHTML, clicksSvg, fmtDeltaPct, escapeHtml, searchDates,
 } from "./render";
 import type { ReportData } from "./collect";
 import type { ReportSectionId } from "./sections";
@@ -205,4 +205,18 @@ test("delta formatting: null is an em dash, signs and the minus are typographic"
 
 test("escapeHtml covers the five dangerous characters", () => {
   assert.equal(escapeHtml(`<a href="x">&'`), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;");
+});
+
+// ─── Search Console dates (issue #27) ─────────────────────────────────────────
+
+test("GSC sections state the Search Console dates they cover when they differ from the header", () => {
+  const d = fixtureData();
+  d.window = { ...d.window, searchFrom: "2026-08-24", searchTo: "2026-09-22" };
+  assert.match(searchDates(d), /2026-08-24 — 2026-09-22/);
+  const html = render({ data: d, sections: ["traffic", "queries", "audit"] });
+  assert.equal(html.match(/Google Search Console data:/g)?.length, 2); // traffic + queries, not audit
+});
+
+test("snapshots frozen before #27 (no search dates) render without the note", () => {
+  assert.equal(searchDates(fixtureData()), "");
 });
