@@ -114,7 +114,7 @@ test("a live window after the marker fires ONE chained scan; a re-tick does not 
   const scan = await prisma.gridScan.findFirst({ where: { presetId: "p-fire" } });
   assert.ok(scan, "scan not chained to the preset");
   assert.equal(scan.hl, "en"); // no LocalProfile row → gl us → en (the documented chain)
-  let p = await preset("p-fire");
+  const p = await preset("p-fire");
   assert.equal(p!.lastFireAt!.toISOString(), fireAt(11).toISOString(), "marker not advanced");
 
   // Re-tick inside the same window: latestFire == lastFireAt → nothing new.

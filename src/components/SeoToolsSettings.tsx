@@ -368,7 +368,7 @@ function ModelSelector() {  const { t } = useLanguage();
     if (model) setSel(provider ? `${provider}::${model}` : "__custom__");
     if (model && !provider) setCustom(model);
     loadModels();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   function flash() { setSaved(true); setTimeout(() => setSaved(false), 1500); }

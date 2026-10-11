@@ -158,7 +158,7 @@ export async function POST(req: Request) {
     }
 
     // Parse input URLs
-    let rawUrlList = Array.isArray(urls) 
+    const rawUrlList = Array.isArray(urls) 
       ? urls 
       : urls.split("\n").map((u: string) => u.trim()).filter((u: string) => u.length > 0);
 

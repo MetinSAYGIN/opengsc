@@ -59,7 +59,7 @@ export default function LinkWatchPage() {
     try { setFavs(new Set(JSON.parse(localStorage.getItem("lwFavDomains") || "[]"))); } catch {}
     reload();
     reloadOutreachDomains();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [mounted]);
 
   async function reload() {

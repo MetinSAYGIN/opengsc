@@ -152,7 +152,7 @@ test("apply: research log appends with a server date, prunes past 90 days, batch
   const { applyContextUpdates, getSiteContext } = await import("./store");
   const { prisma: p } = await import("../prisma");
 
-  let r = await applyContextUpdates("s1", [
+  const r = await applyContextUpdates("s1", [
     { appendResearchLog: { summary: "Keyword research: seed \"x\". Verdict: 3 reach." } },
     { nonsense: true },
   ], "mcp");

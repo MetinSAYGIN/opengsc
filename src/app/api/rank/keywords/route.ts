@@ -57,7 +57,7 @@ export async function GET(req: Request) {
   });
 
   // GSC comparison: one query for all keywords (top 500 by clicks, last 7 finalized days)
-  let gscMap: Record<string, { pos: number; clicks: number; impressions: number }> = {};
+  const gscMap: Record<string, { pos: number; clicks: number; impressions: number }> = {};
   if (withGsc && keywords.length && site) {
     const accounts = await getUserGoogleAccounts(userId);
     const rows = await queryGsc(accounts, site.siteId, {

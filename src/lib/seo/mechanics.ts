@@ -243,7 +243,7 @@ export function checkMechanics(text: string, rules: MechanicsRules): { text: str
   const issues: MechanicsIssue[] = [];
 
   const ms = normalizeMixedScript(text, rules.language);
-  let out = ms.text;
+  const out = ms.text;
   if (ms.fixed.length) {
     issues.push({
       code: "mixed_script", fixed: true, samples: ms.fixed.slice(0, 8),

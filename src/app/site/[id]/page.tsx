@@ -1942,7 +1942,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions, customDays }: {
     }
   };
 
-  useEffect(() => { loadReport(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [domain, period]);
+  useEffect(() => { loadReport();   }, [domain, period]);
 
   const linkProperty = async () => {
     const prop = properties.find(p => p.id === selectedProp);

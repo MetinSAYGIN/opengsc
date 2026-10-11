@@ -53,7 +53,7 @@ export async function POST(req: Request) {
   const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
   if (!site) return NextResponse.json({ error: 'Site not found' }, { status: 404 });
 
-  let data: any = {};
+  const data: any = {};
   if (shareEnabled !== undefined) {
     data.shareEnabled = !!shareEnabled;
   }

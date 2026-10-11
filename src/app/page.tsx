@@ -823,7 +823,7 @@ function PortfolioPageContent() {
       })
       .catch(() => {});
     return () => { ignore = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, []);
 
   // What a finished run means, in one place — shared by the button and by the resume effect
