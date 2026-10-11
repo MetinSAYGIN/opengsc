@@ -35,7 +35,7 @@ import pkg from "../../../package.json";
 import { getUserGoogleAccounts, makeOAuth2, queryGsc, isoDaysAgo } from "@/lib/gscQuery";
 import {
   type McpTool, type ToolCost,
-  sinceDate, lim, pct, r1, resolveSite, siteArg,
+  sinceDate, lim, pct, r1, resolveSite, resolveSites, siteArg, siteOrAllArg,
 } from "./shared";
 import { DATA_TOOLS, dataModuleCounts } from "./toolsData";
 import { OPTIMIZE_TOOLS } from "./toolsOptimize";
@@ -65,7 +65,9 @@ import { LEADS_TOOLS } from "./toolsLeads";
 import { CONTEXT_TOOLS } from "./toolsContext";
 import { PUBLISH_TOOLS } from "./toolsPublish";
 import { rawQuery } from "@/lib/db/raw";
-import { buildRelatedIntentGroups, siteBrandTerms } from "@/lib/cannibalization/relatedIntent";
+import { findStriking } from "@/lib/striking/query";
+import { findCannibalization } from "@/lib/cannibalization/query";
+import { findRelatedIntent } from "@/lib/cannibalization/related";
 
 export type { McpTool, ToolCost };
 
@@ -150,45 +152,47 @@ const CORE_TOOLS: McpTool[] = [
     name: "get_striking_distance",
     cost: "local",
     description:
-      "Striking-distance keywords for a site: queries ranking just off page 1 (default positions 4–20) with real impression volume — the fastest ranking wins. Each row includes the ranking page, so recommendations can target a concrete URL.",
+      "Striking-distance keywords: query + page pairs ranking just off the top (default positions 4–20) with real impression volume — the fastest ranking wins. " +
+      "Covers one site or the whole portfolio (site=\"all\"); every pair of every site is considered. Sorted by estGainClicks: the extra clicks the pair would get at position 3 with today's impressions (benchmark CTR) — for ordering, not a forecast. " +
+      "Data is the 90-day query+page total from the last Search Console sync; `window` gives its dates (there is no shorter period to choose).",
     inputSchema: {
       type: "object",
       properties: {
-        site: siteArg,
-        days: { type: "number", description: "Lookback window in days (default 90)" },
+        site: siteOrAllArg,
         positionFrom: { type: "number", description: "Lower bound of the position band (default 4)" },
-        positionTo: { type: "number", description: "Upper bound of the position band (default 20)" },
-        minImpressions: { type: "number", description: "Minimum summed impressions to include a query (default 10)" },
-        limit: { type: "number", description: "Max rows (default 50, max 300)" },
+        positionTo: { type: "number", description: "Upper bound of the position band, inclusive of the whole position (default 20 = up to 20.9)" },
+        minImpressions: { type: "number", description: "Minimum impressions over the 90 days (default 10)" },
+        sort: { type: "string", enum: ["gain", "impressions"], description: "gain (default) or impressions" },
+        limit: { type: "number", description: "Max rows (default 50, max 500)" },
       },
-      required: ["site"],
     },
     handler: async (userId, args) => {
-      const site = await resolveSite(userId, args.site);
-      const since = sinceDate(args.days, 90);
-      const posFrom = Math.max(1, Number(args.positionFrom ?? 4));
-      const posTo = Math.min(100, Number(args.positionTo ?? 20));
-      const minImpr = Math.max(0, Number(args.minImpressions ?? 10));
-
-      const rows = await prisma.dailyMetric.groupBy({
-        by: ["query", "url"],
-        where: { siteId: site.id, date: { gte: since }, position: { gte: posFrom, lte: posTo }, query: { not: "" }, url: { not: "" } },
-        _sum: { clicks: true, impressions: true },
-        _avg: { ctr: true, position: true },
-        having: { impressions: { _sum: { gte: minImpr } } },
-        orderBy: { _sum: { impressions: "desc" } },
-        take: lim(args.limit, 50, 300),
+      const sites = await resolveSites(userId, args.site);
+      if (!sites.length) return { keywords: [], note: "No sites connected." };
+      const posFrom = Math.min(100, Math.max(1, Math.floor(Number(args.positionFrom ?? 4)) || 4));
+      const posTo = Math.max(posFrom, Math.min(100, Math.floor(Number(args.positionTo ?? 20)) || 20));
+      const limit = lim(args.limit, 50, 500);
+      const res = await findStriking(sites.map(s => ({ id: s.id, url: s.url, tags: s.tags })), {
+        posFrom, posTo: posTo + 0.99,
+        minImpressions: Math.max(1, Number(args.minImpressions ?? 10) || 10),
+        limit: 20000,
       });
+      const rows = args.sort === "impressions" ? [...res.rows].sort((a, b) => b.impressions - a.impressions) : res.rows;
       return {
-        site: site.url,
+        sites: sites.map(s => s.url),
         positionBand: [posFrom, posTo],
-        keywords: rows.map(r => ({
+        window: res.window,
+        ...(res.mixedWindows ? { note: "Sites were last synced on different days; window shows the most recent." } : {}),
+        total: res.total,
+        keywords: rows.slice(0, limit).map(r => ({
+          ...(sites.length > 1 ? { site: r.siteName } : {}),
           query: r.query,
-          page: r.url,
-          impressions: r._sum.impressions ?? 0,
-          clicks: r._sum.clicks ?? 0,
-          ctrPercent: pct(r._avg.ctr ?? 0),
-          avgPosition: r1(r._avg.position ?? 0),
+          page: r.fullUrl,
+          impressions: r.impressions,
+          clicks: r.clicks,
+          ctrPercent: r.ctr,
+          avgPosition: r.position,
+          estGainClicks: r.gain,
         })),
       };
     },
@@ -198,65 +202,55 @@ const CORE_TOOLS: McpTool[] = [
     name: "get_cannibalization",
     cost: "local",
     description:
-      "Cannibalization for one site. mode=exact (default, backward-compatible) returns queries where two or more URLs compete. mode=related deterministically finds different query wordings with similar intent and conflicting ranking URLs, including confidence, page roles, flip-flops and review-only recommendations. Related mode is local: no LLM, live SERP or paid call, and it never changes pages/canonicals/redirects.",
+      "Cannibalization for one site or the portfolio (site=\"all\"). mode=exact (default) returns queries where two or more of a site's URLs each take ≥10% of the impressions within 20 positions of each other (branded queries skipped); isTrue marks pairs whose pages' own top queries overlap. " +
+      "mode=related deterministically finds different query wordings with similar intent and conflicting ranking URLs, with confidence, page roles, winner changes (flipFlops, from per-day data of the last 28 days — see dailyWindow; null until the instance has synced it) and review-only recommendations. " +
+      "Local: no LLM, live SERP or paid call, never changes pages/canonicals/redirects. Volumes are the 90-day query+page total from the last sync; `window` gives the dates.",
     inputSchema: {
       type: "object",
       properties: {
-        site: siteArg,
+        site: siteOrAllArg,
         mode: { type: "string", enum: ["exact", "related"], description: "exact (default) or related intent conflicts" },
-        days: { type: "number", description: "Lookback window in days (default 90)" },
-        minImpressions: { type: "number", description: "Minimum summed impressions per query (default 30)" },
-        limit: { type: "number", description: "Max queries (default 30, max 100)" },
+        minImpressions: { type: "number", description: "Minimum impressions per query across its competing pages (default 30)" },
+        limit: { type: "number", description: "Max queries / conflicts (default 30, max 200)" },
       },
-      required: ["site"],
     },
     handler: async (userId, args) => {
-      const site = await resolveSite(userId, args.site);
-      const since = sinceDate(args.days, 90);
-      const minImpr = Math.max(0, Number(args.minImpressions ?? 30));
-      const take = lim(args.limit, 30, 100);
+      const sites = await resolveSites(userId, args.site);
+      if (!sites.length) return { conflicts: [], note: "No sites connected." };
+      const minImpr = Math.max(1, Number(args.minImpressions ?? 30) || 30);
+      const take = lim(args.limit, 30, 200);
+      const scope = sites.map(s => ({ id: s.id, url: s.url, siteId: s.siteId, tags: s.tags }));
 
       if (args.mode === "related") {
-        const rows = await prisma.dailyMetric.findMany({
-          where: { siteId: site.id, date: { gte: since }, query: { not: "" }, url: { not: "" } },
-          select: { query: true, url: true, date: true, clicks: true, impressions: true, ctr: true, position: true },
-          orderBy: { impressions: "desc" },
-          take: 30_000,
-        });
-        const relatedConflicts = buildRelatedIntentGroups(rows, {
-          siteId: site.id,
-          siteName: site.url.replace("sc-domain:", "").replace(/^https?:\/\//, "").replace(/\/$/, ""),
-          brandTerms: siteBrandTerms(site.siteId),
-          minImpressions: minImpr,
-          limit: take,
-        });
+        const res = await findRelatedIntent(scope, { minImpressions: minImpr, limit: take });
         return {
-          site: site.url,
+          sites: sites.map(s => s.url),
           mode: "related",
-          relatedConflicts,
+          window: res.window,
+          dailyWindow: res.dailyWindow,
+          total: res.total,
+          relatedConflicts: res.groups,
           methodology: { deterministic: true, paidCalls: 0, candidateIndex: ["query_tokens", "ranking_urls"], autoActions: false },
-          truncated: rows.length === 30_000,
+          truncated: res.truncated,
         };
       }
 
-      const pairs = await prisma.dailyMetric.groupBy({
-        by: ["query", "url"],
-        where: { siteId: site.id, date: { gte: since }, query: { not: "" }, url: { not: "" } },
-        _sum: { clicks: true, impressions: true },
-        _avg: { position: true },
-      });
-      const byQuery = new Map<string, { url: string; clicks: number; impressions: number; position: number }[]>();
-      for (const p of pairs) {
-        const list = byQuery.get(p.query) ?? [];
-        list.push({ url: p.url, clicks: p._sum.clicks ?? 0, impressions: p._sum.impressions ?? 0, position: r1(p._avg.position ?? 0) });
-        byQuery.set(p.query, list);
-      }
-      const conflicts = [...byQuery.entries()]
-        .map(([query, urls]) => ({ query, urls: urls.sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions), totalImpressions: urls.reduce((s, u) => s + u.impressions, 0) }))
-        .filter(c => c.urls.length >= 2 && c.totalImpressions >= minImpr)
-        .sort((a, b) => b.totalImpressions - a.totalImpressions)
-        .slice(0, take);
-      return { site: site.url, conflicts };
+      const res = await findCannibalization(scope, { minImpressions: minImpr, limit: take });
+      return {
+        sites: sites.map(s => s.url),
+        window: res.window,
+        total: res.total,
+        conflicts: res.groups.map(g => ({
+          ...(sites.length > 1 ? { site: g.siteName } : {}),
+          query: g.query,
+          isTrue: g.isTrue,
+          totalImpressions: g.impressions,
+          urls: g.pages.map(p => ({
+            url: p.fullUrl, sharePercent: p.share, clicks: p.clicks, impressions: p.impressions,
+            position: p.position, topQuery: p.topQuery,
+          })),
+        })),
+      };
     },
   },
 

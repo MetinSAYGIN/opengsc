@@ -5,6 +5,13 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Added — Cannibalization: real "winner changes", a site picker in Related intent, MCP on the shared computation
+
+- **Daily winner changes work.** Related intent's "daily winner changes" read the query+page rows, which are one 90-day total per pair on a single date — so it was always 0, and the 10% of the confidence score it feeds never counted. The sync now also stores per-day query + page rows for the last 28 days (new `QueryPageDaily` table, paged past 25 000 rows, replaced on every sync). Volumes still come from the 90-day totals; only the day-by-day winner is read from the new rows. The tab says which 28 days it used, or that the data arrives with the next sync.
+- **Run `npx prisma db push` once after updating** (the standard update already does). Until then the sync skips the new step with a log line, Related intent shows the signal as unavailable, and the schema banner names the missing table.
+- **Site picker on the Related intent tab**, with each site's conflict counts; one selection shared by both tabs. Related intent is computed per site and cached until the next sync (a 251-site portfolio: 3.5 s the first time, 0.14 s after).
+- **MCP `get_striking_distance` and `get_cannibalization`** use the same computation as the screens: one site or `site: "all"`, every pair of every site, `window` / `dailyWindow` dates, `estGainClicks` for striking distance, share and each page's top query for cannibalization. The `days` argument is gone: it could only hide data — a `days` shorter than the time since the last sync returned nothing at all.
+
 ### Fixed — Striking distance and Cannibalization: fake period, rollup rows eating the budget, small sites left out, truncated sync
 
 - **The period selector (30/60/90/180 days) changed nothing.** Query+page rows are stored as one 90-day total per pair, dated on the sync day, so every choice showed the same 90 days. The selector is gone; both reports say which 90 days they cover ("Search Console, 90 days: Jul 11 – Oct 9").

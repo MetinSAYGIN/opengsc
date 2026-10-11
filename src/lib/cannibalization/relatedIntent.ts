@@ -168,7 +168,16 @@ function slugSimilarity(left: string, right: string): number {
 
 export function buildRelatedIntentGroups(
   metrics: RelatedIntentMetric[],
-  options: { siteId: string; siteName: string; brandTerms?: string[]; minImpressions?: number; limit?: number },
+  options: {
+    siteId: string; siteName: string; brandTerms?: string[]; minImpressions?: number; limit?: number;
+    /**
+     * Per-day rows for the "winner changes" signal. When given, totals come from `metrics` and
+     * the day-by-day winners only from these — the synced query+page rows are one 90-day total
+     * per pair (a single date), so counting days from them always found zero flips. When
+     * omitted, `metrics` serves both purposes, as before (tests, MCP callers with daily rows).
+     */
+    daily?: RelatedIntentMetric[];
+  },
 ): RelatedIntentGroup[] {
   const profiles = new Map<string, Profile>();
   const brands = (options.brandTerms ?? []).map(cleanText).filter(Boolean);
@@ -194,6 +203,18 @@ export function buildRelatedIntentGroups(
     profile.totalImpressions += impressions;
     profile.totalClicks += clicks;
 
+    if (!options.daily) addDaily(profile, row, impressions);
+  }
+
+  if (options.daily) {
+    for (const row of options.daily) {
+      if (!row.query || !row.url) continue;
+      const profile = profiles.get(cleanText(row.query));
+      if (profile) addDaily(profile, row, Math.max(0, row.impressions || 0));
+    }
+  }
+
+  function addDaily(profile: Profile, row: RelatedIntentMetric, impressions: number) {
     const date = new Date(row.date).toISOString().slice(0, 10);
     const daily = profile.daily.get(date) ?? new Map();
     const dailyPage = daily.get(row.url) ?? { impressions: 0, position: 0 };

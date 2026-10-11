@@ -58,3 +58,29 @@ test("dominant-page changes are exposed as flip-flop evidence", () => {
   assert.ok(group);
   assert.equal(group.evidence.flipFlops >= 2, true);
 });
+
+test("with `daily`, winners come from the per-day rows and totals from the 90-day summary", () => {
+  // The synced summary: one row per pair, all on the sync day — no day-to-day story in it.
+  const summary = [
+    row("crm comparison", "https://example.com/a", "2026-10-09", 300, 6),
+    row("crm comparison", "https://example.com/b", "2026-10-09", 200, 7),
+    row("crm comparisons", "https://example.com/a", "2026-10-09", 150, 6),
+    row("crm comparisons", "https://example.com/b", "2026-10-09", 120, 7),
+  ];
+  const withoutDaily = buildRelatedIntentGroups(summary, { siteId: "s", siteName: "example.com" });
+  assert.equal(withoutDaily[0]?.evidence.flipFlops ?? 0, 0, "a single date can't flip");
+
+  const daily = [
+    row("crm comparison", "https://example.com/a", "2026-10-01", 30, 5),
+    row("crm comparison", "https://example.com/b", "2026-10-01", 5, 9),
+    row("crm comparison", "https://example.com/a", "2026-10-02", 4, 10),
+    row("crm comparison", "https://example.com/b", "2026-10-02", 25, 4),
+    row("crm comparison", "https://example.com/a", "2026-10-03", 28, 5),
+    row("crm comparison", "https://example.com/b", "2026-10-03", 3, 9),
+    row("unrelated query", "https://example.com/z", "2026-10-01", 99, 1), // no profile → ignored
+  ];
+  const [group] = buildRelatedIntentGroups(summary, { siteId: "s", siteName: "example.com", daily });
+  assert.ok(group);
+  assert.equal(group.evidence.flipFlops, 2);
+  assert.equal(group.totalImpressions, 770, "totals are the summary's, daily rows are not added");
+});

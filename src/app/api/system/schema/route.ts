@@ -45,6 +45,7 @@ const EXPECTED_TABLES: { table: string; feature: string }[] = [
   { table: "ContentOperation", feature: "Content Operations" },
   { table: "ContentOperationEvent", feature: "Content Operations" },
   { table: "SourceAuditRun", feature: "Source Audit" },
+  { table: "QueryPageDaily", feature: "Cannibalization: daily winner changes" },
 ];
 
 export async function GET() {

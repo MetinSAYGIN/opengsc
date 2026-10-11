@@ -45,6 +45,13 @@ export async function queryPageWindows(siteIds: string[]): Promise<Map<string, S
   return out;
 }
 
+/**
+ * Days of per-day query+page rows kept in QueryPageDaily (gscSync Step 5) — the window Related
+ * intent counts "winner changes" over. Four weeks: long enough for a flip-flop pattern, short
+ * enough that date × query × page stays within a few paged requests.
+ */
+export const QUERY_PAGE_DAILY_DAYS = 28;
+
 /** Must match the window gscSync Step 4 asks Search Console for. */
 export const QUERY_PAGE_DAYS = 90;
 

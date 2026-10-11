@@ -406,7 +406,7 @@ export default function KeywordCannibalization({ siteDbId }: { siteDbId: string;
       </div>
       {mode === "exact"
         ? <><InfoBlock /><CannibalizationTable siteDbId={siteDbId} sites={isPortfolio ? sites : null} onSelectSites={isPortfolio ? setSites : undefined} /></>
-        : <RelatedIntentCannibalization siteDbId={siteDbId} sites={isPortfolio ? sites : null} />}
+        : <RelatedIntentCannibalization siteDbId={siteDbId} sites={isPortfolio ? sites : null} onSelectSites={isPortfolio ? setSites : undefined} />}
     </div>
   );
 }

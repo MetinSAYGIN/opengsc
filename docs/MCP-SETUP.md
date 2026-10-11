@@ -116,8 +116,8 @@ paid tools. A suspended member's token stops working on the next call.
 | `list_sites` | Every connected site across all Google accounts |
 | `get_search_performance` | GSC totals + top queries/pages for a date window; `page` param scopes to one page |
 | `compare_periods` | Period-over-period deltas: winners, losers, new & lost queries/pages |
-| `get_striking_distance` | Queries at positions 4–20 with impressions — fastest wins |
-| `get_cannibalization` | Exact-query conflicts by default; `mode=related` adds deterministic related-intent clusters, page roles, flip-flops and review-only actions |
+| `get_striking_distance` | Query + page pairs at positions 4–20 with impressions, for one site or `all`, sorted by estimated extra clicks at #3 — fastest wins |
+| `get_cannibalization` | Exact-query conflicts by default (one site or `all`); `mode=related` adds deterministic related-intent clusters, page roles, winner changes from the last 28 days of per-day data, and review-only actions |
 | `get_content_decay` | Every page trending down over two equal complete windows (56 or 14 days); Lost = traffic gone to zero, Critical past −25%, Warning past −5% |
 | `get_ctr_benchmark` | Top-10 queries whose real CTR trails the benchmark for their position — a snippet problem, not a content one |
 | `get_content_groups` | Your Content Groups and Topic Clusters with aggregate performance |

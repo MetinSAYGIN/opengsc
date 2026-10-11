@@ -220,6 +220,7 @@ model Site {
 
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   metrics               DailyMetric[]
+  queryPageDaily        QueryPageDaily[]
   contentGroups         ContentGroup[]
   topicClusters         TopicCluster[]
   pageInspections       PageInspection[]
@@ -637,6 +638,29 @@ model DailyMetric {
   @@index([siteId, searchType, date])
   @@index([url])
   @@index([query])
+}
+
+// Per-day query + page rows for the last QUERY_PAGE_DAILY_DAYS (gscSync Step 5).
+//
+// Kept apart from DailyMetric on purpose: every reader of DailyMetric's query+page rows
+// (striking distance, cannibalization, CTR, optimization briefs) assumes ONE 90-day total per
+// pair, and per-day rows mixed in there would be summed into those totals. This table answers
+// the one question a total can't — which page won a query on which day — for Related intent's
+// "winner changes" signal. Replaced wholesale on every sync, so it never grows past the window.
+model QueryPageDaily {
+  id          String   @id @default(cuid())
+  siteId      String
+  date        DateTime
+  query       String
+  url         String
+  clicks      Int
+  impressions Int
+  position    Float
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, date])
+  @@index([siteId, query])
 }
 
 // ─── Rank Tracker (SERP position monitoring) ─────────────────────────────────

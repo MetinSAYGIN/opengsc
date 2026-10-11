@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { bumpReportCacheVersion } from "@/lib/gsc/reportCache";
+import { QUERY_PAGE_DAILY_DAYS } from "@/lib/gsc/reportData";
 import { google } from 'googleapis';
 import { recordSyncCompleted } from '@/lib/syncSchedule';
 
@@ -73,6 +74,8 @@ const URL_DAILY_DAYS = 120;
 const URL_DAILY_MAX_PAGES = 8;
 /** Upper bound on query×page pages per site per sync (×25k rows) — see Step 4. */
 const QUERY_PAGE_MAX_PAGES = 8;
+/** Upper bound on date×query×page pages per site per sync (×25k rows) — see Step 5. */
+const QUERY_PAGE_DAILY_MAX_PAGES = 8;
 
 /**
  * Retry a Google call that came back over quota.
@@ -495,6 +498,57 @@ export async function runGscSync() {
           }
         } catch (err: any) {
           console.error(`[GSC Sync]     Error syncing query+page data for ${hostname}: ${err.message}`);
+        }
+
+        // ── Step 5: per-day query+page rows (Related intent "winner changes") ──
+        // Step 4's rows are one 90-day total per pair, so they can't say which page won a query
+        // on which day. These can, for the last QUERY_PAGE_DAILY_DAYS. They live in their own
+        // table (see QueryPageDaily in the schema) and are replaced wholesale each sync. An
+        // instance that hasn't run `prisma db push` yet just logs and carries on — the table is
+        // optional, Related intent reports the signal as unavailable.
+        try {
+          const qpdStart = new Date(endDate);
+          qpdStart.setDate(endDate.getDate() - (QUERY_PAGE_DAILY_DAYS - 1));
+          qpdStart.setHours(0, 0, 0, 0);
+          const qpdStartStr = qpdStart.toISOString().split('T')[0];
+          const qpdRows: { keys?: string[] | null; clicks?: number | null; impressions?: number | null; position?: number | null }[] = [];
+          let qpdCapped = false;
+          for (let page = 0; ; page++) {
+            if (page >= QUERY_PAGE_DAILY_MAX_PAGES) { qpdCapped = true; break; }
+            const res = await withQuotaRetry(hostname, () => wm.searchanalytics.query({
+              siteUrl: gscUrl,
+              requestBody: {
+                startDate:  qpdStartStr,
+                endDate:    endDateStr,
+                dimensions: ['date', 'query', 'page'],
+                rowLimit:   GSC_ROW_LIMIT,
+                startRow:   page * GSC_ROW_LIMIT,
+                dataState:  'all',
+              },
+            }));
+            const batch = res.data.rows ?? [];
+            qpdRows.push(...batch);
+            if (batch.length < GSC_ROW_LIMIT) break;
+          }
+          note.push(`${qpdRows.length} query+page/day${qpdCapped ? ` (capped)` : ''}`);
+          if (qpdRows.length > 0) {
+            await prisma.queryPageDaily.deleteMany({ where: { siteId: dbSite.id } });
+            await prisma.queryPageDaily.createMany({
+              data: qpdRows
+                .filter(r => r.keys?.[0] && r.keys?.[1] && r.keys?.[2])
+                .map(r => ({
+                  siteId:      dbSite.id,
+                  date:        new Date(r.keys![0]),
+                  query:       r.keys![1],
+                  url:         r.keys![2],
+                  clicks:      r.clicks      ?? 0,
+                  impressions: r.impressions ?? 0,
+                  position:    r.position    ?? 0,
+                })),
+            });
+          }
+        } catch (err: any) {
+          console.error(`[GSC Sync]     Per-day query+page rows skipped for ${hostname}: ${err.message}`);
         }
 
         // Reports computed from these rows (cannibalization, …) are cached per site; this
