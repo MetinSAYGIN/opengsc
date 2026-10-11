@@ -19,36 +19,8 @@ import {
 import { makeOAuth2, dateWindows, GA4_API_METRICS, type GoogleAccount } from "@/lib/ga4";
 import { aggregateSnapshots } from "@/lib/clarityParse";
 import { rawQuery } from "@/lib/db/raw";
-
-// ─── decay bucketing (mirrors /api/gsc/decay) ───────────────────────────────────
-
-function buildBuckets(type: "month" | "week", count: number) {
-  const now = new Date();
-  const buckets: { label: string; start: Date; end: Date }[] = [];
-  for (let i = count - 1; i >= 0; i--) {
-    if (type === "month") {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      buckets.push({
-        label: `${d.toLocaleDateString("en-US", { month: "short" })} ${d.getFullYear()}`,
-        start: new Date(d.getFullYear(), d.getMonth(), 1),
-        end: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59),
-      });
-    } else {
-      const ref = new Date(now);
-      ref.setDate(ref.getDate() - i * 7);
-      const day = ref.getDay();
-      const mon = new Date(ref); mon.setDate(ref.getDate() - (day === 0 ? 6 : day - 1)); mon.setHours(0, 0, 0, 0);
-      const sun = new Date(mon); sun.setDate(mon.getDate() + 6); sun.setHours(23, 59, 59);
-      buckets.push({ label: ref.toLocaleDateString("en-US", { month: "short", day: "numeric" }), start: mon, end: sun });
-    }
-  }
-  return buckets;
-}
-
-const bucketIndex = (date: Date, buckets: { start: Date; end: Date }[]): number => {
-  const t = date.getTime();
-  return buckets.findIndex(b => t >= b.start.getTime() && t <= b.end.getTime());
-};
+import { findDecayingPages } from "@/lib/decay/query";
+import { DEFAULT_MIN_PREVIOUS } from "@/lib/decay/logic";
 
 // CTR by position, Backlinko 2023 — the same table the CTR Benchmark tab uses.
 const CTR_BENCHMARKS: Record<number, number> = {
@@ -62,84 +34,58 @@ export const DATA_TOOLS: McpTool[] = [
     name: "get_content_decay",
     cost: "local",
     description:
-      "Content Decay: pages whose traffic is trending DOWN, with the per-bucket history behind the verdict. Compares the last 2 buckets against the 2 before them; a drop past 5% is Warning, past 25% is Critical. This is the primary way to find pages that need refreshing — feed a decaying URL straight into get_optimization_brief.",
+      "Content Decay: every page whose traffic fell, compared over two equal, complete windows ending at the site's latest synced day " +
+      "(period=month: 56 days vs the 56 before; week: 14 vs 14; the newest 2 provisional days are left out). " +
+      "Status: Lost = had traffic, none in the last 14 days (deindexed, broken or migrated away — check it first); Critical = down 25%+; Warning = down 5%+. " +
+      "Pages below min_previous in the earlier window are ignored as noise. Sorted by absolute loss. yoyPct compares the current window with the same 52 weeks earlier, when history reaches that far. " +
+      "This is the primary way to find pages that need refreshing — feed a decaying URL straight into get_optimization_brief.",
     inputSchema: {
       type: "object",
       properties: {
         site: siteOrAllArg,
         metric: { type: "string", enum: ["clicks", "impressions"], description: "Which metric decays (default clicks)" },
-        period: { type: "string", enum: ["month", "week"], description: "Bucket size (default month)" },
-        buckets: { type: "number", description: "How many buckets of history (default 16, min 4, max 24)" },
-        limit: { type: "number", description: "How many top pages to examine (default 20, max 50)" },
+        period: { type: "string", enum: ["month", "week"], description: "Window length per side: month = 56 days, week = 14 (default month)" },
+        min_previous: { type: "number", description: "Ignore pages with less than this in the earlier window (default 5 clicks / 100 impressions)" },
+        status: { type: "string", enum: ["Lost", "Critical", "Warning"], description: "Only this status" },
+        limit: { type: "number", description: "How many pages to return, worst first (default 50, max 500)" },
       },
     },
     handler: async (userId, args) => {
       const sites = await resolveSites(userId, args.site);
       if (!sites.length) return { decay: [], note: "No sites connected." };
-      const siteIds = sites.map(s => s.id);
-      const siteMap = new Map(sites.map(s => [s.id, s]));
       const metric = args.metric === "impressions" ? "impressions" : "clicks";
-      const cols = Math.min(24, Math.max(4, parseInt(String(args.buckets ?? 16), 10) || 16));
-      const topN = lim(args.limit, 20, 50);
-      const buckets = buildBuckets(args.period === "week" ? "week" : "month", cols);
-      const rangeStart = buckets[0].start;
-      const rangeEnd = buckets[buckets.length - 1].end;
-
-      // query='' keeps this at URL-level rows; the url='' row is the site-level aggregate.
-      // orderBy is spelled out per branch rather than built with a computed key: Prisma's
-      // groupBy overload can't resolve a dynamic one and silently falls back to `string`,
-      // which turns every downstream row into `any`.
-      const top = await prisma.dailyMetric.groupBy({
-        by: ["siteId", "url"],
-        where: { siteId: { in: siteIds }, query: "", date: { gte: rangeStart, lte: rangeEnd } },
-        _sum: { clicks: true, impressions: true },
-        orderBy: metric === "impressions" ? { _sum: { impressions: "desc" } } : { _sum: { clicks: "desc" } },
-        take: topN * 2,
+      const min = Number(args.min_previous);
+      const status = typeof args.status === "string" && ["Lost", "Critical", "Warning"].includes(args.status) ? args.status : null;
+      const limit = lim(args.limit, 50, 500);
+      const res = await findDecayingPages(sites.map(s => ({ id: s.id, url: s.url })), {
+        metric,
+        period: args.period === "week" ? "week" : "month",
+        minPrevious: Number.isFinite(min) && min >= 1 ? min : DEFAULT_MIN_PREVIOUS[metric],
+        // Everything, then filter and cut here: the per-status counts must describe the whole
+        // site, not the first `limit` rows.
+        limit: 20000,
       });
-      const urls = top.filter(u => u.url !== "").slice(0, topN);
-      if (!urls.length) return { sites: sites.map(s => s.url), decay: [], note: "No page-level metrics in this window yet — run a GSC sync." };
-
-      const records = await prisma.dailyMetric.findMany({
-        where: { siteId: { in: siteIds }, url: { in: urls.map(u => u.url) }, query: "", date: { gte: rangeStart, lte: rangeEnd } },
-        select: { siteId: true, url: true, date: true, clicks: true, impressions: true },
-      });
-
-      const series = new Map<string, number[]>();
-      for (const u of urls) series.set(`${u.siteId}::${u.url}`, new Array(cols).fill(0));
-      for (const rec of records) {
-        const arr = series.get(`${rec.siteId}::${rec.url}`);
-        if (!arr) continue;
-        const idx = bucketIndex(new Date(rec.date), buckets);
-        if (idx >= 0) arr[idx] += metric === "clicks" ? rec.clicks : rec.impressions;
-      }
-
-      const pages = urls.map(u => {
-        const vals = series.get(`${u.siteId}::${u.url}`)!;
-        const curr = vals.slice(-2).reduce((a, b) => a + b, 0);
-        const prev = vals.slice(-4, -2).reduce((a, b) => a + b, 0);
-        const changePct = prev > 0 ? Math.round(((curr - prev) / prev) * 100) : 0;
-        return {
-          site: siteMap.get(u.siteId)?.url ?? "",
-          url: u.url,
-          current: curr,
-          previous: prev,
-          changePercent: changePct,
-          status: changePct <= -25 ? "Critical" : changePct <= -5 ? "Warning" : "Stable",
-          history: vals,
-        };
-      });
-
+      const rows = status ? res.rows.filter(r => r.status === status) : res.rows;
+      if (!res.windows) return { sites: sites.map(s => s.url), decay: [], note: "No page-level metrics yet — run a GSC sync." };
       return {
         sites: sites.map(s => s.url),
         metric,
-        buckets: buckets.map(b => b.label),
-        decay: pages.filter(p => p.status !== "Stable" && !(p.current === 0 && p.previous === 0))
-          .sort((a, b) => a.changePercent - b.changePercent),
-        stable: pages.filter(p => p.status === "Stable").length,
+        windows: res.windows,
+        ...(res.mixedWindows ? { note: "Sites were last synced on different days; each site is compared over its own windows (the dates shown are the most recent site's)." } : {}),
+        examined: res.examined,
+        flagged: rows.length,
+        counts: {
+          Lost: res.rows.filter(r => r.status === "Lost").length,
+          Critical: res.rows.filter(r => r.status === "Critical").length,
+          Warning: res.rows.filter(r => r.status === "Warning").length,
+        },
+        decay: rows.slice(0, limit).map(r => ({
+          site: r.siteName, url: r.url, status: r.status,
+          current: r.current, previous: r.previous, change: r.change, changePercent: r.changePct, yoyPercent: r.yoyPct,
+        })),
       };
     },
   },
-
   {
     name: "get_ctr_benchmark",
     cost: "local",

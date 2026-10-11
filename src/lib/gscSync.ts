@@ -64,6 +64,13 @@ function isQuotaError(err: unknown): boolean {
   return status === 429 || /quota|rate.?limit|too many requests/i.test(String(e?.message ?? ''));
 }
 
+/** Search Console's maximum rows per searchanalytics request. */
+const GSC_ROW_LIMIT = 25_000;
+/** Days of per-URL daily rows refreshed on every sync — see Step 3. */
+const URL_DAILY_DAYS = 120;
+/** Upper bound on date×page pages per site per sync (×25k rows). */
+const URL_DAILY_MAX_PAGES = 8;
+
 /**
  * Retry a Google call that came back over quota.
  *
@@ -353,26 +360,51 @@ export async function runGscSync() {
         }
 
         // ── Step 3: sync per-URL daily data (Content Decay Map) ─────────────
-        // 90-day window gives ~3 monthly or ~13 weekly buckets in the decay map
+        // 90 days still drives the query+page summary below; the per-URL daily rows need longer.
         const url90Start = new Date(endDate);
         url90Start.setDate(endDate.getDate() - 90);
         url90Start.setHours(0, 0, 0, 0);
         const url90StartStr = url90Start.toISOString().split('T')[0];
 
-        try {
-          const urlRes = await withQuotaRetry(hostname, () => wm.searchanalytics.query({
-            siteUrl: gscUrl,
-            requestBody: {
-              startDate:  url90StartStr,
-              endDate:    endDateStr,
-              dimensions: ['date', 'page'],
-              rowLimit:   25000,
-              dataState:  'all',
-            },
-          }));
+        // Decay compares two 56-day windows and drops the newest 2 provisional days
+        // (src/lib/decay/logic.ts), so it needs ~114 days of page rows; 90 left the earlier
+        // window a month short and every page's "before" undercounted. Rows older than this
+        // window are never deleted, so a long-running instance keeps accumulating history
+        // (which is what the 16-month heatmap and the YoY column read).
+        const urlDailyStart = new Date(endDate);
+        urlDailyStart.setDate(endDate.getDate() - URL_DAILY_DAYS);
+        urlDailyStart.setHours(0, 0, 0, 0);
+        const urlDailyStartStr = urlDailyStart.toISOString().split('T')[0];
 
-          const urlRows = urlRes.data.rows ?? [];
-          note.push(`${urlRows.length} url-day`);
+        try {
+          // One request returns at most 25,000 rows, and date×page is days × pages: a site with
+          // a few hundred pages crosses that easily. It used to be a single request, so the tail
+          // — the low-traffic URLs a migration audit is looking for — was dropped silently.
+          // Page through with startRow; the cap only exists so a giant property can't monopolise
+          // the sync, and hitting it is logged rather than hidden.
+          const urlRows: { keys?: string[] | null; clicks?: number | null; impressions?: number | null; ctr?: number | null; position?: number | null }[] = [];
+          let capped = false;
+          for (let page = 0; ; page++) {
+            if (page >= URL_DAILY_MAX_PAGES) { capped = true; break; }
+            const urlRes = await withQuotaRetry(hostname, () => wm.searchanalytics.query({
+              siteUrl: gscUrl,
+              requestBody: {
+                startDate:  urlDailyStartStr,
+                endDate:    endDateStr,
+                dimensions: ['date', 'page'],
+                rowLimit:   GSC_ROW_LIMIT,
+                startRow:   page * GSC_ROW_LIMIT,
+                dataState:  'all',
+              },
+            }));
+            const batch = urlRes.data.rows ?? [];
+            urlRows.push(...batch);
+            if (batch.length < GSC_ROW_LIMIT) break;
+          }
+          note.push(`${urlRows.length} url-day${capped ? ` (capped at ${URL_DAILY_MAX_PAGES * GSC_ROW_LIMIT})` : ''}`);
+          if (capped) {
+            console.warn(`[GSC Sync]     ${hostname}: per-URL daily rows hit the ${URL_DAILY_MAX_PAGES * GSC_ROW_LIMIT}-row cap — the lowest-traffic URL-days are missing.`);
+          }
 
           if (urlRows.length > 0) {
             await prisma.dailyMetric.deleteMany({
@@ -380,7 +412,7 @@ export async function runGscSync() {
                 siteId: dbSite.id,
                 url:    { not: '' },
                 query:  '',
-                date:   { gte: url90Start, lte: endDate },
+                date:   { gte: urlDailyStart, lte: endDate },
               },
             });
             await prisma.dailyMetric.createMany({

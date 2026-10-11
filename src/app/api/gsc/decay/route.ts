@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { authOptions } from '@/lib/auth';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { findDecayingPages } from '@/lib/decay/query';
+import { DEFAULT_MIN_PREVIOUS } from '@/lib/decay/logic';
 
 type Metric = 'clicks' | 'impressions';
 
@@ -47,42 +48,138 @@ function bucketIndex(date: Date, buckets: ReturnType<typeof buildBuckets>): numb
 }
 
 // GET /api/gsc/decay?siteId=&metric=clicks|impressions&period=month|week&cols=16&top=20
-export async function GET(req: Request) {
-  let userId = await workspaceUserId();
-  if (!userId) {
-    // Guest access via a share link: the token must match the requested site (never 'all').
-    const sp = new URL(req.url).searchParams;
-    const shareToken = sp.get('shareToken') ?? '';
-    const sharedSiteId = sp.get('siteId') ?? '';
-    if (shareToken && sharedSiteId && sharedSiteId !== 'all') {
-      const shared = await prisma.site.findFirst({ where: { id: sharedSiteId, shareToken, shareEnabled: true } });
-      if (shared) userId = shared.userId;
-    }
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+//                   &parts=heatmap,decay&min=5&limit=5000
+//
+// Two answers share this route:
+//  • heatmap — the top `top` pages by metric, bucketed by calendar month/week (a picture, so the
+//    current partial bucket is fine there).
+//  • decay   — every page whose traffic fell, compared over two equal complete windows. See
+//    src/lib/decay/logic.ts for why that is no longer "the last two buckets of the heatmap".
+// `parts` lets each caller ask for only its half; omitted, both are returned as before.
+/** The workspace owner, or — via a share link — the owner of that one shared site (never 'all'). */
+async function resolveUserId(req: Request, siteId: string): Promise<string | null> {
+  const userId = await workspaceUserId();
+  if (userId) return userId;
+  const shareToken = new URL(req.url).searchParams.get('shareToken') ?? '';
+  if (shareToken && siteId && siteId !== 'all') {
+    const shared = await prisma.site.findFirst({ where: { id: siteId, shareToken, shareEnabled: true } });
+    if (shared) return shared.userId;
   }
+  return null;
+}
 
-  const { searchParams } = new URL(req.url);
-  const siteId    = searchParams.get('siteId') ?? '';
-  const metric    = (searchParams.get('metric') ?? 'clicks') as Metric;
-  const periodType= (searchParams.get('period') ?? 'month') as 'month' | 'week';
-  const cols      = Math.min(Math.max(parseInt(searchParams.get('cols') ?? '16'), 4), 24);
-  const topN      = Math.min(parseInt(searchParams.get('top') ?? '20'), 50);
-
-  let siteIds: string[];
-  let siteMap: Map<string, any>;
-
+/** The sites a request covers: one explicit site, or the live portfolio. null = not this user's. */
+async function resolveSites(userId: string, siteId: string) {
   if (siteId === 'all' || !siteId) {
     // Archived and hidden sites stay out of portfolio-wide reports (see striking/route.ts);
     // an explicit siteId still reaches them on purpose.
-    const sites = await prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null } });
-    siteIds = sites.map(s => s.id);
-    siteMap = new Map(sites.map(s => [s.id, s]));
-  } else {
-    const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
-    if (!site) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    siteIds = [site.id];
-    siteMap = new Map([[site.id, site]]);
+    return prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null } });
   }
+  const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
+  return site ? [site] : null;
+}
+
+const asMetric = (v: unknown): Metric => (v === 'impressions' ? 'impressions' : 'clicks');
+const asPeriod = (v: unknown): 'month' | 'week' => (v === 'week' ? 'week' : 'month');
+function asMin(v: unknown, metric: Metric): number {
+  const n = typeof v === 'number' ? v : parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), 1_000_000) : DEFAULT_MIN_PREVIOUS[metric];
+}
+function asLimit(v: unknown): number {
+  const n = typeof v === 'number' ? v : parseInt(String(v ?? '5000'), 10);
+  return Math.min(Math.max(Number.isFinite(n) ? Math.floor(n) : 5000, 1), 20000);
+}
+
+function decayFieldsOf(res: Awaited<ReturnType<typeof findDecayingPages>>, minPrev: number) {
+  return {
+    decay: res.rows,
+    decayTotal: res.total,
+    decayTruncated: res.truncated,
+    decayExamined: res.examined,
+    decayWindows: res.windows,
+    decayMixedWindows: res.mixedWindows,
+    decayMin: minPrev,
+    decaySites: res.sites,
+  };
+}
+
+interface DecayParams {
+  siteId: string;
+  metric: Metric;
+  period: 'month' | 'week';
+  cols: number;
+  top: number;
+  wantHeat: boolean;
+  wantDecay: boolean;
+  min: number;
+  limit: number;
+  /** Portfolio picker selection; null = every site. */
+  only: Set<string> | null;
+}
+
+function intIn(v: unknown, def: number, lo: number, hi: number): number {
+  const n = typeof v === 'number' ? v : parseInt(String(v ?? ''), 10);
+  return Math.min(Math.max(Number.isFinite(n) ? Math.floor(n) : def, lo), hi);
+}
+
+function paramsOf(src: Record<string, unknown>): DecayParams {
+  const metric = asMetric(src.metric);
+  const parts = Array.isArray(src.parts) ? src.parts.map(String) : String(src.parts ?? 'heatmap,decay').split(',');
+  const sitesRaw = Array.isArray(src.sites) ? src.sites : typeof src.sites === 'string' && src.sites ? src.sites.split(',') : null;
+  const only = sitesRaw ? new Set(sitesRaw.map(String).filter(Boolean).slice(0, 20000)) : null;
+  return {
+    siteId: String(src.siteId ?? ''),
+    metric,
+    period: asPeriod(src.period),
+    cols: intIn(src.cols, 16, 4, 24),
+    top: intIn(src.top, 20, 1, 50),
+    wantHeat: parts.includes('heatmap'),
+    wantDecay: parts.includes('decay'),
+    min: asMin(src.min, metric),
+    limit: asLimit(src.limit),
+    only: only && only.size ? only : null,
+  };
+}
+
+// POST /api/gsc/decay  — same parameters as GET, in a JSON body. The portfolio site picker's
+// selection (`sites`) can be hundreds of ids, far past what a URL carries.
+export async function POST(req: Request) {
+  let body: Record<string, unknown> = {};
+  try { body = (await req.json()) ?? {}; } catch { return NextResponse.json({ error: 'invalid_json' }, { status: 400 }); }
+  const p = paramsOf(body);
+  const userId = await resolveUserId(req, p.siteId);
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  return respond(userId, p);
+}
+
+export async function GET(req: Request) {
+  const p = paramsOf(Object.fromEntries(new URL(req.url).searchParams));
+  const userId = await resolveUserId(req, p.siteId);
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  return respond(userId, p);
+}
+
+async function respond(userId: string, p: DecayParams) {
+  const { metric, cols } = p;
+  const periodType = p.period;
+  const topN = p.top;
+
+  const sites = await resolveSites(userId, p.siteId);
+  if (!sites) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  // The decay summary needs every site (the picker shows counts for unselected ones too); the
+  // heatmap only the selected.
+  const shown = p.only ? sites.filter(s => p.only!.has(s.id)) : sites;
+  const siteIds = shown.map(s => s.id);
+  const siteMap = new Map(shown.map(s => [s.id, s]));
+
+  const decayFields = p.wantDecay
+    ? decayFieldsOf(await findDecayingPages(
+        sites.map(s => ({ id: s.id, url: s.url, tags: s.tags })),
+        { metric, period: periodType, minPrevious: p.min, limit: p.limit, onlySites: p.only },
+      ), p.min)
+    : {};
+  if (!p.wantHeat) return NextResponse.json({ pages: [], cols: [], allVals: [], ...decayFields });
+  if (!siteIds.length) return NextResponse.json({ pages: [], cols: [], allVals: [], ...decayFields });
 
   // ── Build time buckets ────────────────────────────────────────────────────────
   const buckets = buildBuckets(periodType, cols);
@@ -93,15 +190,17 @@ export async function GET(req: Request) {
   // query='' ensures we only get URL-level rows (not query+URL rows)
   const topUrls = await prisma.dailyMetric.groupBy({
     by: ['siteId', 'url'],
-    where: { siteId: { in: siteIds }, query: '', date: { gte: rangeStart, lte: rangeEnd } },
+    // url<>'' in the query, not after it: the site-level rollup rows (url='') exist once per
+    // search type per site, so on a portfolio they could fill the whole `take` and leave the
+    // heatmap with no pages at all.
+    where: { siteId: { in: siteIds }, url: { not: '' }, query: '', date: { gte: rangeStart, lte: rangeEnd } },
     _sum: { clicks: true, impressions: true },
     orderBy: { _sum: { [metric]: 'desc' } },
-    take: topN * 2, // Take a larger list so we get plenty of actual page URLs across sites
+    take: topN,
   });
 
-  // Exclude the site-level aggregate row (url='') — only keep actual page URLs
-  const urls = topUrls.filter(u => u.url !== '');
-  if (urls.length === 0) return NextResponse.json({ pages: [], cols: buckets.map(b => b.label), allVals: [], decay: [] });
+  const urls = topUrls;
+  if (urls.length === 0) return NextResponse.json({ pages: [], cols: buckets.map(b => b.label), allVals: [], ...decayFields });
   const topNUrls = urls.slice(0, topN);
 
   // ── Fetch daily records for those URLs ───────────────────────────────────────
@@ -146,31 +245,6 @@ export async function GET(req: Request) {
   const allVals = new Array(cols).fill(0);
   for (const { vals } of pages) vals.forEach((v, i) => { allVals[i] += v; });
 
-  // ── Decay detection ───────────────────────────────────────────────────────────
-  // Compare last 2 buckets vs previous 2 buckets
-  const decay = pages
-    .map(p => {
-      const curr = p.vals.slice(-2).reduce((a, b) => a + b, 0);
-      const prev = p.vals.slice(-4, -2).reduce((a, b) => a + b, 0);
-      if (prev === 0 && curr === 0) return null;
-      const changePct = prev > 0 ? Math.round(((curr - prev) / prev) * 100) : 0;
-      if (changePct >= -5) return null; // not declining
-      const status: 'Warning' | 'Critical' = changePct <= -25 ? 'Critical' : 'Warning';
-      return {
-        siteId: p.siteId,
-        siteName: p.siteName,
-        page:   p.path,
-        url:    p.url,
-        clicksLast2m:    curr - prev,
-        clicksLast2mPct: changePct,
-        clicksYoY:       null as number | null,
-        clicks:          curr,
-        status,
-      };
-    })
-    .filter(Boolean)
-    .sort((a: any, b: any) => a.clicksLast2mPct - b.clicksLast2mPct);
-
   return NextResponse.json({
     // `url` stays the path (the column is narrow and the domain repeats on every row); `fullUrl`
     // is what the UI links to and copies — a path alone can't be opened, and on the portfolio
@@ -179,6 +253,6 @@ export async function GET(req: Request) {
     cols:    buckets.map(b => b.label),
     years:   periodType === 'month' ? buckets.map(b => b.year) : undefined,
     allVals,
-    decay,
+    ...decayFields,
   });
 }

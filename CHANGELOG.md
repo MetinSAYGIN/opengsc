@@ -5,6 +5,20 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Fixed — Content Decay: the decaying-pages table compared a partial month, saw only 20 pages, and showed URLs you couldn't open (#28)
+
+- "Last 2 months" was the last two calendar buckets with the current one included: on Oct 11 it compared 11 days of October plus September against all of July and August, so almost every page read as decaying. It now compares two equal, complete windows (8 weeks vs the 8 before, or 2 vs 2), ending at the site's latest synced day minus the 2 provisional days Search Console is still filling in. The dates are shown above the table.
+- Every page is examined, not just the top 20 by traffic. A "Min. before" floor (default 5 clicks / 100 impressions) keeps 2 → 1-click noise out. New status **Lost**: a page that had traffic and has had none for the last 14 days — after a migration, the old URLs. Sorted by traffic lost, not by percentage. YoY is filled in when page data reaches back a year.
+- URLs are links to the full address (new tab), with a copy button and the full URL on hover — in the table and in the heatmap. Copying also works on instances opened over plain http.
+- **HTTP status check**, per row or for the whole filtered list (20 at a time, with progress and Stop): the first status, every redirect hop and where the chain ends — `301 → 200`, `301 → 404`, `301 → ✕` (dead target, with its address), `×3` for chains worth flattening, loops. Only URLs Search Console reported for that site are fetched, every hop goes through the private-address guard, and it needs the "act" permission (viewers and share links see the table without it).
+- Filters (status, HTTP result, URL text), sortable columns, real pagination (10–100 rows), clicks/impressions and 8-/2-week toggles. **CSV** exports exactly what the filters show across all pages, with HTTP status, final status, redirect target and hop count.
+- **/decay site picker** for large portfolios: search, tags, "only sites with declining pages", and every site's Lost/Critical/Warning counts and total loss, sorted worst-first. The selection filters the table and the heatmap; clicking a site badge in a row narrows to that site. Sites synced on the same day share their queries, so a 250-site portfolio computes in under a second.
+- The site page (Optimize → Content Decay Map) gets the same table.
+- Sync: page-level daily rows are now fetched with paging (they stopped at 25 000 rows, silently dropping the low-traffic tail on sites with a few hundred pages) and for 120 days instead of 90, which the two 8-week windows need. Takes effect on the next sync.
+- The heatmap could show no pages at all on a large portfolio (site-level rollup rows filled its top-N query) and repeated React keys across sites with the same paths; both fixed.
+- MCP `get_content_decay` uses the same computation: all pages, Lost status, window dates, per-status counts, `min_previous` and `status` arguments. The per-bucket `history` field is gone.
+- No schema change.
+
 ### Fixed — Client Reports: Top queries / Top pages showed ~90 days of data for any period (#27)
 
 - A 7-day report quoted 133 clicks / 1 371 impressions for a query the dashboard showed at 7 / 13 for the same week, and the homepage at 341 / 5 155 instead of 25 / 254. The tables read every stored row that had a query or a page — including the query+page rows the sync keeps as **90-day totals** dated on the sync day. Any period containing that day therefore counted 90 days (queries were also summed across every page they ranked on), and Top pages added those totals on top of its real per-day rows. The `www.` URLs in the report were the same leak: old addresses from 90 days back.

@@ -118,7 +118,7 @@ paid tools. A suspended member's token stops working on the next call.
 | `compare_periods` | Period-over-period deltas: winners, losers, new & lost queries/pages |
 | `get_striking_distance` | Queries at positions 4–20 with impressions — fastest wins |
 | `get_cannibalization` | Exact-query conflicts by default; `mode=related` adds deterministic related-intent clusters, page roles, flip-flops and review-only actions |
-| `get_content_decay` | Pages trending down, with per-bucket history; Warning past −5%, Critical past −25% |
+| `get_content_decay` | Every page trending down over two equal complete windows (56 or 14 days); Lost = traffic gone to zero, Critical past −25%, Warning past −5% |
 | `get_ctr_benchmark` | Top-10 queries whose real CTR trails the benchmark for their position — a snippet problem, not a content one |
 | `get_content_groups` | Your Content Groups and Topic Clusters with aggregate performance |
 | `get_engine_performance` | Bing / Yandex portfolio from the server-side snapshot |
