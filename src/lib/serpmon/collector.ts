@@ -26,7 +26,7 @@ import {
 import { kickSerpmonScheduler, kickSerpmonSchedulerIn } from "./scheduler";
 import type { RunRowLike } from "./store";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same untyped rows as the store
 type DbRow = any;

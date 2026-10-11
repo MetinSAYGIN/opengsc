@@ -30,7 +30,7 @@ let kickQueued = false;
 /** Set when the instance has not migrated the Serp* tables yet — the tick stops retrying. */
 let disabled = false;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 async function tick(): Promise<void> {

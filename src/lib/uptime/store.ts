@@ -13,7 +13,7 @@ import { parseAcceptStatus } from "./check";
 import { DEFAULT_UPTIME_SETTINGS, UPTIME_INTERVALS } from "./types";
 import type { UptimeBadge, UptimeSummary, UptimeWorkspaceSettings } from "./types";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 /** True when the failure is "the Uptime tables/columns do not exist", not a real error. */

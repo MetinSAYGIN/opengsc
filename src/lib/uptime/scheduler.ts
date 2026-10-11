@@ -64,7 +64,7 @@ const heartbeatLast = new Map<string, number>();
 /** Delivery attempts per unsent AlertEvent id (in memory; the 30-min window bounds restarts). */
 const alertAttempts = new Map<string, number>();
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 // ─── small helpers ────────────────────────────────────────────────────────────

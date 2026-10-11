@@ -9,7 +9,7 @@ import {
   type ActivationStage,
 } from "./activation";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema (see store.ts)
+ 
 const db = dbAny;
 
 /** Rows per statement — the SQLite parameter ceiling, same number as store.ts. */

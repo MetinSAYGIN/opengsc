@@ -23,7 +23,7 @@ let started = false;
 let running = false;
 let disabled = false;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 /** What the tick needs from a due report — db is untyped, this keeps the loop readable. */

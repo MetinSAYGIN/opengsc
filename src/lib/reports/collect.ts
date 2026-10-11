@@ -27,7 +27,7 @@ import { providerDrLabel } from "@/lib/seo/backlinkProvider";
 import { DAY_MS, gscRowsToTop, mergeTopRows, reportWindow, type MetricRow, type ReportWindow, type TopRow } from "./window";
 export { reportWindow, type MetricRow, type ReportWindow };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 // ─── traffic ──────────────────────────────────────────────────────────────────

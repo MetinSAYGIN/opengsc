@@ -16,7 +16,7 @@ import { dbAny } from "@/lib/prisma";
 import { getBranding, reportsSchemaMissing } from "@/lib/reports/store";
 import { reportPdfPath } from "@/lib/reports/pdf";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 const TOKEN_SCAN_CAP = 1000;

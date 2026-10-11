@@ -29,7 +29,7 @@ const CHUNK = 400;
  * Typing against a client that may predate the schema would make every instance that has not
  * restarted yet fail to compile.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
+ 
 const db = dbAny;
 
 /**
