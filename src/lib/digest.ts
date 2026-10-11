@@ -215,6 +215,7 @@ export async function buildDigestData(
   // all 90 days into the current period and nothing into the previous one — every query
   // became a "winner" by its whole 90-day click count, and losers were always empty.
   const curQ = new Map<string, number>(), prevQ = new Map<string, number>();
+  const strikingCands: { query: string; site: string; pos: number; impr: number }[] = [];
   const gscSites = sites.filter(s => s.siteId);
   if (gscSites.length) {
     const accounts = await getUserGoogleAccounts(userId).catch(() => []);
@@ -233,7 +234,14 @@ export async function buildDigestData(
         // A site whose either period failed is left out whole: half a comparison would show
         // its every query as a winner (or loser) — exactly the bug this replaces.
         if (cur === null || prev === null) return;
-        for (const r of cur) { const q = r.keys?.[0]; if (q) curQ.set(q, (curQ.get(q) ?? 0) + (r.clicks ?? 0)); }
+        for (const r of cur) {
+          const q = r.keys?.[0];
+          if (!q) continue;
+          curQ.set(q, (curQ.get(q) ?? 0) + (r.clicks ?? 0));
+          // The same rows feed the striking-distance list below — no extra API call.
+          const pos = r.position ?? 0, impr = r.impressions ?? 0;
+          if (pos >= 4 && pos <= 20 && impr >= 20) strikingCands.push({ query: q, site: nameOf.get(s.id) ?? "", pos: Math.round(pos * 10) / 10, impr });
+        }
         for (const r of prev) { const q = r.keys?.[0]; if (q) prevQ.set(q, (prevQ.get(q) ?? 0) + (r.clicks ?? 0)); }
       });
     }
@@ -245,21 +253,13 @@ export async function buildDigestData(
   base.losersQ = qDeltas.filter(x => x.d < 0).sort((a, b) => a.d - b.d).slice(0, FULL.queries);
 
   // ── Striking distance (near-page-1 opportunities)
-  try {
-    const strk = await prisma.dailyMetric.groupBy({
-      by: ["siteId", "query"],
-      where: { siteId: { in: siteIds }, date: { gte: effectiveCurStart, lte: now }, query: { not: "" }, position: { gte: 4, lte: 20 } },
-      _sum: { impressions: true }, _avg: { position: true },
-      having: { impressions: { _sum: { gte: 20 } } },
-      orderBy: { _sum: { impressions: "desc" } },
-      take: FULL.striking,
-    });
-    base.strikingCount = strk.length;
-    base.striking = strk.map(r => ({
-      query: r.query, site: nameOf.get(r.siteId) ?? "",
-      pos: Math.round((r._avg.position ?? 0) * 10) / 10, impr: r._sum.impressions ?? 0,
-    }));
-  } catch { /* best-effort on huge portfolios */ }
+  // Same trap as winners/losers until #27: the only stored rows with a query are step 4's
+  // 90-day query+page totals, so a windowed groupBy served 90 days of impressions (summed
+  // across pages) with 90-day positions under this period's heading. The candidates collected
+  // above come from the same live per-period rows — the window's own impressions and positions.
+  strikingCands.sort((a, b) => b.impr - a.impr);
+  base.strikingCount = strikingCands.length;
+  base.striking = strikingCands.slice(0, FULL.striking);
 
   // ── Sites needing attention: biggest % traffic drops
   if (showDelta) {
