@@ -12,6 +12,17 @@ export class GitHubError extends Error {
 
 interface RepoConfig { owner: string; repo: string; baseBranch: string; contentRoot: string; }
 
+/**
+ * GitHub API responses, typed as far as this module reads them. Field values the code only
+ * feeds through `String()`/`Number()`/truthiness stay `unknown`; everything is optional
+ * because a skewed response must degrade to defaults, never throw a TypeError.
+ */
+interface GithubBody { message?: unknown }
+/** refs/branches/commits answers — the sha chain the branch/commit/tree walk reads. */
+interface ShaHolder { object?: { sha?: string }; commit?: { sha?: string }; tree?: { sha?: string } }
+/** One entry of a recursive git-tree listing. */
+interface TreeEntry { path?: unknown; type?: unknown; size?: unknown; sha?: unknown }
+
 export interface RepositorySourceSnapshot {
   ref: string;
   commitSha: string;
@@ -51,19 +62,19 @@ async function githubRequest<T>(token: string, pathname: string, init: RequestIn
     cache: "no-store",
   });
   const raw = await res.text();
-  let body: any = null;
+  let body: GithubBody | null = null;
   try { body = raw ? JSON.parse(raw) : null; } catch { body = null; }
   if (!accepted.includes(res.status)) {
     const safeMessage = typeof body?.message === "string" ? body.message.slice(0, 240) : `GitHub returned ${res.status}`;
     throw new GitHubError(safeMessage, res.status === 401 || res.status === 403 ? 400 : 502, `github_${res.status}`);
   }
-  return body as T;
+  return body as unknown as T;
 }
 
 export async function verifyRepository(token: string, config: RepoConfig) {
   const c = validateRepositoryInput(config as unknown as Record<string, unknown>);
-  const repo: any = await githubRequest(token, `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`);
-  const branch: any = await githubRequest(token, `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/branches/${pathPart(c.baseBranch)}`);
+  const repo = await githubRequest<{ full_name?: string; private?: boolean; default_branch?: string; permissions?: { push?: boolean } }>(token, `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`);
+  const branch = await githubRequest<{ commit?: { sha?: string } }>(token, `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/branches/${pathPart(c.baseBranch)}`);
   return {
     fullName: String(repo.full_name ?? `${c.owner}/${c.repo}`),
     private: !!repo.private,
@@ -80,7 +91,7 @@ function sourcePriority(path: string): number {
   return 3;
 }
 
-function sourcePathCandidate(entry: any): boolean {
+function sourcePathCandidate(entry: TreeEntry): boolean {
   const path = String(entry?.path ?? "");
   if (entry?.type !== "blob" || !path) return false;
   if (/(?:^|\/)(?:node_modules|\.next|dist|build|coverage|vendor|generated|__snapshots__)(?:\/|$)/i.test(path)) return false;
@@ -99,18 +110,18 @@ export async function readRepositorySource(
   const c = validateRepositoryInput(config as unknown as Record<string, unknown>);
   const ref = validateSourceRef(requestedRef, c.baseBranch);
   const repoPath = `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`;
-  const branch: any = await githubRequest(token, `${repoPath}/git/ref/heads/${pathPart(ref)}`);
+  const branch = await githubRequest<ShaHolder>(token, `${repoPath}/git/ref/heads/${pathPart(ref)}`);
   const commitSha = String(branch?.object?.sha ?? "");
   if (!commitSha) throw new GitHubError("Source ref has no commit", 400, "github_empty_branch");
-  const commit: any = await githubRequest(token, `${repoPath}/git/commits/${encodeURIComponent(commitSha)}`);
+  const commit = await githubRequest<ShaHolder>(token, `${repoPath}/git/commits/${encodeURIComponent(commitSha)}`);
   const treeSha = String(commit?.tree?.sha ?? "");
   if (!treeSha) throw new GitHubError("Commit has no source tree", 400, "github_empty_tree");
-  const tree: any = await githubRequest(token, `${repoPath}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
+  const tree = await githubRequest<{ tree?: TreeEntry[]; truncated?: boolean }>(token, `${repoPath}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`);
   const relevant = (Array.isArray(tree?.tree) ? tree.tree : []).filter(sourcePathCandidate);
-  const oversized = relevant.some((entry: any) => Number(entry?.size ?? 0) > SOURCE_FILE_BYTES);
+  const oversized = relevant.some((entry) => Number(entry?.size ?? 0) > SOURCE_FILE_BYTES);
   const candidates = relevant
-    .filter((entry: any) => Number(entry?.size ?? 0) <= SOURCE_FILE_BYTES)
-    .sort((a: any, b: any) => sourcePriority(String(a.path)) - sourcePriority(String(b.path)) || String(a.path).localeCompare(String(b.path)));
+    .filter((entry) => Number(entry?.size ?? 0) <= SOURCE_FILE_BYTES)
+    .sort((a, b) => sourcePriority(String(a.path)) - sourcePriority(String(b.path)) || String(a.path).localeCompare(String(b.path)));
   const selected = candidates.slice(0, SOURCE_FILE_LIMIT);
   const files: RepositorySourceSnapshot["files"] = [];
   let cursor = 0;
@@ -122,7 +133,7 @@ export async function readRepositorySource(
       const size = Number(entry.size ?? 0);
       if (totalBytes + size > SOURCE_TOTAL_BYTES) { budgetTruncated = true; continue; }
       totalBytes += size; // reserve before awaiting so concurrent workers share one hard budget
-      const blob: any = await githubRequest(token, `${repoPath}/git/blobs/${encodeURIComponent(String(entry.sha))}`);
+      const blob = await githubRequest<{ encoding?: unknown; content?: unknown }>(token, `${repoPath}/git/blobs/${encodeURIComponent(String(entry.sha))}`);
       if (blob?.encoding !== "base64" || typeof blob?.content !== "string") { budgetTruncated = true; continue; }
       const content = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
       files.push({ path: String(entry.path), content, size: Buffer.byteLength(content) });
@@ -146,7 +157,7 @@ export async function readRepositoryFile(token: string, config: RepoConfig, file
   const c = validateRepositoryInput(config as unknown as Record<string, unknown>);
   const path = joinContentPath(c.contentRoot, filePath);
   try {
-    const body: any = await githubRequest(token,
+    const body = await githubRequest<{ type?: unknown; content?: unknown; sha?: unknown; html_url?: unknown }>(token,
       `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/contents/${pathPart(path)}?ref=${encodeURIComponent(ref)}`,
       {}, [200]);
     if (body?.type !== "file" || typeof body?.content !== "string") throw new GitHubError("Target path is not a file", 400, "github_not_file");
@@ -186,7 +197,7 @@ export async function createContentPullRequest(token: string, config: RepoConfig
   const branch = `opengsc/${slug}-${suffix}`;
   const repoPath = `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`;
 
-  const base: any = await githubRequest(token, `${repoPath}/git/ref/heads/${pathPart(c.baseBranch)}`);
+  const base = await githubRequest<ShaHolder>(token, `${repoPath}/git/ref/heads/${pathPart(c.baseBranch)}`);
   const baseSha = String(base?.object?.sha ?? "");
   if (!baseSha) throw new GitHubError("Base branch has no commit", 400, "github_empty_branch");
 
@@ -200,7 +211,7 @@ export async function createContentPullRequest(token: string, config: RepoConfig
   }
 
   const file = await readRepositoryFile(token, c, input.filePath, branch);
-  const commit: any = await githubRequest(token, `${repoPath}/contents/${pathPart(file.path)}`, {
+  const commit = await githubRequest<ShaHolder>(token, `${repoPath}/contents/${pathPart(file.path)}`, {
     method: "PUT",
     body: JSON.stringify({
       message: input.commitMessage.slice(0, 200),
@@ -210,14 +221,14 @@ export async function createContentPullRequest(token: string, config: RepoConfig
     }),
   }, [200, 201]);
 
-  let pr: any;
+  let pr: { number?: unknown; html_url?: unknown };
   try {
     pr = await githubRequest(token, `${repoPath}/pulls`, {
       method: "POST", body: JSON.stringify({ title: input.title.slice(0, 240), body: input.body.slice(0, 20_000), head: branch, base: c.baseBranch }),
     }, [201]);
   } catch (error) {
     if (!(error instanceof GitHubError) || error.code !== "github_422") throw error;
-    const existing: any[] = await githubRequest(token, `${repoPath}/pulls?state=open&head=${encodeURIComponent(`${c.owner}:${branch}`)}`);
+    const existing = await githubRequest<{ number?: unknown; html_url?: unknown }[]>(token, `${repoPath}/pulls?state=open&head=${encodeURIComponent(`${c.owner}:${branch}`)}`);
     if (!existing[0]) throw error;
     pr = existing[0];
   }
@@ -229,7 +240,7 @@ export async function createContentPullRequest(token: string, config: RepoConfig
 
 export async function readPullRequest(token: string, config: RepoConfig, number: number) {
   const c = validateRepositoryInput(config as unknown as Record<string, unknown>);
-  const pr: any = await githubRequest(token, `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/pulls/${number}`);
+  const pr = await githubRequest<{ state?: unknown; merged?: unknown; merged_at?: unknown; html_url?: unknown; merge_commit_sha?: unknown }>(token, `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}/pulls/${number}`);
   return {
     state: String(pr.state ?? ""), merged: !!pr.merged, mergedAt: pr.merged_at ? String(pr.merged_at) : null,
     url: String(pr.html_url ?? ""), mergeCommitSha: pr.merge_commit_sha ? String(pr.merge_commit_sha) : null,

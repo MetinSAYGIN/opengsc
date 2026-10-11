@@ -29,7 +29,7 @@ import { priceExpand } from "@/lib/seo/metrics";
 import { recordUsage, withinCap, releaseUnusedUnits } from "@/lib/seo/metricsStore";
 import { scrapePage } from "@/lib/seo/scrape";
 import { maskAIPatterns, headingCounts } from "@/lib/seo/rewrite";
-import { runRewriteBatch } from "@/lib/seo/rewriteBatch";
+import { runRewriteBatch, type RewriteBatchState } from "@/lib/seo/rewriteBatch";
 import { factDrift, driftSeverity } from "@/lib/seo/factDrift";
 import { uniquenessPct, wordCount } from "@/lib/seo/textMetrics";
 import { genByType } from "@/lib/seo/generate";
@@ -53,6 +53,22 @@ const CTR_BENCHMARKS: Record<number, number> = {
   1: 27.6, 2: 15.8, 3: 11.0, 4: 8.4, 5: 6.3, 6: 4.9, 7: 3.9, 8: 3.3, 9: 2.7, 10: 2.4,
 };
 
+/** `keywordIdeas` as the schema documents it — `true` (Settings defaults) or a literal object. */
+type KeywordIdeasOpts = { limit?: unknown; withDifficulty?: unknown; mode?: unknown };
+
+/**
+ * The job payload genByType accepts. generate.ts keeps its `GenBody` unexported, so this pulls
+ * the type through the function's own signature instead of duplicating it; the payload is built
+ * from unvalidated JSON args plus resolved credentials, so the hand-off is a deliberate cast.
+ */
+type GenPayload = Parameters<typeof genByType>[1];
+
+/** A completed generation-job result blob — only what this poll surface lifts to the top level. */
+interface GenJobResult {
+  mechanics?: { code?: unknown; detail?: unknown; fixed?: boolean; samples?: unknown[] }[];
+  judgeConcerns?: unknown[];
+}
+
 // ─── outline resolution for text jobs ────────────────────────────────────────────
 // Everything below makes the wrong outline shape impossible to hand over silently; the shape
 // logic itself (what counts as an outline) lives in outlineShape.ts, pure and unit-tested.
@@ -61,11 +77,11 @@ const CTR_BENCHMARKS: Record<number, number> = {
 // (what get_generations lists — the same records the browser's structure picker syncs from),
 // then a completed outline/outline_auto SeoJob — so the jobId the agent just polled works as
 // the outlineId of the follow-up text job with zero extra calls.
-async function fetchSavedOutline(userId: string, outlineId: string): Promise<{ outline: any; keyword: string } | null> {
+async function fetchSavedOutline(userId: string, outlineId: string): Promise<{ outline: unknown; keyword: string } | null> {
   const id = outlineId.trim();
   if (!id) return null;
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<{ keyword: string | null; data: string | null }[]>(
       `SELECT keyword, data FROM "SeoHistory" WHERE id = ? AND userId = ?`, id, userId);
     if (rows.length) {
       const outline = coerceOutline(parseJson(rows[0].data));
@@ -376,7 +392,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
       // resolution chain as the UI, so a server-side job judges with the model the owner picked
       // for judging, not necessarily the writer's.
       const judgeCreds = await resolveAiCreds(userId, {}, "judge");
-      let job: any;
+      let job: { id: string };
       try {
         job = await jobs().create({
           data: {
@@ -489,7 +505,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
       // agent-started job generated with no editorial policy whatsoever. An explicit `policy` in
       // args still wins, and an instance with no policies stored resolves to undefined — same
       // payload as before.
-      const policy = (args.payload as any)?.policy ?? (await resolveActivePolicy(userId, args));
+      const policy = (args.payload as { policy?: unknown })?.policy ?? (await resolveActivePolicy(userId, args));
 
       // The Text page's form fields, hoisted to top-level args so an agent drives the same knobs
       // the UI exposes. They land in the payload exactly as the browser posts them, and an
@@ -501,7 +517,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
         for (const k of ["keyword", "language", "country", "tone", "promptType", "custom", "sourceMode", "includeToc", "targetWordCount", "temperature", "bannedWords", "judge", "chunkSections", "forbiddenBrands", "marksScrub"]) {
         if (args[k] !== undefined && args[k] !== null) knobs[k] = args[k];
       }
-      const payload: any = { ...knobs, ...((args.payload as object) ?? {}), ...creds, ...(serpCreds ?? {}), ...(policy ? { policy } : {}) };
+      const payload: Record<string, unknown> = { ...knobs, ...((args.payload as object) ?? {}), ...creds, ...(serpCreds ?? {}), ...(policy ? { policy } : {}) };
 
       // The QA judge (outline/text/landing results) runs on its own per-task slot — the same
       // "judge" resolution the tool pages use, so server jobs and browser runs judge with the
@@ -532,7 +548,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
       // against the same monthly cap through the same metricsStore the UI button uses, so the
       // agent path is not a second, unaccounted billing path.
       if ((type === "outline" || type === "outline_auto" || type === "landing") && args.keywordIdeas) {
-        const opts: any = args.keywordIdeas === true ? {} : (args.keywordIdeas as object ?? {});
+        const opts: KeywordIdeasOpts = args.keywordIdeas === true ? {} : ((args.keywordIdeas as KeywordIdeasOpts) ?? {});
         const seed = String(args.keyword ?? payload.keyword ?? "").trim();
         const country = String(payload.country ?? "").trim().toLowerCase();
         if (!seed) throw new Error("keywordIdeas needs the keyword — pass it as the top-level keyword argument.");
@@ -591,7 +607,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
       }
 
       const keyword = String(args.keyword ?? payload.keyword ?? "").slice(0, 300);
-      let job: any;
+      let job: { id: string; type: string; keyword?: string; createdAt?: Date | string };
       try {
         job = await jobs().create({
           data: {
@@ -608,7 +624,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
       // from tripping the 20-minute staleness sweep while it is still working.
       // Same phase-progress hook the jobs API injects, so UI- and agent-started jobs
       // report identically.
-      (payload as any).__onProgress = (progress: number, stage?: string) => {
+      payload.__onProgress = (progress: number, stage?: string) => {
         void touchSeoJob(job.id, { progress, ...(stage ? { stage } : {}) }).catch(() => {});
       };
       withSeoJobHeartbeat(job.id, (async () => {
@@ -618,7 +634,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
         if (!picked.ok) {
           return { ok: false as const, error: `provider_unreachable: ${picked.error} — the provider answered no pre-flight ping. Switch the model/provider for this task in SEO Tools → Settings.` };
         }
-        return genByType(type, payload);
+        return genByType(type, payload as unknown as GenPayload);
       })())
         .then(async r => {
           await jobs().update({
@@ -633,11 +649,11 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
           // structure picker and listed by get_generations.
           if (r.ok) await saveJobToHistory(userId, job, r.data);
         })
-        .catch(async (e: any) => {
+        .catch(async (e: unknown) => {
           try {
             await jobs().update({
               where: { id: job.id },
-              data: { status: "error", stage: "error", heartbeatAt: new Date(), error: String(e?.message ?? e) },
+              data: { status: "error", stage: "error", heartbeatAt: new Date(), error: String((e as { message?: unknown })?.message ?? e) },
             });
           } catch { /* row gone */ }
         });
@@ -695,20 +711,20 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
         // persisted one by one. Returning them mid-run is the whole point: work already
         // paid for should never be waiting on the rest of the batch to be readable.
         if (job.type === "rewrite") {
-          const state = parseJson(job.result) as any;
+          const state = parseJson(job.result) as RewriteBatchState | null;
           if (!state?.pages) return { ...base, progress: { total: 0, completed: 0, failed: 0 }, pages: [], note: "The batch has not finished its first page yet." };
 
           const one = String(args.page ?? "").trim().toLowerCase();
           if (one) {
-            const hit = state.pages.find((p: any) => String(p.url).toLowerCase().includes(one));
-            if (!hit) throw new Error(`No page in this job matches "${one}". Finished so far: ${state.pages.map((p: any) => p.url).join(", ")}`);
+            const hit = state.pages.find((p) => String(p.url).toLowerCase().includes(one));
+            if (!hit) throw new Error(`No page in this job matches "${one}". Finished so far: ${state.pages.map((p) => p.url).join(", ")}`);
             return { ...base, page: hit };
           }
 
           const withContent = args.includeContent === true;
-          const danger = state.pages.filter((p: any) => p.factDrift?.severity === "danger").map((p: any) => p.url);
-          const mechFlagged = state.pages.filter((p: any) => Array.isArray(p.mechanics) && p.mechanics.length)
-            .map((p: any) => ({ url: p.url, defects: p.mechanics.map((m: any) => m.code) }));
+          const danger = state.pages.filter((p) => p.factDrift?.severity === "danger").map((p) => p.url);
+          const mechFlagged = state.pages.filter((p) => Array.isArray(p.mechanics) && p.mechanics.length)
+            .map((p) => ({ url: p.url, defects: (p.mechanics ?? []).map((m) => m.code) }));
           return {
             ...base,
             progress: {
@@ -718,7 +734,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
               remaining: Math.max(0, state.total - state.completed - state.failed),
               currentlyWorkingOn: state.inProgress,
             },
-            pages: state.pages.map((p: any) => (withContent ? p : { ...p, content: undefined })),
+            pages: state.pages.map((p) => (withContent ? p : { ...p, content: undefined })),
             ...(danger.length ? {
               needsAttention: danger,
               warning: "These pages contain numbers or identifiers that are NOT in the source — invented values. Correct them before publishing; call get_generation_job with `page` to read one in full.",
@@ -737,27 +753,27 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
         // returned: it arrives as one key beside two thousand words of article. The rewrite branch
         // above already learned this lesson with factDrift, so this mirrors its shape — the
         // defects that still need a human are lifted to the top level with a sentence saying so.
-        const genResult = job.status === "completed" ? parseJson(job.result) as any : null;
+        const genResult = job.status === "completed" ? (parseJson(job.result) as GenJobResult | null) : null;
         const unresolved = [
-          ...(Array.isArray(genResult?.mechanics) ? genResult.mechanics.filter((m: any) => m && m.fixed !== true) : []),
+          ...(Array.isArray(genResult?.mechanics) ? genResult.mechanics.filter((m) => m && m.fixed !== true) : []),
           // The QA reviewer's soft findings. It could not be sure these are defects — which is
           // exactly why they must be shown rather than either hidden or used to bin the article.
           ...(Array.isArray(genResult?.judgeConcerns)
-            ? genResult.judgeConcerns.map((c: any) => ({ code: "judge_concern", detail: String(c), samples: [] }))
+            ? genResult.judgeConcerns.map((c) => ({ code: "judge_concern", detail: String(c), samples: [] }))
             : []),
         ];
         const autoFixed = Array.isArray(genResult?.mechanics)
-          ? genResult.mechanics.filter((m: any) => m && m.fixed === true)
+          ? genResult.mechanics.filter((m) => m && m.fixed === true)
           : [];
         return {
           ...base,
           result: genResult,
           ...(unresolved.length ? {
-            needsAttention: unresolved.map((m: any) => ({ code: m.code, detail: m.detail, samples: m.samples })),
-            warning: `${unresolved.length} finding(s) the pipeline could not resolve on its own: ${unresolved.map((m: any) => m.code).join(", ")}. The prose is finished; these are checkable page rules (a competitor named, a placeholder dropped, an internal link missing, a price in the wrong currency) and they need correcting before publishing.`,
+            needsAttention: unresolved.map((m) => ({ code: m.code, detail: m.detail, samples: m.samples })),
+            warning: `${unresolved.length} finding(s) the pipeline could not resolve on its own: ${unresolved.map((m) => m.code).join(", ")}. The prose is finished; these are checkable page rules (a competitor named, a placeholder dropped, an internal link missing, a price in the wrong currency) and they need correcting before publishing.`,
           } : {}),
           ...(autoFixed.length ? {
-            autoFixed: autoFixed.map((m: any) => ({ code: m.code, detail: m.detail })),
+            autoFixed: autoFixed.map((m) => ({ code: m.code, detail: m.detail })),
           } : {}),
         };
       } catch (e) {

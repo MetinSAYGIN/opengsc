@@ -3,14 +3,69 @@
 
 export interface Heading { level: string; text: string }
 
-function wc(sec: any): string {
+/**
+ * An outline as these serializers receive it — unvalidated JSON from the model or the history
+ * store, so every field is optional and every value the code only stringifies stays `unknown`.
+ * These types describe what is READ, nothing more; they are not a schema for producing one.
+ */
+interface EntityRefJson { name?: unknown; weight?: unknown; role?: unknown }
+type SectionVisualJson = string | { type?: unknown; title?: unknown; description?: unknown };
+interface EntityConnectionJson { subject?: unknown; predicate?: unknown; object?: unknown; strength?: unknown }
+interface OutlineSectionJson {
+  h_level?: string;
+  heading?: unknown;
+  word_count_total?: unknown;
+  word_count?: unknown;
+  word_count_self?: unknown;
+  entities_to_cover?: (string | EntityRefJson)[];
+  keywords?: string[];
+  summary?: unknown;
+  copywriter_notes?: unknown;
+  visual_elements?: SectionVisualJson[];
+  entity_connections?: EntityConnectionJson[];
+}
+interface SubIntentJson { intent?: unknown; section?: unknown; word_count?: unknown; coverage?: unknown; entities?: string[] }
+type KwEntryJson = { keyword?: unknown; usage?: unknown };
+interface EntityAnalysisJson {
+  content_strategy?: {
+    structure_advantages?: unknown[]; entity_advantages?: unknown[];
+    structure_superiority?: unknown[]; authority_signals?: unknown[];
+  };
+  primary_entity?: {
+    name?: unknown; attributes?: Record<string, unknown>; relationship_triplets?: string[]; authority_validation?: unknown;
+  };
+  supporting_entities?: {
+    name?: unknown; attributes?: Record<string, unknown>; relationship_to_primary?: unknown; content_integration?: unknown;
+  }[];
+  keyword_strategy?: { primary?: KwEntryJson[]; lsi?: KwEntryJson[]; long_tail?: KwEntryJson[] };
+  visual_elements?: { name?: unknown; purpose?: unknown; eav_data?: unknown; prompt?: unknown }[];
+}
+interface EntityListJson {
+  name?: unknown; type?: unknown; weight?: unknown;
+  attributes?: Record<string, unknown>; relationship_triplets?: string[];
+}
+interface OutlineJson {
+  meta?: {
+    h1?: unknown; keyword?: string; target_word_count?: unknown;
+    title_options?: unknown[]; description_options?: unknown[]; slug_options?: unknown[];
+  };
+  sections?: OutlineSectionJson[];
+  faq?: { question?: unknown }[];
+  sub_intents?: SubIntentJson[];
+  entity_analysis?: EntityAnalysisJson;
+  entities?: EntityListJson[];
+}
+/** A landing wireframe — `blocks` plus nothing else is all the markdown export reads. */
+interface WireframeJson { blocks?: { type?: unknown; heading?: unknown; source_section?: unknown; requirements?: string[] }[] }
+
+function wc(sec: OutlineSectionJson): string {
   const t = sec.word_count_total || sec.word_count;
   const s = sec.word_count_self;
   if (Array.isArray(t) && Array.isArray(s)) return `${t[0]}-${t[1]} words total / ${s[0]}-${s[1]} for this heading`;
   if (Array.isArray(t)) return `${t[0]}-${t[1]} words`;
   return "";
 }
-const entName = (e: any) => {
+const entName = (e: string | EntityRefJson): string => {
   if (typeof e === "string") return e;
   const tag = [e.weight != null ? String(e.weight) : "", e.role ? String(e.role) : ""].filter(Boolean).join(" — ");
   return `${e.name}${tag ? ` [${tag}]` : ""}`;
@@ -33,12 +88,13 @@ export function decodeHtmlEntities(s: string): string {
     .replace(/&([a-z]+);/gi, (m, name) => HTML_ENTITIES[name.toLowerCase()] ?? m);
 }
 
-export function outlineHeadings(o: any): Heading[] {
+export function outlineHeadings(o: unknown): Heading[] {
   if (!o) return [];
+  const ol = o as OutlineJson;
   const list: Heading[] = [];
-  const title = o.meta?.h1 || o.meta?.title_options?.[0] || o.meta?.keyword;
+  const title = ol.meta?.h1 || ol.meta?.title_options?.[0] || ol.meta?.keyword;
   if (title) list.push({ level: "H1", text: decodeHtmlEntities(String(title)) });
-  (o.sections || []).forEach((s: any) => {
+  (ol.sections || []).forEach((s) => {
     if (!s.heading) return;
     // The H1 comes from meta — an H1-level section (occasional model artifact) would duplicate it.
     if (String(s.h_level || "").toUpperCase() === "H1") return;
@@ -47,13 +103,14 @@ export function outlineHeadings(o: any): Heading[] {
   return list;
 }
 
-export function outlineSummary(o: any) {
+export function outlineSummary(o: unknown) {
+  const ol = o as OutlineJson;
   const headings = outlineHeadings(o);
-  const target = Number(o?.meta?.target_word_count) || 0;
-  const faqCount = (o?.faq || []).length;
+  const target = Number(ol?.meta?.target_word_count) || 0;
+  const faqCount = (ol?.faq || []).length;
   const faqReserved = faqCount * 50;
   return {
-    keyword: o?.meta?.keyword || "",
+    keyword: ol?.meta?.keyword || "",
     targetWords: target,
     available: target ? Math.max(0, target - faqReserved) : 0,
     faqReserved,
@@ -62,13 +119,14 @@ export function outlineSummary(o: any) {
   };
 }
 
-export function outlineToMarkdown(o: any): string {
+export function outlineToMarkdown(o: unknown): string {
   if (!o) return "";
+  const ol = o as OutlineJson;
   const L: string[] = [];
-  const title = o.meta?.h1 || o.meta?.title_options?.[0] || o.meta?.keyword || "Outline";
-  const mTitle = o.meta?.title_options?.[0];
-  const mDesc = o.meta?.description_options?.[0];
-  const mSlug = o.meta?.slug_options?.[0];
+  const title = ol.meta?.h1 || ol.meta?.title_options?.[0] || ol.meta?.keyword || "Outline";
+  const mTitle = ol.meta?.title_options?.[0];
+  const mDesc = ol.meta?.description_options?.[0];
+  const mSlug = ol.meta?.slug_options?.[0];
   if (mTitle || mDesc || mSlug) {
     L.push("**SEO meta**");
     if (mTitle) L.push(`- **Title:** ${mTitle}`);
@@ -84,7 +142,7 @@ export function outlineToMarkdown(o: any): string {
     L.push("");
   }
   L.push(`# ${title}\n`);
-  (o.sections || []).forEach((sec: any) => {
+  (ol.sections || []).forEach((sec) => {
     const hashes = sec.h_level === "H3" ? "###" : sec.h_level === "H4" ? "####" : "##";
     L.push(`${hashes} ${sec.heading}`);
     const w = wc(sec); if (w) L.push(`*Word Count: ${w}*`);
@@ -94,38 +152,38 @@ export function outlineToMarkdown(o: any): string {
     if (sec.summary) L.push(`**Summary:** ${sec.summary}`);
     if (sec.visual_elements?.length) {
       L.push(`**Visual Elements:**`);
-      sec.visual_elements.forEach((v: any) => L.push(`- ${typeof v === "string" ? v : `${v.type}${v.title ? ` — ${v.title}` : ""}${v.description ? `: ${v.description}` : ""}`}`));
+      sec.visual_elements.forEach((v) => L.push(`- ${typeof v === "string" ? v : `${v.type}${v.title ? ` — ${v.title}` : ""}${v.description ? `: ${v.description}` : ""}`}`));
     }
     if (sec.copywriter_notes) L.push(`**Copywriter Notes:** ${sec.copywriter_notes}`);
     if (sec.entity_connections?.length) {
       L.push(`**Entity Connections:**`);
-      sec.entity_connections.forEach((c: any) => L.push(`- ${c.subject} → ${c.predicate} → ${c.object}${c.strength != null ? ` [${c.strength}]` : ""}`));
+      sec.entity_connections.forEach((c) => L.push(`- ${c.subject} → ${c.predicate} → ${c.object}${c.strength != null ? ` [${c.strength}]` : ""}`));
     }
     L.push("");
   });
-  if (o.faq?.length) {
+  if (ol.faq?.length) {
     L.push(`## Frequently Asked Questions`);
-    o.faq.forEach((f: any, i: number) => L.push(`${i + 1}. ${f.question}`));
+    ol.faq.forEach((f, i) => L.push(`${i + 1}. ${f.question}`));
     L.push("");
   }
 
   // ─── Entity Analysis report (so the exported .md matches the in-app "Entity analysis" tab) ──
-  const attrsStr = (a: any) => a ? Object.entries(a).map(([k, v]) => `${k}: ${v}`).join("; ") : "";
-  if (o.sub_intents?.length) {
+  const attrsStr = (a: Record<string, unknown> | undefined) => a ? Object.entries(a).map(([k, v]) => `${k}: ${v}`).join("; ") : "";
+  if (ol.sub_intents?.length) {
     L.push("## Sub-Intent Coverage");
-    o.sub_intents.forEach((si: any, i: number) => {
+    ol.sub_intents.forEach((si, i) => {
       L.push(`${i + 1}. **${si.intent || ""}**${si.section ? ` → ${si.section}` : ""}${si.word_count ? ` (${si.word_count})` : ""}`);
       if (si.coverage) L.push(`   ${si.coverage}`);
       if (si.entities?.length) L.push(`   Entities: ${si.entities.join(", ")}`);
     });
     L.push("");
   }
-  const ea = o.entity_analysis;
+  const ea = ol.entity_analysis;
   if (ea) {
     L.push("## Entity Analysis");
     const cs = ea.content_strategy;
     if (cs) {
-      const blk = (title: string, arr?: any[]) => { if (arr?.length) { L.push(`### ${title}`); arr.forEach((x: any) => L.push(`- ${typeof x === "string" ? x : JSON.stringify(x)}`)); L.push(""); } };
+      const blk = (title: string, arr?: unknown[]) => { if (arr?.length) { L.push(`### ${title}`); arr.forEach((x) => L.push(`- ${typeof x === "string" ? x : JSON.stringify(x)}`)); L.push(""); } };
       blk("Content Structure Advantages", cs.structure_advantages);
       blk("Entity-Based Advantages", cs.entity_advantages);
       blk("Content Structure Superiority", cs.structure_superiority);
@@ -141,7 +199,7 @@ export function outlineToMarkdown(o: any): string {
     }
     if (ea.supporting_entities?.length) {
       L.push("### Supporting Entity Network");
-      ea.supporting_entities.forEach((se: any) => {
+      ea.supporting_entities.forEach((se) => {
         L.push(`**${se.name}**`);
         if (se.attributes) L.push(`- Attributes: ${attrsStr(se.attributes)}`);
         if (se.relationship_to_primary) L.push(`- Relationship: ${se.relationship_to_primary}`);
@@ -152,13 +210,13 @@ export function outlineToMarkdown(o: any): string {
     const ks = ea.keyword_strategy;
     if (ks) {
       L.push("### Keyword Strategy");
-      const kb = (title: string, arr?: any[]) => { if (arr?.length) { L.push(`**${title}:**`); arr.forEach((x: any) => L.push(`- ${x.keyword || x}${x.usage ? ` — ${x.usage}` : ""}`)); } };
+      const kb = (title: string, arr?: KwEntryJson[]) => { if (arr?.length) { L.push(`**${title}:**`); arr.forEach((x) => L.push(`- ${x.keyword || x}${x.usage ? ` — ${x.usage}` : ""}`)); } };
       kb("Primary", ks.primary); kb("LSI", ks.lsi); kb("Long-tail", ks.long_tail);
       L.push("");
     }
     if (ea.visual_elements?.length) {
       L.push("### EAV-Driven Visual Elements");
-      ea.visual_elements.forEach((v: any) => {
+      ea.visual_elements.forEach((v) => {
         L.push(`**${v.name || ""}**`);
         if (v.purpose) L.push(`- Purpose: ${v.purpose}`);
         if (v.eav_data) L.push(`- EAV data: ${v.eav_data}`);
@@ -167,9 +225,9 @@ export function outlineToMarkdown(o: any): string {
       });
     }
   }
-  if (o.entities?.length) {
+  if (ol.entities?.length) {
     L.push("### Comprehensive Entity List", "| Entity | Type | Weight | Attributes | Relationship triplets |", "| --- | --- | --- | --- | --- |");
-    o.entities.forEach((e: any) => {
+    ol.entities.forEach((e) => {
       const trip = (e.relationship_triplets || []).join("<br>");
       L.push(`| ${e.name || ""} | ${e.type || ""} | ${e.weight ?? ""} | ${attrsStr(e.attributes)} | ${trip} |`);
     });
@@ -179,21 +237,22 @@ export function outlineToMarkdown(o: any): string {
   return L.join("\n");
 }
 
-export function outlineToHtml(o: any): string {
+export function outlineToHtml(o: unknown): string {
   if (!o) return "";
-  const esc = (s: string) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const ol = o as OutlineJson;
+  const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const P: string[] = [];
-  const title = o.meta?.h1 || o.meta?.title_options?.[0] || o.meta?.keyword || "Outline";
+  const title = ol.meta?.h1 || ol.meta?.title_options?.[0] || ol.meta?.keyword || "Outline";
   P.push(`<h1>${esc(title)}</h1>`);
-  (o.sections || []).forEach((sec: any) => {
+  (ol.sections || []).forEach((sec) => {
     const tag = (sec.h_level || "H2").toLowerCase();
     P.push(`<${tag}>${esc(sec.heading)}</${tag}>`);
     if (sec.summary) P.push(`<p>${esc(sec.summary)}</p>`);
     if (sec.copywriter_notes) P.push(`<p><em>${esc(sec.copywriter_notes)}</em></p>`);
   });
-  if (o.faq?.length) {
+  if (ol.faq?.length) {
     P.push(`<h2>Frequently Asked Questions</h2><ol>`);
-    o.faq.forEach((f: any) => P.push(`<li>${esc(f.question)}</li>`));
+    ol.faq.forEach((f) => P.push(`<li>${esc(f.question)}</li>`));
     P.push(`</ol>`);
   }
   return P.join("\n");
@@ -206,13 +265,14 @@ export function htmlDocument(title: string, bodyHtml: string): string {
 // Landing-flow wireframe → Markdown brief for a designer/developer: one numbered section per
 // block (type + its concrete heading) with checkable requirements — the same data WireframeView
 // renders as the page mockup, in a form you can paste into a task tracker.
-export function wireframeToMarkdown(w: any, keyword?: string): string {
-  const blocks = Array.isArray(w?.blocks) ? w.blocks : [];
+export function wireframeToMarkdown(w: unknown, keyword?: string): string {
+  const wf = w as WireframeJson | null | undefined;
+  const blocks = Array.isArray(wf?.blocks) ? wf.blocks : [];
   if (!blocks.length) return "";
   const L: string[] = [];
   L.push(`# Wireframe${keyword ? `: ${keyword}` : ""}\n`);
   L.push("Блок-схема секций лендинга с проверяемыми требованиями к содержимому — без визуального дизайна, можно сразу отдавать дизайнеру/верстальщику.\n");
-  blocks.forEach((b: any, i: number) => {
+  blocks.forEach((b, i) => {
     L.push(`## ${i + 1}. ${b.type || "BLOCK"}${b.heading ? ` — ${b.heading}` : ""}`);
     if (b.source_section) L.push(`*Источник в ТЗ: ${b.source_section}*`);
     const reqs: string[] = Array.isArray(b.requirements) ? b.requirements : [];

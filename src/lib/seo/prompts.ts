@@ -433,7 +433,7 @@ export function buildSectionEnrichPrompt(args: {
   h1?: string;
   globalEntities?: string[];   // outline-level entity names for consistency
   ragFacts?: string;
-  sections: any[];             // the batch (full section objects)
+  sections: Record<string, unknown>[]; // the batch (full section objects, copied field-by-field into the prompt)
   /**
    * copywriter_notes produced here are what the writer follows section by section — in the
    * chunked writer they are the section's ONLY brief. Enriching them without the policy or the
@@ -465,7 +465,7 @@ export function buildSectionEnrichPrompt(args: {
     ? `\n- ИНСТРУКЦИЯ АВТОРА (ПРИОРИТЕТ выше полноты: если она что-то запрещает — упоминание брендов/конкурентов, внешние ссылки, отдельные секции — НЕ пиши этого в summary и copywriter_notes, иначе писатель воспроизведёт запрещённое): ${args.custom.trim().slice(0, 3000)}`
     : "";
   const rag = args.ragFacts?.trim() ? `\n- ПРОВЕРЕННЫЕ ФАКТЫ ИЗ БАЗЫ ЗНАНИЙ (вплетай конкретику в summary/notes): ${args.ragFacts.trim().slice(0, 2500)}` : "";
-  const slim = args.sections.map((s: any) => ({
+  const slim = args.sections.map((s) => ({
     h_level: s.h_level, heading: s.heading,
     word_count_total: s.word_count_total, word_count_self: s.word_count_self,
     entities_to_cover: s.entities_to_cover, keywords: s.keywords, summary: s.summary,
@@ -508,13 +508,36 @@ export const WIREFRAME_BLOCK_TYPES = [
   "FAQ", "TEXT_BLOCK", "CTA_BANNER",
 ] as const;
 
+/**
+ * The outline slice the wireframe prompt reads: meta stamps (dominant_intent drives the block mix)
+ * plus per-section skeletons. Field types match what generate.ts's own Outline carries, so the
+ * outline object passes straight through.
+ */
+interface WireframeOutline {
+  meta?: Record<string, unknown>;
+  sections?: { h_level?: string; heading?: string; summary?: string; keywords?: string[]; entities_to_cover?: unknown[] }[];
+}
+
+/**
+ * Scraped top-page skeletons ({ url, title, headings, word_count, has_price_table, has_faq }) —
+ * the real structures the wireframe should mirror. Structurally a CompetitorInput with an
+ * optional pre-computed `domain`, which is how the callers pass it.
+ */
+interface WireframeCompetitor {
+  domain?: string;
+  url: string;
+  word_count?: number;
+  has_price_table?: boolean;
+  has_faq?: boolean;
+  headings?: string[];
+}
+
 export function buildWireframePrompt(args: {
   keyword: string;
   language: string;
   country: string;
-  outline: any;
-  /** Scraped top-page skeletons ({ url, title, headings, word_count, has_price_table, has_faq }) — the real structures the wireframe should mirror. */
-  competitors?: any[];
+  outline: WireframeOutline;
+  competitors?: WireframeCompetitor[];
   structureMode?: "serp" | "my_1to1" | "hybrid" | "seo_block";
   myStructure?: { level: string; text: string; words: number }[];
   targetWordCount?: number;
@@ -534,20 +557,20 @@ export function buildWireframePrompt(args: {
     ? `\n\nИНСТРУКЦИЯ АВТОРА (обязательна при выборе блоков и требований к ним — запреты действуют и здесь; требуемые плейсхолдеры вида [[ИМЯ]] закладывай прямо в requirements соответствующего блока): ${args.custom.trim().slice(0, 4000)}`
     : "";
   const sections = Array.isArray(args.outline?.sections) ? args.outline.sections : [];
-  const slimSections = sections.map((s: any) => ({
+  const slimSections = sections.map((s) => ({
     h_level: s.h_level, heading: s.heading, summary: s.summary,
-    entities: (s.entities_to_cover || []).map((e: any) => typeof e === "string" ? e : e.name),
+    entities: (s.entities_to_cover || []).map((e) => typeof e === "string" ? e : (e as { name?: unknown }).name),
     keywords: s.keywords,
   }));
   // Real skeletons of the ranking pages, trimmed to what a wireframe needs: heading tree in
   // document order + the structural markers (price table, FAQ, size).
-  const slimCompetitors = (Array.isArray(args.competitors) ? args.competitors : []).slice(0, 12).map((c: any) => ({
+  const slimCompetitors = (Array.isArray(args.competitors) ? args.competitors : []).slice(0, 12).map((c) => ({
     domain: c.domain || ((): string => { try { return new URL(c.url).hostname.replace(/^www\./, ""); } catch { return ""; } })(),
     word_count: Number(c.word_count) || 0,
     has_price_table: !!c.has_price_table,
     has_faq: !!c.has_faq,
     headings: (Array.isArray(c.headings) ? c.headings : []).slice(0, 40),
-  })).filter((c: any) => c.headings.length > 0);
+  })).filter((c) => c.headings.length > 0);
   const mode = args.structureMode || "serp";
   const modeBlock = mode === "my_1to1" && args.myStructure?.length
     ? `\n\nРЕЖИМ: ПО МОЕЙ СТРУКТУРЕ (1:1). У пользователя уже есть готовая страница со СВОИМИ заголовками — используй ИХ порядок и формулировки ДОСЛОВНО как каркас wireframe-блоков (не придумывай новые заголовки, не переставляй и не выкидывай). Для каждого заголовка подбери наиболее подходящий тип блока из каталога и требования, наполненные фактурой из ТЗ (сущности/ключи ниже). "words" ориентир для секции указан у пользователя — держись его при формулировке requirements по объёму.\nМОЯ СТРУКТУРА СТРАНИЦЫ: ${JSON.stringify(args.myStructure)}`
@@ -601,7 +624,7 @@ ${slimCompetitors.length ? `- Структуры топ-страниц выда�
 // Runs right after outline generation. Uses the model's reliable knowledge to fix concrete values
 // (wrong screen size, fabricated colors, wrong price/date/edition/game names). Returns find→replace
 // pairs that are applied over the outline's string VALUES only (structure/keys/entities untouched).
-export function buildFactScrubPrompt(args: { outline: any; keyword: string; country?: string }): string {
+export function buildFactScrubPrompt(args: { outline: unknown; keyword: string; country?: string }): string {
   return `Ты — фактчекер-редактор с надёжными знаниями о предмете. Ниже JSON-структура статьи (outline) по теме "${args.keyword}"${args.country ? `, регион ${args.country}` : ""}. Найди КОНКРЕТНЫЕ фактические значения, которые ВЫГЛЯДЯТ ОШИБОЧНЫМИ или ВЫДУМАННЫМИ: неверные характеристики (диагональ экрана, объём памяти, чип, разрешение, частота), неверные/выдуманные цены и MSRP, неверные даты, неточные названия моделей/изданий/игр, выдуманные цвета/комплектации/SKU.
 
 Для каждой такой ошибки верни пару find→replace:
@@ -646,7 +669,7 @@ ${args.article}`;
 // Compares the target page against scraped top competitors and returns a rich JSON spec.
 export function buildAnalysisPrompt(args: {
   keyword: string;
-  targetPage: any;
+  targetPage: unknown;
   competitors: CompetitorInput[];
   language?: string;
   country?: string;
@@ -693,7 +716,8 @@ export function buildAnalysisPrompt(args: {
 
 // ─── Article text generation prompt (spec §9.3) ─────────────────────────────────
 export function buildTextPrompt(args: {
-  outlineJson: any;
+  /** The outline as stored — the prompt only reads `meta` off it and stringifies the rest. */
+  outlineJson: unknown;
   policy?: EditorialPolicy;
   tone: string;
   language: string;
@@ -708,24 +732,24 @@ export function buildTextPrompt(args: {
   // Tone folded into the policy block (single source) when a policy exists; otherwise a header line.
   const policyBlock = args.policy ? renderPolicy(args.policy, args.tone) + "\n\n" : "";
   const toneHeader = args.policy ? "" : `Тон повествования: ${args.tone}\n`;
-  const narr = (args.outlineJson as any)?.meta?.narration;
+  const narr = (args.outlineJson as { meta?: { narration?: string } })?.meta?.narration;
   const narrLine = narr === "first" ? "Лицо: ПЕРВОЕ — экспертный «я»-голос, личный опыт.\n"
     : narr === "third" ? "Лицо: ТРЕТЬЕ — корпоративный нейтральный голос, без «я».\n" : "";
-  const country = (args.outlineJson as any)?.meta?.country;
+  const country = (args.outlineJson as { meta?: { country?: string } })?.meta?.country;
   const regionLine = country ? `Регион: ${country}. Цены/суммы — в валюте региона (${currencyHint(country)}), НЕ в USD по умолчанию; ритейлеры и реалии — релевантные региону (без магазинов, которых там нет).\n` : "";
-  const sRules = (args.outlineJson as any)?.meta?.structureRules;
+  const sRules = (args.outlineJson as { meta?: { structureRules?: string } })?.meta?.structureRules;
   const structRulesLine = sRules ? `Правила структуры от пользователя (соблюдай): ${String(sRules).slice(0, 1500)}\n` : "";
   const today = new Date().toISOString().slice(0, 10);
   const year = today.slice(0, 4);
   const dateLine = `Сегодня ${today}. Если нужен год — используй ТЕКУЩИЙ (${year}); никогда не пиши устаревшие годы (2023/2024) и не выдумывай год.\n`;
   const customLine = args.custom ? `Дополнительная инструкция автора (учесть обязательно): ${args.custom}\n` : "";
-  const twcNum = Number((args.outlineJson as any)?.meta?.target_word_count) || 0;
+  const twcNum = Number((args.outlineJson as { meta?: { target_word_count?: unknown } })?.meta?.target_word_count) || 0;
   const twcLine = twcNum ? `ЦЕЛЕВОЙ ОБЪЁМ СТАТЬИ: ~${twcNum} слов (±15%) — это сумма word_count секций. word_count КАЖДОЙ секции — жёсткий ДИАПАЗОН: не короче нижней границы и НЕ ДЛИННЕЕ верхней. Перебор объёма — такой же брак, как недобор: не лей воду, не повторяй одну мысль в разных секциях, не раздувай списки. Каждое предложение должно нести факт или пользу.\n` : "";
 
   // Carry the chosen meta tags (title/description/slug) from the outline into the article head,
   // so the generated text ships with publish-ready SEO meta instead of dropping them.
-  const m = (args.outlineJson as any)?.meta || {};
-  const pick = (v: any) => Array.isArray(v) ? (v.find((x: any) => x && String(x).trim()) || "") : (v || "");
+  const m = (args.outlineJson as { meta?: Record<string, unknown> })?.meta || {};
+  const pick = (v: unknown) => Array.isArray(v) ? (v.find((x) => x && String(x).trim()) || "") : (v || "");
   const metaTitle = pick(m.title_options) || pick(m.title);
   const metaDesc = pick(m.description_options) || pick(m.description);
   const metaSlug = pick(m.slug_options) || pick(m.slug);
@@ -809,7 +833,7 @@ export function buildSectionTextPrompt(args: {
   narration?: "first" | "third";
   h1?: string;
   allHeadings: { h_level: string; heading: string }[]; // full article map for context
-  sections: any[];        // the chunk to write (full specs)
+  sections: unknown[];    // the chunk to write (full specs — embedded in the prompt verbatim)
   faq?: { question: string; answer_guideline?: string }[]; // present only for the last chunk
   ragFacts?: string;
   sources?: { title: string; snippet: string; url: string; domain: string }[];
@@ -1048,7 +1072,7 @@ ${src}`;
 }
 
 // ─── Image-prompt generation (Hero + per-section) ────────────────────────────────
-export function buildImagePromptsPrompt(args: { outlineJson?: any; article?: string; keyword: string }): string {
+export function buildImagePromptsPrompt(args: { outlineJson?: unknown; article?: string; keyword: string }): string {
   const src = args.outlineJson ? `СТРУКТУРА (JSON):\n${JSON.stringify(args.outlineJson)}` : `СТАТЬЯ:\n${(args.article || "").slice(0, 12000)}`;
   return `Ты — арт-директор и SEO-редактор. По теме "${args.keyword}" составь промпты для генерации изображений к статье: один Hero Image и по одному промпту к ключевым секциям (visual_elements/важные H2). Промпты — на английском, конкретные, фотореалистичные или чистый flat-design инфографики, без текста на картинке.
 Для КАЖДОГО изображения дай ещё SEO-атрибуты: "alt" (alt-текст, описывает картинку и содержит релевантный ключ, на языке статьи, ~8-12 слов) и "title" (короткий title-атрибут с ключом). Это нужно для SEO-оптимизации картинок (по методике Rush — у изображений должны быть Title и Alt с ключами).
@@ -1105,7 +1129,16 @@ export function buildVisionStructurePrompt(): string {
 
 // ─── Strict-JSON extraction (spec §6) ───────────────────────────────────────────
 // Strips ```json fences and grabs the outermost {...} before JSON.parse.
-export function extractJson<T = any>(raw: string | null): T | null {
+
+// The `any` default is load-bearing, not laziness: untyped callers across the repo
+// (generate.ts reassigns `extractJson(raw)` into variables whose type came from an earlier
+// generic call; geo.ts returns it straight out of typed functions) compile only because the
+// un-parameterised result is `any`. Widening the default to `unknown` would fail those files,
+// which this cleanup does not touch.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ParsedJsonDefault = any;
+
+export function extractJson<T = ParsedJsonDefault>(raw: string | null): T | null {
   return extractJsonDetailed<T>(raw).data;
 }
 
@@ -1120,7 +1153,7 @@ export function extractJson<T = any>(raw: string | null): T | null {
  * word-budget guard then spreads the full article target across those 7 — which is how a 2500-word
  * brief ends up asking for 480-word subsections. Callers that care check `repaired` and retry.
  */
-export function extractJsonDetailed<T = any>(raw: string | null): { data: T | null; repaired: boolean } {
+export function extractJsonDetailed<T = ParsedJsonDefault>(raw: string | null): { data: T | null; repaired: boolean } {
   if (!raw) return { data: null, repaired: false };
   let s = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
   const first = s.indexOf("{");

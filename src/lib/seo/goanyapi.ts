@@ -46,6 +46,17 @@ export interface GoAnyResult<T> {
 const fail = <T>(error: string): GoAnyResult<T> => ({ data: null, credits: 0, remaining: null, error });
 
 /**
+ * What every endpoint wraps its payload in — `{code, message, data}` per the docs. Only the
+ * fields `get` itself reads are typed; each endpoint's `data` shape is declared next to its
+ * function, and values that only ever flow through `String()`/`num()` stay `unknown`.
+ */
+interface GoAnyEnvelope {
+  code?: unknown;
+  message?: unknown;
+  data?: { costCredits?: unknown; remainingCredits?: unknown };
+}
+
+/**
  * The reason each failure keeps its own name.
  *
  * A gateway has four failure modes a user can act on and they need different actions: a missing
@@ -104,7 +115,7 @@ async function get<T>(
     return fail<T>(error);
   }
 
-  let body: any;
+  let body: GoAnyEnvelope;
   try { body = await res.json(); } catch {
     call.finish({ error: "goanyapi: non-JSON response" });
     return fail<T>("goanyapi: non-JSON response");
@@ -130,7 +141,7 @@ async function get<T>(
   call.finish({ responseBody: body });
 
   return {
-    data: d as T,
+    data: d as unknown as T,
     credits: Number(d.costCredits ?? 0) || 0,
     remaining: Number.isFinite(Number(d.remainingCredits)) ? Number(d.remainingCredits) : null,
   };
@@ -169,8 +180,16 @@ export interface GoAnySerp {
   rows: GoAnySerpRow[];
 }
 
+/** `serp` payload — the SERP body plus the stamps surfaced on the result. */
+interface SerpData {
+  keyword?: unknown;
+  country?: unknown;
+  lastUpdate?: unknown;
+  serp?: { results?: GoAnySerpRow[] };
+}
+
 export async function goanySerp(apiKey: string, keyword: string, country = "us"): Promise<GoAnyResult<GoAnySerp>> {
-  const r = await get<any>(apiKey, "serp", { keyword, country: country.toLowerCase() });
+  const r = await get<SerpData>(apiKey, "serp", { keyword, country: country.toLowerCase() });
   if (!r.data) return { ...r, data: null };
   return {
     ...r,
@@ -203,8 +222,17 @@ export interface GoAnyKd {
  * be the invented-data failure again, so `enrichKeywords` gets difficulty from this provider and
  * leaves volume null rather than filling it with something plausible.
  */
+/** `keyword-difficulty` payload — difficulty/shortage arrive as numbers or numeric strings. */
+interface KdData {
+  keyword?: unknown;
+  difficulty?: unknown;
+  shortage?: unknown;
+  lastUpdate?: unknown;
+  serp?: { results?: GoAnySerpRow[] };
+}
+
 export async function goanyKeywordDifficulty(apiKey: string, keyword: string, country = "us"): Promise<GoAnyResult<GoAnyKd>> {
-  const r = await get<any>(apiKey, "keyword-difficulty", { keyword, country: country.toLowerCase() });
+  const r = await get<KdData>(apiKey, "keyword-difficulty", { keyword, country: country.toLowerCase() });
   if (!r.data) return { ...r, data: null };
   return {
     ...r,
@@ -232,8 +260,15 @@ export interface GoAnyDr { domain: string; dr: number | null; ahrefsRank: number
  * number would be the wrong default, and silently swapping the source under a licence-bound
  * attribution would be worse.
  */
+/** `dr` payload — snake_case, mirroring Ahrefs' own field names. */
+interface DrData {
+  domain?: unknown;
+  domain_rating?: unknown;
+  ahrefs_rank?: unknown;
+}
+
 export async function goanyDr(apiKey: string, domain: string): Promise<GoAnyResult<GoAnyDr>> {
-  const r = await get<any>(apiKey, "dr", { domain });
+  const r = await get<DrData>(apiKey, "dr", { domain });
   if (!r.data) return { ...r, data: null };
   return {
     ...r,
@@ -288,12 +323,39 @@ export interface DomainTraffic {
   topKeywords: TrafficKeyword[];
 }
 
+/**
+ * `traffic` payload. Engagement numbers arrive as strings; the monthly map is keyed by date;
+ * both spellings of the engagement block are declared (see `engagementBlock` below).
+ */
+interface TrafficEngagement {
+  Month?: unknown; Year?: unknown; Visits?: unknown;
+  BounceRate?: unknown; TimeOnSite?: unknown; PagePerVisit?: unknown;
+}
+interface RawTrafficSources {
+  Direct?: unknown; Search?: unknown; SearchPaid?: unknown;
+  Social?: unknown; SocialPaid?: unknown; Referrals?: unknown;
+  Mail?: unknown; DisplayAds?: unknown; Affiliate?: unknown; GenAI?: unknown;
+}
+interface TrafficData {
+  query?: { domain?: unknown };
+  SiteName?: unknown; Title?: unknown; Description?: unknown;
+  EstimatedMonthlyVisits?: Record<string, unknown>;
+  GlobalRank?: { Rank?: unknown };
+  CountryRank?: { CountryCode?: unknown; Rank?: unknown };
+  TrafficSources?: RawTrafficSources;
+  aiTraffic?: { share?: unknown };
+  TopCountryShares?: { CountryCode?: unknown; Value?: unknown }[];
+  TopKeywords?: { Name?: unknown; Volume?: unknown; Cpc?: unknown; EstimatedValue?: unknown }[];
+  Engagments?: TrafficEngagement;
+  Engagements?: TrafficEngagement;
+}
+
 // Their engagement block is spelled `Engagments`. Both spellings are read because a vendor fixing
 // a typo should not silently blank out this card — the misspelling is what ships today, and the
 // correction is the likelier future than a rename.
-const engagementBlock = (d: any): any => d?.Engagments ?? d?.Engagements ?? {};
+const engagementBlock = (d: TrafficData): TrafficEngagement => d?.Engagments ?? d?.Engagements ?? {};
 
-function sources(raw: any): TrafficSources {
+function sources(raw: RawTrafficSources | undefined): TrafficSources {
   const s = raw ?? {};
   return {
     direct: num(s.Direct), search: num(s.Search), searchPaid: num(s.SearchPaid),
@@ -304,7 +366,7 @@ function sources(raw: any): TrafficSources {
 }
 
 export async function goanyTraffic(apiKey: string, domain: string): Promise<GoAnyResult<DomainTraffic>> {
-  const r = await get<any>(apiKey, "traffic", { domain });
+  const r = await get<TrafficData>(apiKey, "traffic", { domain });
   if (!r.data) return { ...r, data: null };
   const d = r.data;
   const eng = engagementBlock(d);
@@ -342,10 +404,10 @@ export async function goanyTraffic(apiKey: string, domain: string): Promise<GoAn
       // with the share spelled out — accepted as the fallback, never as a second source of truth.
       sources: { ...sources(d.TrafficSources), genAI: num(sources(d.TrafficSources).genAI) ?? num(d?.aiTraffic?.share) },
       topCountries: (Array.isArray(d.TopCountryShares) ? d.TopCountryShares : [])
-        .map((c: any) => ({ code: String(c?.CountryCode ?? ""), share: num(c?.Value) ?? 0 }))
+        .map((c) => ({ code: String(c?.CountryCode ?? ""), share: num(c?.Value) ?? 0 }))
         .filter((c: TrafficCountry) => c.code),
       topKeywords: (Array.isArray(d.TopKeywords) ? d.TopKeywords : [])
-        .map((k: any) => ({
+        .map((k) => ({
           keyword: String(k?.Name ?? ""), volume: num(k?.Volume),
           cpc: num(k?.Cpc), estimatedValue: num(k?.EstimatedValue),
         }))
@@ -360,7 +422,7 @@ export interface GoAnyBalance { remaining: number | null }
 
 /** Free, one call: the wallet the traffic/KD/SERP calls spend from. */
 export async function goanyBalance(apiKey: string): Promise<GoAnyResult<GoAnyBalance>> {
-  const r = await get<any>(apiKey, "credits/balance", {});
+  const r = await get<{ remainingCredits?: unknown }>(apiKey, "credits/balance", {});
   if (!r.data) return { ...r, data: null };
   return { ...r, data: { remaining: num(r.data.remainingCredits) } };
 }
@@ -385,17 +447,23 @@ export interface GoAnyDrHistory {
  * sitting at DR 22→24→12→11→8 did not lose links, it was hit, and the drops funnel should
  * read that as a spam-period flag rather than a bargain.
  */
+/** `dr-history` payload — months arrive numeric YYYYMM; `dr` is null in the free preview. */
+interface DrHistoryData {
+  query?: { domain?: unknown };
+  history?: { month?: unknown; dr?: unknown }[];
+}
+
 export async function goanyDrHistory(
   apiKey: string, domain: string, includeDr: boolean,
 ): Promise<GoAnyResult<GoAnyDrHistory>> {
-  const r = await get<any>(apiKey, "dr-history", { domain, ...(includeDr ? { includeDr: "true" } : {}) });
+  const r = await get<DrHistoryData>(apiKey, "dr-history", { domain, ...(includeDr ? { includeDr: "true" } : {}) });
   if (!r.data) return { ...r, data: null };
   const rows = Array.isArray(r.data.history) ? r.data.history : [];
   return {
     ...r,
     data: {
       domain: String(r.data?.query?.domain ?? domain),
-      history: rows.map((m: any) => {
+      history: rows.map((m) => {
         const raw = String(m?.month ?? "");
         // Months arrive numeric YYYYMM; normalized to YYYY-MM like every other series here.
         const month = /^\d{6}$/.test(raw) ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}` : raw;
@@ -447,8 +515,23 @@ export interface GoAnyBacklinkSummary {
  * JavaScript is a link Google may never count, and until now nothing in the Link Monitor could
  * tell the two apart.
  */
+/** `backlink` payload — summary counters plus the `topBacklinks` sample this card renders. */
+interface BacklinksData {
+  domain?: unknown;
+  domainRating?: unknown;
+  backlinks?: unknown;
+  dofollowBacklinks?: unknown;
+  refdomains?: unknown;
+  dofollowRefdomains?: unknown;
+  topBacklinks?: {
+    urlFrom?: unknown; urlTo?: unknown; anchor?: unknown; domainRating?: unknown;
+    inRaw?: unknown; inRendered?: unknown; title?: unknown; textPre?: unknown; textPost?: unknown;
+    redirectChain?: unknown;
+  }[];
+}
+
 export async function goanyBacklinks(apiKey: string, domain: string): Promise<GoAnyResult<GoAnyBacklinkSummary>> {
-  const r = await get<any>(apiKey, "backlink", { domain });
+  const r = await get<BacklinksData>(apiKey, "backlink", { domain });
   if (!r.data) return { ...r, data: null };
   const d = r.data;
   return {
@@ -460,7 +543,7 @@ export async function goanyBacklinks(apiKey: string, domain: string): Promise<Go
       dofollowBacklinks: num(d.dofollowBacklinks),
       refDomains: num(d.refdomains),
       dofollowRefDomains: num(d.dofollowRefdomains),
-      topBacklinks: (Array.isArray(d.topBacklinks) ? d.topBacklinks : []).map((b: any) => ({
+      topBacklinks: (Array.isArray(d.topBacklinks) ? d.topBacklinks : []).map((b) => ({
         urlFrom: String(b?.urlFrom ?? ""),
         urlTo: String(b?.urlTo ?? ""),
         anchor: String(b?.anchor ?? ""),
@@ -497,13 +580,18 @@ export interface GoAnyAdvertiser {
  * answer no other provider here gives: which advertisers (agencies, affiliate programs, brands)
  * put Google ads on a domain's behalf.
  */
+/** Transparency domain-mode payload — who advertises for the domain. */
+interface TransparencyDomainData {
+  advertisers?: { advertiser?: unknown; country?: unknown; adsCount?: unknown; creativeIds?: unknown }[];
+}
+
 export async function goanyTransparencyDomain(apiKey: string, domain: string): Promise<GoAnyResult<GoAnyAdvertiser[]>> {
-  const r = await get<any>(apiKey, "transparency", { domain });
+  const r = await get<TransparencyDomainData>(apiKey, "transparency", { domain });
   if (!r.data) return { ...r, data: null };
   const rows = Array.isArray(r.data.advertisers) ? r.data.advertisers : [];
   return {
     ...r,
-    data: rows.map((a: any) => ({
+    data: rows.map((a) => ({
       advertiser: String(a?.advertiser ?? ""),
       country: String(a?.country ?? ""),
       adsCount: num(a?.adsCount),
@@ -525,14 +613,21 @@ export interface GoAnyKeywordAds {
  * answers "which advertisers and which OTHER domains show up here", which is the competitive
  * read and the reason the tab has a keyword search.
  */
+/** Transparency keyword-mode payload — who buys ads around the keyword, and on which domains. */
+interface TransparencyKeywordData {
+  keyword?: unknown;
+  advertisers?: { name?: unknown; country?: unknown; id?: unknown; adsCount?: unknown }[];
+  domains?: unknown[];
+}
+
 export async function goanyTransparencyKeyword(apiKey: string, keyword: string): Promise<GoAnyResult<GoAnyKeywordAds>> {
-  const r = await get<any>(apiKey, "transparency", { keyword });
+  const r = await get<TransparencyKeywordData>(apiKey, "transparency", { keyword });
   if (!r.data) return { ...r, data: null };
   return {
     ...r,
     data: {
       keyword: String(r.data.keyword ?? keyword),
-      advertisers: (Array.isArray(r.data.advertisers) ? r.data.advertisers : []).map((a: any) => ({
+      advertisers: (Array.isArray(r.data.advertisers) ? r.data.advertisers : []).map((a) => ({
         name: String(a?.name ?? ""),
         country: String(a?.country ?? ""),
         id: String(a?.id ?? ""),
@@ -545,26 +640,36 @@ export async function goanyTransparencyKeyword(apiKey: string, keyword: string):
 
 export interface GoAnyHost { domain: string; host: string; id: number }
 
+/** `domainSearch` payload — the host list the hostId comes from. */
+interface DomainSearchData {
+  result?: { domain?: unknown; host?: unknown; id?: unknown }[];
+}
+
 /** The hostId every ads-statistics detail action requires. */
 export async function goanyDomainSearch(apiKey: string, domain: string): Promise<GoAnyResult<GoAnyHost | null>> {
-  const r = await get<any>(apiKey, "ads-statistics", { action: "domainSearch", keyword: domain });
+  const r = await get<DomainSearchData>(apiKey, "ads-statistics", { action: "domainSearch", keyword: domain });
   if (!r.data) return { ...r, data: null };
   const rows = Array.isArray(r.data.result) ? r.data.result : [];
-  const hit = rows.find((x: any) => String(x?.domain ?? "").replace(/^www\./, "") === domain.replace(/^www\./, "")) ?? rows[0];
+  const hit = rows.find((x) => String(x?.domain ?? "").replace(/^www\./, "") === domain.replace(/^www\./, "")) ?? rows[0];
   if (!hit) return { ...r, data: null, error: r.error ?? "no_data" };
   return { ...r, data: { domain: String(hit.domain ?? domain), host: String(hit.host ?? ""), id: Number(hit.id) } };
 }
 
 export interface GoAnyAdTitle { title: string; startDay: string; endDay: string }
 
+/** `domainTitles` payload — ad copy with its run window. */
+interface DomainTitlesData {
+  result?: { title?: unknown; startDay?: unknown; endDay?: unknown }[];
+}
+
 /** Ad copy for one domain, with the window each title ran in. */
 export async function goanyDomainTitles(apiKey: string, hostId: number, startDay: string, endDay: string): Promise<GoAnyResult<GoAnyAdTitle[]>> {
-  const r = await get<any>(apiKey, "ads-statistics", { action: "domainTitles", hostId: String(hostId), startDay, endDay });
+  const r = await get<DomainTitlesData>(apiKey, "ads-statistics", { action: "domainTitles", hostId: String(hostId), startDay, endDay });
   if (!r.data) return { ...r, data: null };
   const rows = Array.isArray(r.data.result) ? r.data.result : [];
   return {
     ...r,
-    data: rows.map((t: any) => ({
+    data: rows.map((t) => ({
       title: String(t?.title ?? ""),
       startDay: String(t?.startDay ?? ""),
       endDay: String(t?.endDay ?? ""),
@@ -582,21 +687,35 @@ export interface GoAnyDomainStatistics { weeks: GoAnyWeekRow[]; totals: GoAnyWee
  * country split. Aggregated here into `weeks` (chronological) and `totals` (per advertiser),
  * which is the shape the tab's trend bars and top-advertisers table read.
  */
+/** `domainStatistics` payload — weekly buckets, each with per-advertiser rows and country splits. */
+interface DomainStatisticsData {
+  result?: {
+    weekAdvertiserStatistics?: {
+      month?: unknown; week?: unknown;
+      adsHostAdvertiserWeeklyList?: {
+        advertiser?: { advertiser?: unknown; country?: unknown };
+        adCount?: unknown;
+        countries?: { country?: unknown; countryName?: unknown; adCount?: unknown }[];
+      }[];
+    }[];
+  };
+}
+
 export async function goanyDomainStatistics(
   apiKey: string, hostId: number, startDay: string, endDay: string,
 ): Promise<GoAnyResult<GoAnyDomainStatistics>> {
-  const r = await get<any>(apiKey, "ads-statistics", { action: "domainStatistics", hostId: String(hostId), startDay, endDay });
+  const r = await get<DomainStatisticsData>(apiKey, "ads-statistics", { action: "domainStatistics", hostId: String(hostId), startDay, endDay });
   if (!r.data) return { ...r, data: null };
   const result = r.data.result ?? {};
   const weeks: GoAnyWeekRow[] = (Array.isArray(result.weekAdvertiserStatistics) ? result.weekAdvertiserStatistics : [])
-    .map((w: any) => ({
+    .map((w) => ({
       month: String(w?.month ?? ""),
       week: num(w?.week) ?? 0,
-      advertisers: (Array.isArray(w?.adsHostAdvertiserWeeklyList) ? w.adsHostAdvertiserWeeklyList : []).map((a: any) => ({
+      advertisers: (Array.isArray(w?.adsHostAdvertiserWeeklyList) ? w.adsHostAdvertiserWeeklyList : []).map((a) => ({
         advertiser: String(a?.advertiser?.advertiser ?? ""),
         country: String(a?.advertiser?.country ?? ""),
         adCount: num(a?.adCount),
-        countries: (Array.isArray(a?.countries) ? a.countries : []).map((c: any) => ({
+        countries: (Array.isArray(a?.countries) ? a.countries : []).map((c) => ({
           country: String(c?.country ?? ""),
           countryName: String(c?.countryName ?? ""),
           adCount: num(c?.adCount),
@@ -630,7 +749,7 @@ export async function goanyDomainStatistics(
  * publicly fetchable Google asset hosts and render directly in an <img>.
  */
 export async function goanyDomainImageAds(apiKey: string, hostId: number, startDay: string, endDay: string): Promise<GoAnyResult<Record<string, string>>> {
-  const r = await get<any>(apiKey, "ads-statistics", { action: "domainImageAds", hostId: String(hostId), startDay, endDay });
+  const r = await get<{ result?: Record<string, unknown> }>(apiKey, "ads-statistics", { action: "domainImageAds", hostId: String(hostId), startDay, endDay });
   if (!r.data) return { ...r, data: null };
   const result = r.data.result ?? {};
   const out: Record<string, string> = {};
@@ -642,17 +761,22 @@ export async function goanyDomainImageAds(apiKey: string, hostId: number, startD
 
 export interface GoAnyTitleCountry { country: string; countryName: string; adCount: number | null }
 
+/** `domainTitleCountries` payload — rows are positional arrays OR named objects. */
+interface TitleCountriesData {
+  result?: (unknown[] | { country?: unknown; countryName?: unknown; adCount?: unknown })[];
+}
+
 /** Where one ad title ran. The API answers positional arrays; named here so no consumer ever
  *  has to know that. */
 export async function goanyTitleCountries(apiKey: string, hostId: number, title: string, startDay: string, endDay: string): Promise<GoAnyResult<GoAnyTitleCountry[]>> {
-  const r = await get<any>(apiKey, "ads-statistics", {
+  const r = await get<TitleCountriesData>(apiKey, "ads-statistics", {
     action: "domainTitleCountries", hostId: String(hostId), title, startDay, endDay,
   });
   if (!r.data) return { ...r, data: null };
   const rows = Array.isArray(r.data.result) ? r.data.result : [];
   return {
     ...r,
-    data: rows.map((row: any) => Array.isArray(row) ? {
+    data: rows.map((row) => Array.isArray(row) ? {
       country: String(row[2] ?? ""),
       countryName: String(row[1] ?? ""),
       adCount: num(row[3]),
