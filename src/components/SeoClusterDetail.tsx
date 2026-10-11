@@ -179,7 +179,7 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
       {clusters.map((c, i) => (
         <div key={i} className="panel" style={{ borderColor: sel.has(i) ? "rgba(191,90,242,0.5)" : undefined }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "8px" }}>
-            <span onClick={() => setSel(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; })} style={{ cursor: "pointer", display: "flex" }}>
+            <span onClick={() => setSel(prev => { const n = new Set(prev); if (n.has(i)) n.delete(i); else n.add(i); return n; })} style={{ cursor: "pointer", display: "flex" }}>
               {sel.has(i) ? <CheckSquare size={17} color="var(--color-accent-purple)" /> : <Square size={17} color="var(--color-text-tertiary)" />}
             </span>
             <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{c.name}</span>

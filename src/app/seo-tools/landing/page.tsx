@@ -174,7 +174,7 @@ export default function LandingPage() {
   }
 
   function toggle(url: string) {
-    setSelected(s => { const n = new Set(s); n.has(url) ? n.delete(url) : n.add(url); return n; });
+    setSelected(s => { const n = new Set(s); if (n.has(url)) n.delete(url); else n.add(url); return n; });
   }
 
   async function useAverage() {

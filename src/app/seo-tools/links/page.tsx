@@ -93,7 +93,7 @@ export default function LinkWatchPage() {
   function toggleFav(domain: string) {
     setFavs(prev => {
       const n = new Set(prev);
-      n.has(domain) ? n.delete(domain) : n.add(domain);
+      if (n.has(domain)) n.delete(domain); else n.add(domain);
       localStorage.setItem("lwFavDomains", JSON.stringify([...n]));
       return n;
     });
