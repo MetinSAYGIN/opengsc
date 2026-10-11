@@ -37,6 +37,12 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  {
+    // Plain <img> on purpose for remote images of arbitrary origin (user avatars, partner
+    // logos, provider-hosted screenshots): next/image remotePatterns cannot cover domains
+    // that only become known at runtime, and these are all explicitly sized.
+    rules: { "@next/next/no-img-element": "off" },
+  },
 ]);
 
 export default eslintConfig;
