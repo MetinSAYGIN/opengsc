@@ -12,6 +12,7 @@ import {
   suggestNicheFromText,
   type DonorInput,
   type DonorLink,
+  worseLevel,
 } from "./toxicity";
 
 const SITE = { domainFrom: "spam-donor.example", siteDomain: "vladcasino.example" } as const;
@@ -248,4 +249,18 @@ test("одна спам-оценка без анкора и текста — у�
   const v = classifyDonor(donor([link({ apiSpamScore: 95 })]));
   assert.notEqual(v.level, "unknown");
   assert.ok(BL_STRUCT_SIGNALS.includes("provider_spam"));
+});
+
+/* ------------------------------------------------------------------ */
+/* свёртка уровня донора по строкам (issue #26: 42 clean → 0 clean)    */
+/* ------------------------------------------------------------------ */
+
+test("worseLevel: донор из одних clean-строк остаётся clean, а не unknown", () => {
+  const fold = (levels: Array<"clean" | "suspicious" | "toxic" | "unknown">) =>
+    levels.reduce<ReturnType<typeof worseLevel> | null>((acc, l) => worseLevel(acc, l), null);
+  assert.equal(fold(["clean"]), "clean");
+  assert.equal(fold(["clean", "clean", "clean"]), "clean");
+  assert.equal(fold(["clean", "unknown"]), "unknown", "неоценённая строка не даёт донору считаться чистым");
+  assert.equal(fold(["unknown", "suspicious", "clean"]), "suspicious");
+  assert.equal(fold(["toxic", "clean"]), "toxic");
 });

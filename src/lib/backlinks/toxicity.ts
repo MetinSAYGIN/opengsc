@@ -337,4 +337,18 @@ export function overOptimization(anchors: readonly string[], siteDomain: string)
 /** Worst-first order for level chips and donor tables. */
 export const TOX_LEVEL_ORDER: Record<ToxLevel, number> = { toxic: 3, suspicious: 2, unknown: 1, clean: 0 };
 
+/**
+ * The donor-level verdict folded from its rows: the worst level any row carries. One donor's
+ * rows always share a verdict after a run, so this matters for rows from different runs — and
+ * for the seed. Folding from a seed of "unknown" was the bug behind issue #26's dashboard:
+ * "unknown" outranks "clean" (an unjudged donor must never read as clean), so a donor whose
+ * every row was classified clean could never climb out of the seed and was counted as
+ * "not enough data" — 42 clean donors became 0 clean / 43 unknown. The fold therefore starts
+ * from the first row's own level (`current === null`), never from a placeholder.
+ */
+export function worseLevel(current: ToxLevel | null, next: ToxLevel): ToxLevel {
+  if (current === null) return next;
+  return (TOX_LEVEL_ORDER[next] ?? 0) >= (TOX_LEVEL_ORDER[current] ?? 0) ? next : current;
+}
+
 export type { ScriptName };

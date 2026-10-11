@@ -5,6 +5,10 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Fixed — Toxicity dashboard counted every clean donor as "not enough data" (#26)
+
+- The run classified correctly (its response said 42 clean / 7 suspicious / 1 unknown), but the dashboard folded each donor's rows starting from "unknown", and "unknown" deliberately outranks "clean" so an unjudged donor never reads as clean. A donor whose rows were all clean therefore never left the seed: 42 clean became 0 clean / 43 "not enough data". The fold now starts from the first row's own level (`worseLevel`, pinned by a test). Not DataForSEO-specific — every provider's clean donors were affected. No data was wrong; refreshing after the update shows the right counts without re-running anything.
+
 ### Fixed — «Export all backlinks» follows the selected provider (#26)
 
 - The button was hard-wired to Ahrefs: with DataForSEO selected it still quoted an Ahrefs export (≈ $3.33 for ~1 660 links on the reporter's site) for a profile DataForSEO exports for a few cents. It now exports from the provider selected in Settings → SEO Metrics — Ahrefs, DataForSEO or Keys.so — and names it on the button, in the quote and in the result line. Semrush and Majestic have no per-link export, so with either selected it stays on Ahrefs and says "Ahrefs".

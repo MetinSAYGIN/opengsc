@@ -21,6 +21,7 @@ import {
   serializeNiche,
   suggestNicheFromText,
   TOX_LEVEL_ORDER,
+  worseLevel,
   type DonorLink,
   type ToxLevel,
 } from "./toxicity";
@@ -223,11 +224,8 @@ export async function recalcSiteToxicity(
     if (r.toxCheckedAt) everChecked = true;
     const domain = String(r.domainFrom ?? "").toLowerCase();
     if (!domain) continue;
-    const level = String(r.toxLevel ?? "unknown");
-    const rank = TOX_LEVEL_ORDER[level as ToxLevel] ?? 0;
-    if (rank >= (TOX_LEVEL_ORDER[(prevLevel.get(domain) ?? "unknown") as ToxLevel] ?? 0)) {
-      prevLevel.set(domain, level);
-    }
+    const level = String(r.toxLevel ?? "unknown") as ToxLevel;
+    prevLevel.set(domain, worseLevel((prevLevel.get(domain) as ToxLevel | undefined) ?? null, level));
   }
 
   const verdicts = [...byDonor.entries()].map(([domain, links]) =>
@@ -397,7 +395,7 @@ export async function readToxicityOverview(siteId: string): Promise<ToxicityOver
 
   const levels: Record<ToxLevel, number> = { clean: 0, suspicious: 0, toxic: 0, unknown: 0 };
   interface Acc {
-    domain: string; links: number; level: ToxLevel; score: number; signals: Set<string>;
+    domain: string; links: number; level: ToxLevel | null; score: number; signals: Set<string>;
     dr: number | null; disavowMarked: number; checkedAt: Date | null;
   }
   const acc = new Map<string, Acc>();
@@ -407,13 +405,15 @@ export async function readToxicityOverview(siteId: string): Promise<ToxicityOver
     const level = (["clean", "suspicious", "toxic", "unknown"].includes(String(r.toxLevel))
       ? String(r.toxLevel) : "unknown") as ToxLevel;
     const entry = acc.get(domain) ?? {
-      domain, links: 0, level: "unknown", score: 0, signals: new Set<string>(), dr: null,
+      // null, not "unknown": the first row sets the level (see worseLevel — a seed of "unknown"
+      // swallowed every clean donor).
+      domain, links: 0, level: null, score: 0, signals: new Set<string>(), dr: null,
       disavowMarked: 0, checkedAt: null,
     };
     entry.links++;
     if (r.disavow) entry.disavowMarked++;
     if (r.apiDr != null) entry.dr = Math.max(entry.dr ?? 0, Number(r.apiDr));
-    if ((TOX_LEVEL_ORDER[level] ?? 0) >= (TOX_LEVEL_ORDER[entry.level] ?? 0)) entry.level = level;
+    entry.level = worseLevel(entry.level, level);
     entry.score = Math.max(entry.score, Number(r.toxScore ?? 0));
     for (const s of parseSignals(r.toxSignals)) entry.signals.add(s);
     if (r.toxCheckedAt && (!entry.checkedAt || new Date(r.toxCheckedAt) > entry.checkedAt)) {
@@ -421,7 +421,7 @@ export async function readToxicityOverview(siteId: string): Promise<ToxicityOver
     }
     acc.set(domain, entry);
   }
-  for (const e of acc.values()) levels[e.level]++;
+  for (const e of acc.values()) levels[e.level ?? "unknown"]++;
 
   const overOpt = overOptimization(
     rows.map((r) => String(r.apiAnchor ?? "")),
@@ -430,14 +430,14 @@ export async function readToxicityOverview(siteId: string): Promise<ToxicityOver
 
   const donorRows: DonorOverviewRow[] = [...acc.values()]
     .sort((a, b) =>
-      (TOX_LEVEL_ORDER[b.level] ?? 0) - (TOX_LEVEL_ORDER[a.level] ?? 0) ||
+      (TOX_LEVEL_ORDER[b.level ?? "unknown"] ?? 0) - (TOX_LEVEL_ORDER[a.level ?? "unknown"] ?? 0) ||
       b.score - a.score ||
       b.links - a.links)
     .slice(0, OVERVIEW_DONOR_CAP)
     .map((e) => ({
       domainFrom: e.domain,
       links: e.links,
-      level: e.level,
+      level: e.level ?? "unknown",
       score: e.score,
       signals: [...e.signals],
       dr: e.dr,
