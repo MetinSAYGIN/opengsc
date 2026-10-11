@@ -115,7 +115,7 @@ const CORE_TOOLS: McpTool[] = [
       const dim = args.dimension === "page" ? "url" : "query";
       const take = lim(args.limit, 50, 500);
       const pageFilter = String(args.page ?? "").trim();
-      const where: any = { siteId: site.id, date: { gte: since } };
+      const where: { siteId: string; date: { gte: Date }; url?: { contains: string } } = { siteId: site.id, date: { gte: since } };
       if (pageFilter) where.url = { contains: pageFilter };
 
       const totals = await prisma.dailyMetric.aggregate({
@@ -124,8 +124,11 @@ const CORE_TOOLS: McpTool[] = [
         _avg: { position: true },
       });
       const rows = await prisma.dailyMetric.groupBy({
-        by: [dim] as any,
-        where: { ...where, [dim]: { not: "" } } as any,
+        by: [dim],
+        // The computed `[dim]` key widens the literal to a string index signature, which no longer
+        // matches the aggregate's own where type — the object itself is exactly `where` plus the
+        // group-by column filter, so the cast only narrows the widened literal back.
+        where: { ...where, [dim]: { not: "" } } as typeof where,
         _sum: { clicks: true, impressions: true },
         _avg: { ctr: true, position: true },
         orderBy: { _sum: { clicks: "desc" } },
@@ -137,7 +140,7 @@ const CORE_TOOLS: McpTool[] = [
         site: site.url,
         days: Math.round((Date.now() - since.getTime()) / 86_400_000),
         totals: { clicks, impressions, ctrPercent: impressions ? pct(clicks / impressions) : 0, avgPosition: r1(totals._avg.position ?? 0) },
-        rows: (rows as any[]).map(r => ({
+        rows: rows.map(r => ({
           [dim === "url" ? "page" : "query"]: r[dim],
           clicks: r._sum.clicks ?? 0,
           impressions: r._sum.impressions ?? 0,
@@ -340,16 +343,21 @@ const CORE_TOOLS: McpTool[] = [
     },
     handler: async (userId, args) => {
       const brand = String(args.brand ?? "").trim().toLowerCase();
+      // Column values straight out of rawQuery: pass-through fields stay `unknown`, the ones the
+      // code coerces anyway (Number()/!!) never need a narrower type.
+      type MentionRow = { brand: unknown; urlFrom: unknown; domainFrom: unknown; title: unknown; anchor: unknown; drFrom: unknown; firstSeen: unknown; dofollow: unknown };
+      type TopDomainRow = { domainFrom: unknown; brandsLinked: unknown; links: unknown; maxDr: unknown };
+      type WatchedBrandRow = { domain: unknown };
       try {
-        const mentions: any[] = await rawQuery(
+        const mentions = await rawQuery<MentionRow[]>(
           `SELECT brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, dofollow FROM "LinkMention"
            WHERE userId = ? ${brand ? "AND brand = ?" : ""} ORDER BY firstSeen DESC LIMIT ${lim(args.limit, 100, 500)}`,
           ...(brand ? [userId, brand] : [userId]));
-        const topDomains: any[] = await rawQuery(
+        const topDomains = await rawQuery<TopDomainRow[]>(
           `SELECT domainFrom, COUNT(DISTINCT brand) as brandsLinked, COUNT(*) as links, MAX(drFrom) as maxDr
            FROM "LinkMention" WHERE userId = ? GROUP BY domainFrom HAVING COUNT(DISTINCT brand) >= 2
            ORDER BY brandsLinked DESC, links DESC LIMIT 50`, userId);
-        const brands: any[] = await rawQuery(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId);
+        const brands = await rawQuery<WatchedBrandRow[]>(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId);
         return {
           watchedBrands: brands.map(b => b.domain),
           multiLinkerDomains: topDomains.map(d => ({ domain: d.domainFrom, brandsLinked: Number(d.brandsLinked), links: Number(d.links), maxDr: Number(d.maxDr) })),
@@ -482,18 +490,20 @@ const CORE_TOOLS: McpTool[] = [
       const prevStart = new Date(now); prevStart.setDate(prevStart.getDate() - days * 2);
 
       const agg = (gte: Date, lt: Date) => prisma.dailyMetric.groupBy({
-        by: [dim] as any,
-        where: { siteId: site.id, date: { gte, lt }, [dim]: { not: "" } } as any,
+        by: [dim],
+        // Same computed-key widening as get_search_performance — cast only narrows the literal back.
+        where: { siteId: site.id, date: { gte, lt }, [dim]: { not: "" } } as { siteId: string; date: { gte: Date; lt: Date } },
         _sum: { clicks: true, impressions: true },
         _avg: { position: true },
       });
       const [cur, prev] = await Promise.all([agg(curStart, now), agg(prevStart, curStart)]);
 
       type Row = { key: string; clicks: number; impressions: number; position: number };
-      const toMap = (rows: any[]): Map<string, Row> => new Map(rows.map(r => [r[dim], {
+      type AggRow = Awaited<ReturnType<typeof agg>>[number];
+      const toMap = (rows: AggRow[]): Map<string, Row> => new Map(rows.map(r => [r[dim], {
         key: r[dim], clicks: r._sum.clicks ?? 0, impressions: r._sum.impressions ?? 0, position: r1(r._avg.position ?? 0),
       }]));
-      const curMap = toMap(cur as any[]), prevMap = toMap(prev as any[]);
+      const curMap = toMap(cur), prevMap = toMap(prev);
 
       const joined: { key: string; clicksDelta: number; cur?: Row; prev?: Row }[] = [];
       for (const [key, c] of curMap) joined.push({ key, cur: c, prev: prevMap.get(key), clicksDelta: c.clicks - (prevMap.get(key)?.clicks ?? 0) });
@@ -556,7 +566,7 @@ const CORE_TOOLS: McpTool[] = [
         site: site.url,
         days,
         dimensions: dims,
-        rows: (rows as any[]).map(r => ({
+        rows: rows.map(r => ({
           keys: r.keys, clicks: r.clicks ?? 0, impressions: r.impressions ?? 0,
           ctrPercent: pct(r.ctr ?? 0), avgPosition: r1(r.position ?? 0),
         })),
@@ -666,7 +676,7 @@ const CORE_TOOLS: McpTool[] = [
       ]);
       let linkMentions = 0;
       try {
-        const rows: any[] = await rawQuery(`SELECT COUNT(*) as c FROM "LinkMention" WHERE userId = ?`, userId);
+        const rows = await rawQuery<{ c: unknown }[]>(`SELECT COUNT(*) as c FROM "LinkMention" WHERE userId = ?`, userId);
         linkMentions = Number(rows?.[0]?.c ?? 0);
       } catch { /* not migrated */ }
       const extra = await dataModuleCounts(userId);
@@ -675,7 +685,7 @@ const CORE_TOOLS: McpTool[] = [
       // tool it can call will fill it, rather than reading an empty answer as a real one.
       const metricCounts = async (table: string, where = "") => {
         try {
-          const rows: any[] = await rawQuery(`SELECT COUNT(*) as c FROM "${table}" ${where}`);
+          const rows = await rawQuery<{ c: unknown }[]>(`SELECT COUNT(*) as c FROM "${table}" ${where}`);
           return Number(rows?.[0]?.c ?? 0);
         } catch { return 0; }
       };
@@ -746,7 +756,7 @@ const CORE_TOOLS: McpTool[] = [
 
       const url = process.env.DATABASE_URL || "";
       const isMysql = /^(mysql|mariadb):/i.test(url);
-      let rows: any[];
+      let rows: Record<string, unknown>[];
 
       if (isMysql) {
         // On MySQL there is no local file to open read-only, so the SQLite path below does not
@@ -757,7 +767,7 @@ const CORE_TOOLS: McpTool[] = [
         // The keyword screen above is the only write-guard on this branch: a MySQL account separate
         // from the app's (e.g. a SELECT-only grant) would be a stronger one, but that is a
         // deployment choice, not something the code can enforce on a connection it did not open.
-        rows = await rawQuery(sql);
+        rows = await rawQuery<Record<string, unknown>[]>(sql);
       } else {
         // True read-only enforcement on SQLite: a separate connection opened with the
         // readonly flag — the engine itself refuses any write no matter how the query
@@ -781,14 +791,20 @@ const CORE_TOOLS: McpTool[] = [
         const dbPath = path.isAbsolute(rawPath)
           ? rawPath
           : path.resolve(/* turbopackIgnore: true */ process.cwd(), rawPath);
-        // better-sqlite3 ships no bundled types (@types not installed).
+        // better-sqlite3 ships no bundled types (@types not installed) — the shape below is only
+        // what this block reads: prepare(), stmt.reader, stmt.all(), close().
         // @ts-expect-error -- no declaration file for better-sqlite3
-        const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as any;
+        const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as {
+          default: new (path: string, options: { readonly: true; fileMustExist: true }) => {
+            prepare(sql: string): { reader: boolean; all(): Record<string, unknown>[] };
+            close(): void;
+          };
+        };
         const db = new Database(dbPath, { readonly: true, fileMustExist: true });
         try {
           const stmt = db.prepare(sql);
           if (!stmt.reader) throw new Error("Query does not return rows — only SELECT queries are allowed.");
-          rows = stmt.all() as any[];
+          rows = stmt.all();
         } finally {
           db.close();
         }
@@ -801,7 +817,7 @@ const CORE_TOOLS: McpTool[] = [
       const allowedSiteIds = new Set(userSites.map(s => s.id));
       const filtered = rows.filter(row =>
         (row.userId === undefined || row.userId === userId) &&
-        (row.siteId === undefined || allowedSiteIds.has(row.siteId)));
+        (row.siteId === undefined || allowedSiteIds.has(row.siteId as string)));
 
       return { rowCount: Math.min(filtered.length, 500), truncated: filtered.length > 500, rows: filtered.slice(0, 500) };
     },

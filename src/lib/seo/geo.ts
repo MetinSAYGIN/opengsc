@@ -129,6 +129,50 @@ type RawTrace = {
   model?: string;
 };
 
+// What the trace miners below read out of a Responses-API (openai/kie) JSON payload — every
+// field optional, because a gateway that omits one is exactly the case they defend against.
+interface ResponsesAction {
+  type?: string;
+  query?: string;
+  queries?: string[];
+  url?: string;
+  /** Documented as [{url}], leniently also accepted as bare strings. */
+  sources?: ({ url?: string } | string)[];
+}
+interface ResponsesContentPart {
+  type?: string;
+  text?: string;
+  annotations?: { type?: string; url?: string; title?: string }[];
+}
+interface ResponsesOutputItem {
+  type?: string;
+  id?: string;
+  action?: ResponsesAction;
+  content?: ResponsesContentPart[];
+}
+interface ResponsesPayload {
+  output?: ResponsesOutputItem[];
+  output_text?: string;
+  status?: string;
+  error?: { message?: string };
+  incomplete_details?: { reason?: string };
+}
+
+// Stage-2 analysis output (the extractJson result) — every field optional by design: a failed
+// analysis is not a failed audit, and assembleReport fills each gap deterministically.
+interface GeoAnalysis {
+  intent?: string;
+  intentConfidence?: number;
+  stage?: string;
+  topic?: string;
+  brands?: { name?: string; domain?: string; tags?: string[]; pricing?: string; support?: string; featureBreadth?: string }[];
+  domainTypes?: Record<string, string>;
+  keyEntities?: { category?: string; name?: string; count?: number; brands?: string[] }[];
+  insights?: { userSearchBehavior?: string; dominantSource?: string; strategicEngagement?: string; opportunityGaps?: string };
+  coverageNotes?: { missingFactors?: string[]; missingEntities?: string[] };
+  yourPage?: { cited?: boolean; citedCompetitors?: string[]; gaps?: string[]; fixes?: string[]; summary?: string };
+}
+
 function buildSearchInput(query: string, language: string, country: string): string {
   return [
     `A user in ${country.toUpperCase()} (language: ${language}) is searching for: "${query}".`,
@@ -162,6 +206,15 @@ const SEARCH_TIMEOUT_MS = 900_000;
 // Gemini grounding: google_search grounds the answer and reports webSearchQueries (what it
 // searched) plus groundingChunks (the pages it actually cited) — exactly the RawTrace shape the
 // report assembles from. No open_page equivalent exists, so `opened` stays empty by design.
+
+// The generateContent fields this engine reads; the usage block is read as `any` by usageFrom.
+interface GeminiSearchResponse {
+  candidates?: {
+    content?: { parts?: { text?: string }[] };
+    groundingMetadata?: { webSearchQueries?: string[]; groundingChunks?: { web?: { uri?: string; title?: string } }[] };
+  }[];
+}
+
 async function runGeminiGroundedSearch(
   query: string, language: string, country: string, model: string, apiKey: string, baseUrl?: string,
 ): Promise<RawTrace | { error: string }> {
@@ -184,14 +237,14 @@ async function runGeminiGroundedSearch(
       call.finish({ error });
       return { error };
     }
-    const data = await res.json();
+    const data: GeminiSearchResponse = await res.json();
     call.finish({ ...usageFrom("gemini", data), responseBody: data });
     const cand = Array.isArray(data?.candidates) ? data.candidates[0] : null;
-    const parts: any[] = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
+    const parts = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
     let answerText = "";
     for (const p of parts) if (typeof p?.text === "string") answerText += p.text + "\n";
-    const gm = cand?.groundingMetadata ?? {};
-    const queries: string[] = Array.isArray(gm.webSearchQueries) ? gm.webSearchQueries.map((q: any) => String(q)).filter(Boolean) : [];
+    const gm: NonNullable<NonNullable<GeminiSearchResponse["candidates"]>[number]["groundingMetadata"]> = cand?.groundingMetadata ?? {};
+    const queries: string[] = Array.isArray(gm.webSearchQueries) ? gm.webSearchQueries.map(q => String(q)).filter(Boolean) : [];
     const seen = new Set<string>();
     const sources: { url: string; domain: string; title: string }[] = [];
     for (const c of Array.isArray(gm.groundingChunks) ? gm.groundingChunks : []) {
@@ -316,12 +369,12 @@ async function runWebSearch(query: string, language: string, country: string, mo
   // SSE reader for the Responses API: ignore progress events, take the terminal
   // response.completed (or surface response.failed/incomplete) — parseResponses then consumes
   // the exact same response object the non-streaming path gets.
-  async function readSse(res: Response): Promise<{ data?: any; error?: string }> {
+  async function readSse(res: Response): Promise<{ data?: ResponsesPayload; error?: string }> {
     const reader = res.body?.getReader();
     if (!reader) return { error: "no_stream_body" };
     const decoder = new TextDecoder();
     let buf = "";
-    let final: any = null;
+    let final: ResponsesPayload | null | undefined = null;
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -334,7 +387,7 @@ async function runWebSearch(query: string, language: string, country: string, mo
           if (!line.startsWith("data:")) continue;
           const payload = line.slice(5).trim();
           if (!payload || payload === "[DONE]") continue;
-          let ev: any;
+          let ev: { type?: string; response?: ResponsesPayload };
           try { ev = JSON.parse(payload); } catch { continue; /* keepalive/partial line */ }
           if (ev?.type === "response.completed") { final = ev.response; break; }
           if (ev?.type === "response.failed" || ev?.type === "response.incomplete") {
@@ -397,8 +450,8 @@ async function runWebSearch(query: string, language: string, country: string, mo
   }
 }
 
-function parseResponses(data: any): RawTrace {
-  const out: any[] = Array.isArray(data?.output) ? data.output : [];
+function parseResponses(data: ResponsesPayload): RawTrace {
+  const out = Array.isArray(data?.output) ? data.output : [];
   const batches: RawTrace["batches"] = [];
   const opened: { url: string }[] = [];
   const scannedAll: { url: string; domain: string }[] = [];
@@ -407,9 +460,9 @@ function parseResponses(data: any): RawTrace {
 
   for (const item of out) {
     if (item?.type === "web_search_call") {
-      const action = item.action ?? {};
+      const action: ResponsesAction = item.action ?? {};
       const sources: { url: string; domain: string }[] = Array.isArray(action.sources)
-        ? action.sources.map((s: any) => { const url = s?.url ?? s; return { url, domain: domainOf(url) }; }).filter((s: any) => s.url)
+        ? action.sources.map((s): { url: string; domain: string } => { const url = typeof s === "string" ? s : (s?.url ?? ""); return { url, domain: domainOf(url) }; }).filter(s => s.url)
         : [];
       for (const s of sources) scannedAll.push(s);
       const atype = action.type ?? (action.query || action.queries ? "search" : action.url ? "open_page" : "");
@@ -420,16 +473,16 @@ function parseResponses(data: any): RawTrace {
       } else {
         // treat as a search batch
         const queries: string[] = action.queries
-          ? action.queries.map((q: any) => String(q)).filter(Boolean)
+          ? action.queries.map(q => String(q)).filter(Boolean)
           : action.query ? [String(action.query)] : [];
         batches.push({ id: item.id || `b${batches.length + 1}`, queries, sources });
       }
     } else if (item?.type === "message") {
-      const content: any[] = Array.isArray(item.content) ? item.content : [];
+      const content = Array.isArray(item.content) ? item.content : [];
       for (const c of content) {
         if (c?.type === "output_text" || typeof c?.text === "string") {
           answerText += (c.text ?? "") + "\n";
-          const anns: any[] = Array.isArray(c.annotations) ? c.annotations : [];
+          const anns = Array.isArray(c.annotations) ? c.annotations : [];
           for (const a of anns) {
             if (a?.type === "url_citation" && a.url) citations.push({ url: a.url, title: a.title ?? "", domain: domainOf(a.url) });
           }
@@ -600,7 +653,7 @@ async function runAnalysis(
   analysisModel: string, apiKey: string, engine: GeoEngine = "openai",
   creds?: GeoAnalysisCreds, baseUrl?: string,
   ownPage?: { url: string; text: string },
-): Promise<any> {
+): Promise<GeoAnalysis | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 120_000);
   const prompt = buildAnalysisPrompt(t, query, language, country, ownPage);
@@ -627,7 +680,7 @@ async function runAnalysis(
         console.error("[GEO] analysis failed:", r.error ?? "no text");
         return null;
       }
-      return extractJson(r.text);
+      return extractJson<GeoAnalysis>(r.text);
     }
     if (engine === "aparser") {
       // Deliberate dead end. On this engine `apiKey` is an A-Parser password and `baseUrl` is
@@ -646,7 +699,7 @@ async function runAnalysis(
         console.error("[GEO] analysis failed:", r.error ?? "no text");
         return null;
       }
-      return extractJson(r.text);
+      return extractJson<GeoAnalysis>(r.text);
     }
     if (engine === "kie") {
       // kie.ai publishes no /models listing and exposes a single documented id, so there is
@@ -667,16 +720,16 @@ async function runAnalysis(
         call.finish({ error: `kie_${res.status}` });
         return null;
       }
-      const data = await res.json();
+      const data: ResponsesPayload = await res.json();
       call.finish({ ...usageFrom("kie", data), responseBody: data });
-      const out: any[] = Array.isArray(data?.output) ? data.output : [];
+      const out = Array.isArray(data?.output) ? data.output : [];
       let text = "";
       for (const item of out) {
         if (item?.type === "message") {
           for (const c of item.content ?? []) if (typeof c?.text === "string") text += c.text;
         }
       }
-      return extractJson(text);
+      return extractJson<GeoAnalysis>(text);
     }
 
     // Same gateway override as stage 1: without utility creds this fallback posts the engine's
@@ -731,12 +784,12 @@ async function runAnalysis(
       // A streamed chat completion carries no usage block in this app's request shape, so the
       // row closes with tokens absent rather than zeroed.
       call.finish();
-      return text ? extractJson(text) : null;
+      return text ? extractJson<GeoAnalysis>(text) : null;
     }
     const data = await res.json();
     call.finish({ ...usageFrom("openai", data), responseBody: data });
     const text = data?.choices?.[0]?.message?.content ?? "";
-    return extractJson(text);
+    return extractJson<GeoAnalysis>(text);
   } catch { return null; } finally { clearTimeout(timer); }
 }
 
@@ -744,7 +797,7 @@ async function runAnalysis(
 function pct(n: number, d: number): number { return d > 0 ? Math.round((n / d) * 100) : 0; }
 
 export function assembleReport(opts: {
-  query: string; language: string; country: string; model: string; trace: RawTrace; analysis: any;
+  query: string; language: string; country: string; model: string; trace: RawTrace; analysis: GeoAnalysis | null;
   pageUrl?: string; ownPage?: { url: string; text: string } | null;
 }): GeoReport {
   const { query, language, country, model, trace, analysis, pageUrl, ownPage } = opts;
@@ -810,7 +863,7 @@ export function assembleReport(opts: {
   const dominant = sourceTypes.find(s => s.cites > 0) ?? sourceTypes[0] ?? { type: "other", label: "Other", pct: 0 };
 
   // ── Brand leaderboard ──
-  const rawBrands: any[] = Array.isArray(a.brands) ? a.brands : [];
+  const rawBrands = Array.isArray(a.brands) ? a.brands : [];
   const queryCount = Math.max(uniqueQueries, 1);
   const brands: GeoBrand[] = rawBrands.slice(0, 12).map((b, i) => {
     const rank = i + 1;
@@ -844,7 +897,7 @@ export function assembleReport(opts: {
   }).filter(f => f.items.length > 0);
 
   // ── Key entities (grouped by category) ──
-  const rawEntities: any[] = Array.isArray(a.keyEntities) ? a.keyEntities : [];
+  const rawEntities = Array.isArray(a.keyEntities) ? a.keyEntities : [];
   const byCat = new Map<string, { name: string; count: number; brands: string[] }[]>();
   for (const e of rawEntities) {
     const cat = String(e.category || "Concepts");

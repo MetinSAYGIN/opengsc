@@ -17,12 +17,22 @@ import { usageFrom } from '@/lib/providerLog/tokens';
 // {type:"input_text"|"input_image"|"input_file", ...}), and the reply comes back as an `output`
 // array of items — a "reasoning" item (usually empty/summary-only) and a "message" item whose
 // content holds the actual text. Shared by fetchLLM + fetchLLMVision below.
-function parseKieOutput(data: any): string {
-  const out: any[] = Array.isArray(data?.output) ? data.output : [];
+
+// What the response parsers below actually read from each provider's JSON, nothing more. Every
+// field optional: these are external payloads, and a missing key is a diagnosable condition the
+// empty-completion path reports, not a type error here.
+interface KieResponse {
+  output?: { type?: string; content?: { type?: string; text?: string }[] }[];
+  output_text?: string;
+  status?: string;
+  incomplete_details?: { reason?: string };
+}
+function parseKieOutput(data: KieResponse): string {
+  const out = Array.isArray(data?.output) ? data.output : [];
   for (const item of out) {
     if (item?.type === 'message') {
-      const content: any[] = Array.isArray(item.content) ? item.content : [];
-      const part = content.find((c: any) => c?.type === 'output_text' || typeof c?.text === 'string');
+      const content = Array.isArray(item.content) ? item.content : [];
+      const part = content.find(c => c?.type === 'output_text' || typeof c?.text === 'string');
       if (part?.text) return part.text;
     }
   }
@@ -40,8 +50,13 @@ function parseKieOutput(data: any): string {
 // not parse" and blamed the JSON, reporting `parse_failed` for a response that never contained
 // any JSON to fail on. Read every block, and let the caller tell EMPTY apart from MALFORMED.
 
-function anthropicText(data: any): string {
-  const blocks: any[] = Array.isArray(data?.content) ? data.content : [];
+interface AnthropicResponse {
+  content?: { type?: string; text?: string }[];
+  text?: string;
+  stop_reason?: string;
+}
+function anthropicText(data: AnthropicResponse): string {
+  const blocks = Array.isArray(data?.content) ? data.content : [];
   const text = blocks
     .filter(b => (b?.type === 'text' || b?.type === undefined) && typeof b?.text === 'string')
     .map(b => b.text)
@@ -54,27 +69,43 @@ function anthropicText(data: any): string {
   return typeof data?.text === 'string' ? data.text : '';
 }
 
-function geminiText(data: any): string {
+interface GeminiResponse {
+  candidates?: { content?: { parts?: { text?: string }[] } }[];
+  promptFeedback?: { blockReason?: string };
+}
+function geminiText(data: GeminiResponse): string {
   const parts = data?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return '';
-  return parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('');
+  return parts.map(p => (typeof p?.text === 'string' ? p.text : '')).join('');
 }
 
 // OpenAI-compatible `message.content` is normally a string, but gateways in this provider list
 // also return the array-of-parts shape, and a refusal arrives as content:null + `refusal`.
-function openAiText(data: any): string {
+interface OpenAiChatResponse {
+  choices?: { finish_reason?: string; message?: { content?: string | (string | { text?: string })[] | null; refusal?: string } }[];
+}
+function openAiText(data: OpenAiChatResponse): string {
   const c = data?.choices?.[0]?.message?.content;
   if (typeof c === 'string') return c;
   if (Array.isArray(c)) {
-    return c.map((p: any) => (typeof p === 'string' ? p : typeof p?.text === 'string' ? p.text : '')).join('');
+    return c.map(p => (typeof p === 'string' ? p : typeof p?.text === 'string' ? p.text : '')).join('');
   }
   return '';
+}
+
+// What closeCall/lastData are statically read for once a response is in hand: usageFrom takes
+// the payload as-is, the log row persists it as unknown, and emptyCompletionDetail inspects
+// exactly these two cross-dialect fields — an OpenAI-style refusal and a Gemini-style safety
+// block. Each branch's parsed `data` (typed `any` off res.json()) is assignable as-is.
+interface LlmResponseMeta {
+  choices?: { message?: { refusal?: string } }[];
+  promptFeedback?: { blockReason?: string };
 }
 
 // A 200-OK response that carries no text is a real, diagnosable failure — not a parse problem.
 // Name the likely cause, because "parse_failed" sent users looking for a JSON bug that was never
 // there, and the reasons below are all things the user can actually act on.
-function emptyCompletionDetail(provider: string, finish: string | undefined, model: string | undefined, data: any): string {
+function emptyCompletionDetail(provider: string, finish: string | undefined, model: string | undefined, data: LlmResponseMeta | null): string {
   const refusal = data?.choices?.[0]?.message?.refusal;
   const blocked = data?.promptFeedback?.blockReason;
   const why =
@@ -364,7 +395,7 @@ async function fetchLLMOnce(
     // the outline step salvaged half a JSON document, shipped it as a finished outline, and the
     // article was written from a structure that stopped mid-way through its own section list.
     let finishReason: string | undefined;
-    let lastData: any = null;
+    let lastData: LlmResponseMeta | null = null;
     /**
      * Close the row for a 200, where its body has just been parsed.
      *
@@ -380,7 +411,7 @@ async function fetchLLMOnce(
      * land in this function's catch and mark an already-billed call retryable — bookkeeping
      * failing the provider call it exists to record, which is the one thing it must never do.
      */
-    const closeCall = (call: CallHandle, data: any, model?: string): void => {
+    const closeCall = (call: CallHandle, data: LlmResponseMeta, model?: string): void => {
       try {
         call.finish({
           ...usageFrom(provider, data), model, responseBody: data,
@@ -695,9 +726,9 @@ async function fetchLLMOnce(
     return { text, retryable: false, finishReason };
   } catch (e) {
     // AbortError = our 280s timeout; TypeError "fetch failed" = transient network — both retryable.
-    const isTimeout = (e as any)?.name === 'AbortError';
+    const isTimeout = (e as { name?: string })?.name === 'AbortError';
     console.error('[LLM] fetchLLM error:', isTimeout ? 'timeout' : e);
-    return { text: null, retryable: true, errorDetail: isTimeout ? `${provider}: request timed out (280s)` : `${provider}: ${String((e as any)?.message ?? e)}`.slice(0, 300) };
+    return { text: null, retryable: true, errorDetail: isTimeout ? `${provider}: request timed out (280s)` : `${provider}: ${String((e as { message?: string })?.message ?? e)}`.slice(0, 300) };
   } finally {
     clearTimeout(timer);
   }
@@ -725,7 +756,7 @@ export async function fetchLLMVision(
     // until now the only one that left no trace at all. Wrapped for the same reason as the
     // closure in fetchLLMOnce: `usageFrom` runs outside log.ts's guard, and a logging throw must
     // not be what fails a call the provider has already been paid for.
-    const closeCall = (call: CallHandle, data: any, model?: string): void => {
+    const closeCall = (call: CallHandle, data: unknown, model?: string): void => {
       try {
         call.finish({ ...usageFrom(provider, data), model, responseBody: data });
       } catch (e) {
@@ -848,7 +879,7 @@ export async function fetchLLMVision(
     }
     return text;
   } catch (e) {
-    console.error('[LLM vision] fetchLLMVision error:', (e as any)?.name === 'AbortError' ? 'timeout' : e);
+    console.error('[LLM vision] fetchLLMVision error:', (e as { name?: string })?.name === 'AbortError' ? 'timeout' : e);
     return null;
   } finally {
     clearTimeout(timer);

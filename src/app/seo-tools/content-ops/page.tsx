@@ -54,7 +54,7 @@ const EVENT_KEYS: Record<string, string> = {
 };
 
 function apiError(value: unknown) {
-  const d = value as any;
+  const d = value as { message?: unknown; error?: unknown };
   return String(d?.message || d?.error || "request_failed");
 }
 
@@ -115,7 +115,7 @@ export default function ContentOperationsPage() {
   }
 
   async function removeOperation() {
-    if (!selected || !window.confirm(t("contentOpsDeleteConfirm" as any))) return;
+    if (!selected || !window.confirm(t("contentOpsDeleteConfirm"))) return;
     setBusy("delete"); setError("");
     try {
       const res = await fetch(`/api/content-ops/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
@@ -178,25 +178,25 @@ export default function ContentOperationsPage() {
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
         <div>
-          <h2 style={titleStyle}>{t("contentOpsTitle" as any)}</h2>
-          <p style={subStyle}>{t("contentOpsSubtitle" as any)}</p>
+          <h2 style={titleStyle}>{t("contentOpsTitle")}</h2>
+          <p style={subStyle}>{t("contentOpsSubtitle")}</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={tabButton(tab === "queue")} onClick={() => setTab("queue")}><FileText size={14} /> {t("contentOpsQueue" as any)}</button>
-          <button style={tabButton(tab === "repositories")} onClick={() => setTab("repositories")}><GitPullRequest size={14} /> {t("contentOpsRepositories" as any)}</button>
-          <button style={tabButton(tab === "source-audit")} onClick={() => setTab("source-audit")}><Code2 size={14} /> {t("sourceAuditTitle" as any)}</button>
+          <button style={tabButton(tab === "queue")} onClick={() => setTab("queue")}><FileText size={14} /> {t("contentOpsQueue")}</button>
+          <button style={tabButton(tab === "repositories")} onClick={() => setTab("repositories")}><GitPullRequest size={14} /> {t("contentOpsRepositories")}</button>
+          <button style={tabButton(tab === "source-audit")} onClick={() => setTab("source-audit")}><Code2 size={14} /> {t("sourceAuditTitle")}</button>
         </div>
       </div>
 
       <div style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(41,151,255,.25)", background: "rgba(41,151,255,.07)", color: "var(--color-text-secondary)", fontSize: 12, lineHeight: 1.55, display: "flex", gap: 9 }}>
         <ShieldCheck size={17} color="var(--color-accent-blue)" style={{ flexShrink: 0 }} />
-        <span>{t("contentOpsBoundary" as any)}</span>
+        <span>{t("contentOpsBoundary")}</span>
       </div>
-      {notMigrated && <Notice tone="warning">{t("contentOpsNeedsMigration" as any)} <code>npx prisma db push</code></Notice>}
-      {error && <Notice tone="error">{t("contentOpsError" as any)}: {error}</Notice>}
+      {notMigrated && <Notice tone="warning">{t("contentOpsNeedsMigration")} <code>npx prisma db push</code></Notice>}
+      {error && <Notice tone="error">{t("contentOpsError")}: {error}</Notice>}
 
       {tab === "repositories" ? (
-        <RepositoryPanel repositories={repositories} setRepositories={setRepositories} t={t as any} />
+        <RepositoryPanel repositories={repositories} setRepositories={setRepositories} t={t as (k: string) => string} />
       ) : tab === "source-audit" ? (
         <SourceAuditPanel repositories={repositories} />
       ) : loading ? (
@@ -204,11 +204,11 @@ export default function ContentOperationsPage() {
       ) : (
         <div className="content-ops-grid">
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <CreateIdea history={history} onCreated={replaceOperation} t={t as any} />
+            <CreateIdea history={history} onCreated={replaceOperation} t={t as (k: string) => string} />
             <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "13px 15px", borderBottom: "1px solid var(--color-border)", fontSize: 13, fontWeight: 700 }}>{t("contentOpsQueue" as any)} · {operations.length}</div>
-              {!operations.length && <div style={{ padding: 26, textAlign: "center", color: "var(--color-text-secondary)", fontSize: 13 }}>{t("contentOpsEmpty" as any)}</div>}
-              {operations.map(op => <OperationRow key={op.id} operation={op} active={op.id === selectedId} onClick={() => { setSelectedId(op.id); setPreview(null); setConfirmPr(false); }} t={t as any} />)}
+              <div style={{ padding: "13px 15px", borderBottom: "1px solid var(--color-border)", fontSize: 13, fontWeight: 700 }}>{t("contentOpsQueue")} · {operations.length}</div>
+              {!operations.length && <div style={{ padding: 26, textAlign: "center", color: "var(--color-text-secondary)", fontSize: 13 }}>{t("contentOpsEmpty")}</div>}
+              {operations.map(op => <OperationRow key={op.id} operation={op} active={op.id === selectedId} onClick={() => { setSelectedId(op.id); setPreview(null); setConfirmPr(false); }} t={t as (k: string) => string} />)}
             </div>
           </div>
 
@@ -216,9 +216,9 @@ export default function ContentOperationsPage() {
             <OperationDetail
               operation={selected} repositories={repositories} busy={busy} preview={preview} confirmPr={confirmPr}
               setConfirmPr={setConfirmPr} onSave={patchOperation} onDelete={removeOperation} onPreview={runPreview}
-              onCreatePr={createPr} onRefreshPr={refreshPr} onVerifyLive={verifyLive} t={t as any}
+              onCreatePr={createPr} onRefreshPr={refreshPr} onVerifyLive={verifyLive} t={t as (k: string) => string}
             />
-          ) : <div className="panel" style={{ padding: 36, color: "var(--color-text-secondary)", textAlign: "center" }}>{t("contentOpsSelect" as any)}</div>}
+          ) : <div className="panel" style={{ padding: 36, color: "var(--color-text-secondary)", textAlign: "center" }}>{t("contentOpsSelect")}</div>}
         </div>
       )}
 

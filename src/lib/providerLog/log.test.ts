@@ -7,13 +7,18 @@ import {
   __rows, __setWriterForTests, __writeToTableForTests,
 } from "./log";
 
-function stubFetch(impl: (url: string, init: any) => Promise<Response>) {
+// Mirrors log.ts's unexported WriteOp — the fixture type the writer hooks below hand around.
+type WriteOp =
+  | { kind: "insert"; row: Record<string, unknown> }
+  | { kind: "update"; id: string; data: Record<string, unknown> };
+
+function stubFetch(impl: (url: string, init: RequestInit | undefined) => Promise<Response>) {
   const original = globalThis.fetch;
-  const seen: { url: string; init: any }[] = [];
-  globalThis.fetch = (async (url: any, init: any) => {
+  const seen: { url: string; init: RequestInit | undefined }[] = [];
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
     seen.push({ url: String(url), init });
     return impl(String(url), init);
-  }) as any;
+  }) as typeof globalThis.fetch;
   return { seen, restore: () => { globalThis.fetch = original; } };
 }
 
@@ -81,7 +86,7 @@ test("the handler shutdown runs is the one that drains a pending write", async (
   const drain = process.listeners("beforeExit").find(l => l.name === "drainProviderLogOnExit");
   assert.ok(drain, "nothing registered on beforeExit");
   assert.equal(written, false, "the write should still be in flight");
-  await (drain as (...args: any[]) => any)("beforeExit");
+  await (drain as (...args: unknown[]) => void)("beforeExit");
   assert.equal(written, true);
 });
 
@@ -98,7 +103,7 @@ test("an update can never be attempted before its own insert", async () => {
   // Without that, a slow insert and a fast finish race, and the completed facts hit a row that
   // does not exist yet — a row silently stuck at complete:false forever.
   const order: string[] = [];
-  __setWriterForTests(async (op: any) => {
+  __setWriterForTests(async (op: WriteOp) => {
     order.push(op.kind);
     if (op.kind === "insert") await new Promise(r => setTimeout(r, 30));
   });
@@ -134,14 +139,14 @@ test("the real writer completes a row with updateMany, so a deleted row is a cou
   // Every other test in this file replaces the writer, so the choice that actually protects a
   // long call from its own retention — updateMany rather than update — was never executed. A
   // stub whose update() raises the way Prisma's does on a missing row keeps it that way.
-  const seen: any[] = [];
+  const seen: [string, unknown][] = [];
   const table = {
-    create: (arg: any) => { seen.push(["create", arg]); return Promise.resolve(arg.data); },
-    updateMany: (arg: any) => { seen.push(["updateMany", arg]); return Promise.resolve({ count: 0 }); },
+    create: (arg: { data: Record<string, unknown> }) => { seen.push(["create", arg]); return Promise.resolve(arg.data); },
+    updateMany: (arg: { where: Record<string, unknown>; data: Record<string, unknown> }) => { seen.push(["updateMany", arg]); return Promise.resolve({ count: 0 }); },
     update: () => { throw new Error("update() raises on a row retention has already deleted"); },
   };
   await __writeToTableForTests(table, { kind: "insert", row: { id: "c1", provider: "openai" } });
-  const res: any = await __writeToTableForTests(table, { kind: "update", id: "c1", data: { complete: true } });
+  const res = await __writeToTableForTests(table, { kind: "update", id: "c1", data: { complete: true } }) as { count: number };
   assert.deepEqual(seen.map(s => s[0]), ["create", "updateMany"]);
   assert.deepEqual(seen[0][1], { data: { id: "c1", provider: "openai" } });
   assert.deepEqual(seen[1][1], { where: { id: "c1" }, data: { complete: true } });
@@ -155,7 +160,7 @@ test("the real writer is a no-op when the generated client has no providerCall m
 test("a finish whose row retention already deleted is a no-op, not a throw", async () => {
   // A very long call can outlive its own row. Losing an old log row is not a reason to raise
   // into the provider call that is still running.
-  __setWriterForTests(async (op: any) => { if (op.kind === "update") return { count: 0 }; });
+  __setWriterForTests(async (op: WriteOp) => { if (op.kind === "update") return { count: 0 }; });
   const h = startProviderCall({ provider: "openai", endpoint: "https://x/y" });
   await assert.doesNotReject(async () => { h.finish({ promptTokens: 1 }); await flushProviderLog(); });
 });
@@ -193,16 +198,19 @@ test("a transport failure is recorded rather than lost, and still throws", async
 
 test("cost is written only when a provider stated one, and never invented when it did not", () => {
   // Reading the column default proved nothing: it would have passed against an implementation
-  // that dropped costUsd on the floor. Watch the write instead.
-  const ops: any[] = [];
-  __setWriterForTests((op: any) => { ops.push(op); });
+  // that dropped costUsd on the floor. Watch the write instead. Every field optional because the
+  // stream mixes inserts and updates; the two positions read below are known update ops, hence
+  // the non-null assertions on data.
+  type RecordedOp = { kind: string; data?: Record<string, unknown>; row?: Record<string, unknown> };
+  const ops: RecordedOp[] = [];
+  __setWriterForTests((op: WriteOp) => { ops.push(op); });
   startProviderCall({ provider: "openai", endpoint: "https://x/y" }).finish();
   startProviderCall({ provider: "openrouter", endpoint: "https://x/y" }).finish({ costUsd: 0.0012 });
   const [, unpriced, , priced] = ops;
   assert.equal(unpriced.kind, "update");
-  assert.ok(!("costUsd" in unpriced.data), "a finish with no stated cost must not write one at all");
+  assert.ok(!("costUsd" in unpriced.data!), "a finish with no stated cost must not write one at all");
   assert.equal(__rows()[0].costUsd, null);
-  assert.equal(priced.data.costUsd, 0.0012);
+  assert.equal(priced.data!.costUsd, 0.0012);
   assert.equal(__rows()[1].costUsd, 0.0012);
 });
 
@@ -302,7 +310,7 @@ test("a request body that is not a string is never touched", async () => {
   form.append("q", "weather");
   try {
     await withCallContext({ userId: "u", feature: "f", captureBodies: true }, async () => {
-      for (const body of [undefined, Buffer.from("x"), form, stream] as any[]) {
+      for (const body of [undefined, Buffer.from("x"), form, stream]) {
         await loggedFetch("https://api.example.com/v1", { method: "POST", body }, { provider: "openai" });
       }
     });
@@ -334,7 +342,7 @@ test("a body that cannot be serialized costs its own capture, never the row or t
   // straight into the caller — and only ever when an operator had switched capture on to debug
   // something.
   __setWriterForTests();
-  const circular: any = Object.create(null);
+  const circular: Record<string, unknown> = Object.create(null);
   circular.self = circular;
   withCallContext({ userId: "u", feature: "f", captureBodies: true }, () => {
     const h = startProviderCall({ provider: "openai", endpoint: "https://x/y", requestBody: circular });
@@ -368,7 +376,7 @@ test("a body that breaks redaction does not fail a call whose fetch already succ
 test("a transport failure reports the network error, not a failure of the logging", async () => {
   // A throw while building the row would otherwise replace the caller's real error with ours.
   __setWriterForTests();
-  const circular: any = Object.create(null);
+  const circular: Record<string, unknown> = Object.create(null);
   circular.self = circular;
   const stub = stubFetch(async () => { throw new TypeError("fetch failed"); });
   try {
