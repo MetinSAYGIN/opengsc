@@ -6,7 +6,7 @@ import { stripModelScratch } from "@/lib/seo/textMetrics";
 import { judgeArticle, judgeOutline } from "@/lib/seo/judge";
 import { runSerp, heuristicIntent, heuristicSiteType } from "@/lib/seo/serp";
 import { enrichKeywords, type KwSource } from "@/lib/seo/keywordSource";
-import { scrapeMany } from "@/lib/seo/scrape";
+import { scrapeMany, type ScrapedPage } from "@/lib/seo/scrape";
 import type { EditorialPolicy } from "@/lib/seo/policy";
 import {
   checkMechanics, repairableIssues, summarizeMechanics,
@@ -31,22 +31,238 @@ import { guardOutlineFootprint } from "@/lib/footprint/guard";
 // localization pass renames it («FAQ : Tout savoir…», «Часто задаваемые вопросы»…).
 const FAQ_LIKE_RE = /(^|[\s:—-])faq\b|questions?\s+fr[ée]quentes|frequently\s+asked|часто\s+задаваем|поширені\s+питання|вопросы\s+и\s+ответы/i;
 
+// ─── Local shapes for the untyped JSON these pipelines handle ─────────────────────
+// The outline is model-emitted JSON: the fields the code reads and writes are named below,
+// everything else the model produced is carried untouched through the index signatures.
+
+/** A section of a parsed outline (heading + EAV detail + its own/total word budgets). */
+interface OutlineSection {
+  h_level: string;
+  heading: string;
+  word_count_total?: unknown; // [lo, hi] | number | "130-160" — toWcRange() accepts all three
+  word_count_self?: unknown;
+  entities_to_cover?: unknown[];
+  keywords?: string[];
+  summary?: string;
+  copywriter_notes?: string;
+  entity_connections?: unknown[];
+  visual_elements?: unknown[];
+  needs_real_experience?: boolean;
+  [key: string]: unknown;
+}
+
+/** FAQ entry of an outline — the FAQ block is rendered exclusively from this array. */
+interface OutlineFaqItem {
+  question: string;
+  answer_guideline?: string;
+  [key: string]: unknown;
+}
+
+/** Sub-intent the model planned before writing the sections (used to rebuild a cut-off tail). */
+interface OutlineSubIntent {
+  section?: string;
+  intent?: string;
+}
+
+/** One entry of the consolidated facts bank the text step and the auto fact-clean verify against. */
+interface FactsBankEntry {
+  source: string;
+  domain: string;
+  official: boolean;
+  facts: string;
+}
+
+/** Meta block of an outline: region/voice stamps, meta options, carried sources and facts. */
+interface OutlineMeta {
+  country?: string;
+  language?: string;
+  keyword?: string;
+  narration?: string;
+  h1?: string;
+  title_options?: string[];
+  description_options?: string[];
+  slug?: string;
+  slug_options?: string[];
+  target_word_count?: number;
+  structureRules?: string;
+  authorInstruction?: string;
+  truncated?: boolean;
+  fallback_provider?: string;
+  sources?: { title: string; url: string; domain: string; snippet: string }[];
+  facts_bank?: FactsBankEntry[];
+  use_rag?: boolean;
+  [key: string]: unknown;
+}
+
+/** A parsed outline as emitted by the outline step and consumed by the text step. */
+interface Outline {
+  sections?: OutlineSection[];
+  faq?: OutlineFaqItem[];
+  sub_intents?: OutlineSubIntent[];
+  entities?: (string | { name?: string })[];
+  meta?: OutlineMeta;
+  price_table_template?: unknown;
+  [key: string]: unknown;
+}
+
+/** Per-section spec the chunked writer derives from the outline (own word budget only). */
+interface SectionSpec {
+  h_level: string;
+  heading: string;
+  word_count?: [number, number];
+  entities_to_cover?: unknown[];
+  keywords?: string[];
+  summary?: string;
+  copywriter_notes?: string;
+  entity_connections?: unknown[];
+  visual_elements?: unknown[];
+  needs_real_experience?: boolean;
+  subtopics?: { topic?: string; summary?: string; keywords?: string[] }[];
+  [key: string]: unknown;
+}
+
+/** Section proposed by the structure-expansion pass, grafted in deterministically. */
+interface ExpansionSection {
+  h_level?: string;
+  heading?: string;
+  summary?: string;
+  word_count_total?: unknown;
+}
+
+/** One insertion point returned by the structure-expansion call. */
+interface ExpansionInsertion {
+  after_heading?: string;
+  sections?: ExpansionSection[];
+}
+
+/** Fields the enrichment pass may merge back into an existing section. */
+interface EnrichedSection {
+  heading?: string;
+  entities_to_cover?: unknown[];
+  keywords?: string[];
+  summary?: string;
+  copywriter_notes?: string;
+  entity_connections?: unknown[];
+  visual_elements?: unknown[];
+}
+
+/** Heading renames proposed by the localization pass, applied deterministically. */
+interface HeadingLocalizeResponse {
+  h1?: string;
+  title_options?: unknown[];
+  description_options?: unknown[];
+  renames?: { from?: string; to?: string }[];
+}
+
+/** A secondary provider/key the outline step may fall back to when the primary fails. */
+interface AiFallback {
+  aiProvider?: string;
+  aiApiKey?: string;
+  model?: string;
+  aiBaseUrl?: string;
+}
+
+/** One SERP-overlap cluster: the seed keyword plus every member that joined it. */
+interface KeywordCluster {
+  name: string;
+  intent: string;
+  volume: number;
+  keywords: { keyword: string; volume: number; overlap: number }[];
+  top_domains: string[];
+}
+
+/** The job payload every gen* entry point accepts — the shape the /seo-tools UI and the jobs API post. */
+interface GenBody {
+  keyword?: string;
+  aiProvider?: string;
+  aiApiKey?: string;
+  aiBaseUrl?: string;
+  aiFallbacks?: AiFallback[];
+  model?: string;
+  competitors?: CompetitorInput[];
+  paa?: string[];
+  related?: string[];
+  serpKey?: string;
+  serpProvider?: string;
+  serpBaseUrl?: string;
+  firecrawlKey?: string;
+  scrapeCount?: number;
+  gl?: string;
+  hl?: string;
+  language?: string;
+  country?: string;
+  tone?: string;
+  persona?: string;
+  custom?: string;
+  policy?: EditorialPolicy;
+  bannedWords?: string[];
+  forbiddenBrands?: string[];
+  targetWordCount?: number;
+  outlineMaxTokens?: number;
+  temperature?: number;
+  narration?: string;
+  pageGoal?: string;
+  structureRules?: string;
+  customTemplate?: string;
+  additionalKeywords?: string;
+  lsiKeywords?: string;
+  manualTexts?: { name: string; text: string }[];
+  keywordsData?: { keyword: string; volume: number; globalVolume?: number | null; intent?: string }[];
+  keywordsSource?: string;
+  useRag?: boolean;
+  mapExtract?: boolean;
+  factScrub?: boolean;
+  expand?: boolean;
+  localizeHeadings?: boolean;
+  faqBackfill?: boolean;
+  enrich?: boolean;
+  outline?: Outline;
+  sourceMode?: string;
+  includeToc?: boolean;
+  chunkedText?: boolean;
+  chunkSections?: number;
+  promptType?: string;
+  hardRedact?: boolean;
+  autoFactCheck?: boolean;
+  expandText?: boolean;
+  marksScrub?: boolean;
+  mechanics?: boolean;
+  mechanicsRepair?: boolean;
+  judge?: boolean;
+  judgeProvider?: string;
+  judgeApiKey?: string;
+  judgeModel?: string;
+  judgeBaseUrl?: string;
+  generate?: string;
+  structureMode?: "serp" | "my_1to1" | "hybrid" | "seo_block";
+  myStructure?: { level: string; text: string; words: number }[];
+  targetPage?: unknown;
+  keywords?: unknown[];
+  threshold?: number;
+  kwSource?: string;
+  kwKey?: string;
+  dfsKey?: string;
+  kwBaseUrl?: string;
+  _autoFetched?: boolean;
+  __onProgress?: (pct: number, stage?: string) => void;
+}
+
 // Apply fn to every string value IN PLACE (existing references like `meta` stay valid).
-function deepMapStringsInPlace(obj: any, fn: (s: string) => string): void {
+function deepMapStringsInPlace(obj: unknown, fn: (s: string) => string): void {
   if (Array.isArray(obj)) {
     obj.forEach((v, i) => { if (typeof v === "string") obj[i] = fn(v); else deepMapStringsInPlace(v, fn); });
     return;
   }
   if (obj && typeof obj === "object") {
     for (const k of Object.keys(obj)) {
-      const v = obj[k];
-      if (typeof v === "string") obj[k] = fn(v);
+      const v = (obj as Record<string, unknown>)[k];
+      if (typeof v === "string") (obj as Record<string, unknown>)[k] = fn(v);
       else deepMapStringsInPlace(v, fn);
     }
   }
 }
 
-export type GenResult = { ok: true; data: any } | { ok: false; error: string };
+export type GenResult = { ok: true; data: unknown } | { ok: false; error: string };
 
 // Run async tasks with bounded concurrency (avoid hammering the provider with 20 parallel calls).
 async function runPool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -58,7 +274,7 @@ async function runPool<T>(items: T[], limit: number, fn: (item: T) => Promise<vo
 }
 
 // Render a compact per-source facts object (from the map stage) into a short text block.
-function renderExtract(j: any): string {
+function renderExtract(j: Record<string, unknown>): string {
   const lines: string[] = [];
   if (j?.specs && typeof j.specs === "object" && !Array.isArray(j.specs)) {
     const s = Object.entries(j.specs).map(([k, v]) => `${k}=${v}`).join("; ");
@@ -87,17 +303,17 @@ async function mapExtractFacts(competitors: CompetitorInput[], keyword: string, 
 
 // Apply find→replace corrections over an object's STRING VALUES only (keys/structure untouched).
 // Safe against JSON corruption because we never touch keys and rebuild the object in place.
-function applyCorrections(obj: any, corrections: { find: string; replace: string }[]): any {
+function applyCorrections<T>(obj: T, corrections: { find?: string; replace?: string }[]): T {
   if (typeof obj === "string") {
-    let s = obj;
+    let s: string = obj;
     for (const c of corrections) if (c.find) s = s.split(c.find).join(c.replace);
-    return s;
+    return s as unknown as T;
   }
-  if (Array.isArray(obj)) return obj.map((x) => applyCorrections(x, corrections));
+  if (Array.isArray(obj)) return obj.map((x) => applyCorrections(x, corrections)) as unknown as T;
   if (obj && typeof obj === "object") {
-    const o: any = {};
-    for (const k of Object.keys(obj)) o[k] = applyCorrections(obj[k], corrections);
-    return o;
+    const o: Record<string, unknown> = {};
+    for (const k of Object.keys(obj as Record<string, unknown>)) o[k] = applyCorrections((obj as Record<string, unknown>)[k], corrections);
+    return o as unknown as T;
   }
   return obj;
 }
@@ -107,7 +323,7 @@ function applyCorrections(obj: any, corrections: { find: string; replace: string
 // so a 2500-word plan silently becomes ~1000 words of budgets — and the text step then
 // honors those small budgets. Deterministic fix: if the sum of section budgets is far
 // off the target, scale every section's word_count proportionally.
-function toWcRange(v: any): [number, number] | null {
+function toWcRange(v: unknown): [number, number] | null {
   if (Array.isArray(v) && v.length >= 2 && isFinite(+v[0]) && isFinite(+v[1]) && +v[1] > 0) return [+v[0], +v[1]];
   if (typeof v === "number" && isFinite(v) && v > 0) return [v, v];
   if (typeof v === "string") {
@@ -118,10 +334,10 @@ function toWcRange(v: any): [number, number] | null {
 }
 // Each section's OWN contribution to the article: childless section → total; parent →
 // self (its intro paragraphs) since a parent's total conventionally includes subsections.
-function ownRanges(secs: any[]): ([number, number] | null)[] {
-  const depth = (s: any) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
+function ownRanges(secs: OutlineSection[]): ([number, number] | null)[] {
+  const depth = (s: OutlineSection) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
   const hasKids = (i: number) => i + 1 < secs.length && depth(secs[i + 1]) > depth(secs[i]);
-  return secs.map((s: any, i: number) => {
+  return secs.map((s, i) => {
     const total = toWcRange(s?.word_count_total);
     const self = toWcRange(s?.word_count_self);
     return hasKids(i) ? (self || (total ? [Math.round(total[0] * 0.3), Math.round(total[1] * 0.3)] as [number, number] : null)) : (total || self);
@@ -129,16 +345,16 @@ function ownRanges(secs: any[]): ([number, number] | null)[] {
 }
 
 // Sum of the outline's own per-section budgets — the volume the outline would really produce.
-export function ownBudgetSum(outline: any): number {
-  const secs: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+export function ownBudgetSum(outline: Outline): number {
+  const secs: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   if (!secs.length) return 0;
   return Math.round(ownRanges(secs).reduce((acc, r) => acc + (r ? (r[0] + r[1]) / 2 : 0), 0));
 }
 
-export function normalizeWordBudgets(outline: any, target: number): boolean {
+export function normalizeWordBudgets(outline: Outline, target: number): boolean {
   if (!target || !Array.isArray(outline?.sections) || !outline.sections.length) return false;
-  const secs: any[] = outline.sections;
-  const depth = (s: any) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
+  const secs: OutlineSection[] = outline.sections;
+  const depth = (s: OutlineSection) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
   const hasKids = (i: number) => i + 1 < secs.length && depth(secs[i + 1]) > depth(secs[i]);
   const own = ownRanges(secs);
   const sum = own.reduce((acc: number, r: [number, number] | null) => acc + (r ? (r[0] + r[1]) / 2 : 0), 0);
@@ -182,11 +398,11 @@ export function targetSectionCount(targetWc?: number): number {
 // covers. The model plans its sub-intents BEFORE it writes the sections, so when the response is
 // cut short this list is the record of what the outline was supposed to contain — the cheapest
 // possible brief for rebuilding the missing part.
-function uncoveredSubIntents(outline: any, sections: any[]): string[] {
-  const subs: any[] = Array.isArray(outline?.sub_intents) ? outline.sub_intents : [];
+function uncoveredSubIntents(outline: Outline, sections: OutlineSection[]): string[] {
+  const subs: OutlineSubIntent[] = Array.isArray(outline?.sub_intents) ? outline.sub_intents : [];
   if (!subs.length) return [];
-  const norm = (s: string) => String(s || "").replace(/^\s*H[1-4]\s*[:.\-—]?\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
-  const have = sections.map((s: any) => norm(s?.heading));
+  const norm = (s?: string) => String(s || "").replace(/^\s*H[1-4]\s*[:.\-—]?\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const have = sections.map((s) => norm(s?.heading));
   const out: string[] = [];
   const seen = new Set<string>();
   for (const si of subs) {
@@ -212,7 +428,7 @@ function uncoveredSubIntents(outline: any, sections: any[]): string[] {
 //              guard spread 2500 words across the 7 surviving sections.
 // Deficit mode may append whole H2 blocks; flat mode stays H3-only, so template skeletons keep
 // their exact shape.
-async function expandOutlineStructure(outline: any, ctx: {
+async function expandOutlineStructure(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; pageGoal?: "informational" | "commercial" | "mixed"; paa?: string[];
   targetWc?: number;
@@ -220,7 +436,7 @@ async function expandOutlineStructure(outline: any, ctx: {
   // told the outline step to leave out. See buildStructureExpandPrompt.
   structureRules?: string; policy?: EditorialPolicy; tone?: string;
 }): Promise<boolean> {
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   const maxSections = targetSectionCount(ctx.targetWc);
   if (!sections.length || sections.length >= maxSections) return false;
   // Count H3 children per H2; skip expansion when the outline is already deep.
@@ -242,19 +458,19 @@ async function expandOutlineStructure(outline: any, ctx: {
     keyword: ctx.keyword, language: ctx.language, country: ctx.country,
     pageGoal: ctx.pageGoal, paa: ctx.paa,
     maxAdd: maxSections - sections.length,
-    sections: sections.map((s: any) => ({ h_level: s.h_level, heading: s.heading })),
+    sections: sections.map((s) => ({ h_level: s.h_level, heading: s.heading })),
     allowNewH2: isShort,
     missingTopics,
     targetSections: maxSections,
     structureRules: ctx.structureRules, policy: ctx.policy, tone: ctx.tone,
   });
   const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 6000, ctx.model, ctx.baseUrl);
-  const parsed: any = extractJson(raw);
-  const insertions: any[] = Array.isArray(parsed?.insertions) ? parsed.insertions : [];
+  const parsed = extractJson<{ insertions?: ExpansionInsertion[] }>(raw);
+  const insertions: ExpansionInsertion[] = Array.isArray(parsed?.insertions) ? parsed.insertions : [];
   if (!insertions.length) return false;
 
-  const have = new Set(sections.map((s: any) => String(s.heading || "").trim().toLowerCase()));
-  const blank = (n: any, level: "H2" | "H3") => {
+  const have = new Set(sections.map((s) => String(s.heading || "").trim().toLowerCase()));
+  const blank = (n: ExpansionSection, level: "H2" | "H3") => {
     const wc = toWcRange(n.word_count_total) || (level === "H2" ? [40, 80] : [80, 160]);
     return {
       h_level: level, heading: String(n.heading).trim(),
@@ -275,19 +491,19 @@ async function expandOutlineStructure(outline: any, ctx: {
     if (atEnd) {
       at = sections.length;
     } else {
-      const idx = sections.findIndex((s: any) => String(s.heading || "").trim().toLowerCase() === anchor && s.h_level === "H2");
+      const idx = sections.findIndex((s) => String(s.heading || "").trim().toLowerCase() === anchor && s.h_level === "H2");
       if (idx === -1) continue;
       // Insert AFTER the anchor H2's existing H3 block (i.e. right before the next H2).
       at = idx + 1;
       while (at < sections.length && sections[at]?.h_level !== "H2") at++;
     }
     const newbies = (Array.isArray(ins.sections) ? ins.sections : [])
-      .filter((n: any) => n?.heading && !have.has(String(n.heading).trim().toLowerCase()))
+      .filter((n) => n?.heading && !have.has(String(n.heading).trim().toLowerCase()))
       .slice(0, 6)
       // An H2 is only honoured in deficit mode; otherwise everything grafts in as H3 exactly as
       // before, so a template skeleton can never sprout a top-level heading it did not ask for.
-      .map((n: any) => blank(n, isShort && String(n?.h_level || "").toUpperCase() === "H2" ? "H2" : "H3"));
-    newbies.forEach((n: any) => have.add(n.heading.trim().toLowerCase()));
+      .map((n) => blank(n, isShort && String(n?.h_level || "").toUpperCase() === "H2" ? "H2" : "H3"));
+    newbies.forEach((n) => have.add(n.heading.trim().toLowerCase()));
     const room = Math.max(0, maxSections - sections.length);
     sections.splice(at, 0, ...newbies.slice(0, room));
     added += Math.min(newbies.length, room);
@@ -300,26 +516,26 @@ async function expandOutlineStructure(outline: any, ctx: {
 // Cheap, and it repairs two things at once: the article gets its question block back, and the
 // word-budget guard downstream once again has something to reserve words FOR — without a `faq`
 // array it reserves nothing and pushes the entire article target into the body sections.
-async function backfillOutlineFaq(outline: any, ctx: {
+async function backfillOutlineFaq(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; pageGoal?: "informational" | "commercial" | "mixed"; paa?: string[];
 }): Promise<boolean> {
   if (Array.isArray(outline?.faq) && outline.faq.length >= 3) return false;
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   const prompt = buildFaqBackfillPrompt({
     keyword: ctx.keyword, language: ctx.language, country: ctx.country, pageGoal: ctx.pageGoal,
     count: 8,
-    headings: sections.map((s: any) => String(s?.heading || "")).filter(Boolean),
+    headings: sections.map((s) => String(s?.heading || "")).filter(Boolean),
     subIntents: (Array.isArray(outline?.sub_intents) ? outline.sub_intents : [])
-      .map((si: any) => String(si?.intent || "")).filter(Boolean),
+      .map((si) => String(si?.intent || "")).filter(Boolean),
     paa: ctx.paa,
   });
   const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 4000, ctx.model, ctx.baseUrl);
-  const parsed: any = extractJson(raw);
+  const parsed = extractJson<{ faq?: OutlineFaqItem[] }>(raw);
   const faq = (Array.isArray(parsed?.faq) ? parsed.faq : [])
-    .filter((f: any) => f && String(f.question || "").trim())
+    .filter((f) => f && String(f.question || "").trim())
     .slice(0, 10)
-    .map((f: any) => ({ question: String(f.question).trim(), answer_guideline: String(f.answer_guideline || "").trim() }));
+    .map((f) => ({ question: String(f.question).trim(), answer_guideline: String(f.answer_guideline || "").trim() }));
   if (faq.length < 3) return false;
   outline.faq = faq;
   return true;
@@ -329,11 +545,11 @@ async function backfillOutlineFaq(outline: any, ctx: {
 // Template headings arrive in English and models keep them verbatim; this pass translates
 // them into the article language and applies the narration voice, without touching order,
 // structure or budgets. Renames are matched exactly and deduplicated before applying.
-async function localizeOutlineHeadings(outline: any, ctx: {
+async function localizeOutlineHeadings(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; pageGoal?: "informational" | "commercial" | "mixed";
 }): Promise<boolean> {
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   if (!sections.length) return false;
   const prompt = buildHeadingLocalizePrompt({
     keyword: ctx.keyword, language: ctx.language, country: ctx.country,
@@ -341,21 +557,21 @@ async function localizeOutlineHeadings(outline: any, ctx: {
     pageGoal: ctx.pageGoal, h1: outline?.meta?.h1,
     titleOptions: Array.isArray(outline?.meta?.title_options) ? outline.meta.title_options : undefined,
     descriptionOptions: Array.isArray(outline?.meta?.description_options) ? outline.meta.description_options : undefined,
-    headings: sections.map((s: any) => ({ h_level: s.h_level, heading: s.heading })),
+    headings: sections.map((s) => ({ h_level: s.h_level, heading: s.heading })),
   });
   const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 3000, ctx.model, ctx.baseUrl);
-  const parsed: any = extractJson(raw);
+  const parsed = extractJson<HeadingLocalizeResponse>(raw);
   if (!parsed) return false;
 
   let changed = false;
-  const have = new Set(sections.map((s: any) => String(s.heading || "").trim().toLowerCase()));
-  const renames: any[] = Array.isArray(parsed.renames) ? parsed.renames : [];
+  const have = new Set(sections.map((s) => String(s.heading || "").trim().toLowerCase()));
+  const renames = Array.isArray(parsed.renames) ? parsed.renames : [];
   for (const r of renames) {
     const from = String(r?.from || "").trim();
     const to = String(r?.to || "").trim();
     if (!from || !to || from === to) continue;
     if (have.has(to.toLowerCase())) continue; // never create duplicate headings
-    const sec = sections.find((s: any) => String(s.heading || "").trim() === from);
+    const sec = sections.find((s) => String(s.heading || "").trim() === from);
     if (!sec) continue;
     have.delete(from.toLowerCase());
     have.add(to.toLowerCase());
@@ -368,9 +584,9 @@ async function localizeOutlineHeadings(outline: any, ctx: {
     changed = true;
   }
   // Localized meta tags (Title/Description) — applied only when the model returned non-empty ones.
-  const titles = (Array.isArray(parsed.title_options) ? parsed.title_options : []).map((x: any) => String(x || "").trim()).filter(Boolean);
+  const titles = (Array.isArray(parsed.title_options) ? parsed.title_options : []).map((x) => String(x || "").trim()).filter(Boolean);
   if (titles.length) { (outline.meta ||= {}).title_options = titles; changed = true; }
-  const descs = (Array.isArray(parsed.description_options) ? parsed.description_options : []).map((x: any) => String(x || "").trim()).filter(Boolean);
+  const descs = (Array.isArray(parsed.description_options) ? parsed.description_options : []).map((x) => String(x || "").trim()).filter(Boolean);
   if (descs.length) { (outline.meta ||= {}).description_options = descs; changed = true; }
   return changed;
 }
@@ -380,7 +596,7 @@ async function localizeOutlineHeadings(outline: any, ctx: {
 // budget), yielding one-entity sections and one-line summaries/notes. This pass re-runs
 // sections through the model in batches of 5 (3 parallel workers), merging back the
 // enriched fields — total outline size is no longer capped by one response.
-async function enrichOutlineSections(outline: any, ctx: {
+async function enrichOutlineSections(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; tone?: string; persona?: string; ragFacts?: string;
   pageGoal?: "informational" | "commercial" | "mixed";
@@ -388,12 +604,12 @@ async function enrichOutlineSections(outline: any, ctx: {
   // buildSectionEnrichPrompt for why enriching them blind to the policy undoes the policy.
   policy?: EditorialPolicy; structureRules?: string; custom?: string; bannedWords?: string[];
 }): Promise<boolean> {
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   if (!sections.length) return false;
   const globalEntities = (Array.isArray(outline?.entities) ? outline.entities : [])
-    .map((e: any) => (typeof e === "string" ? e : e?.name)).filter(Boolean);
+    .map((e) => (typeof e === "string" ? e : e?.name)).filter(Boolean) as string[];
   const BATCH = 5;
-  const batches: { start: number; items: any[] }[] = [];
+  const batches: { start: number; items: OutlineSection[] }[] = [];
   for (let i = 0; i < sections.length; i += BATCH) batches.push({ start: i, items: sections.slice(i, i + BATCH) });
 
   let enrichedAny = false;
@@ -407,9 +623,9 @@ async function enrichOutlineSections(outline: any, ctx: {
         policy: ctx.policy, structureRules: ctx.structureRules, custom: ctx.custom, bannedWords: ctx.bannedWords,
       });
       const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 8000, ctx.model, ctx.baseUrl);
-      const parsed: any = extractJson(raw);
-      const out: any[] = Array.isArray(parsed?.sections) ? parsed.sections : [];
-      out.forEach((es: any, j: number) => {
+      const parsed = extractJson<{ sections?: EnrichedSection[] }>(raw);
+      const out: EnrichedSection[] = Array.isArray(parsed?.sections) ? parsed.sections : [];
+      out.forEach((es, j: number) => {
         const target = sections[batch.start + j];
         if (!target || !es) return;
         // Heading sanity: merge only when it's clearly the same section (or model kept it).
@@ -466,7 +682,7 @@ async function fitOutlineMetaOptions(outline: Record<string, unknown>, ctx: {
 }
 
 // ─── Outline (structure) ─────────────────────────────────────────────────────────
-export async function genOutline(b: any): Promise<GenResult> {
+export async function genOutline(b: GenBody): Promise<GenResult> {
   const keyword = String(b.keyword ?? "").trim();
   if (!keyword) return { ok: false, error: "no_keyword" };
   // Mutable, because the head call may fall back to another provider (see below) and every
@@ -547,7 +763,7 @@ export async function genOutline(b: any): Promise<GenResult> {
   const OUTLINE_TOKENS = Math.max(4000, Math.min(64000, Number(b.outlineMaxTokens) || 24000));
   const OUTLINE_TOKENS_RETRY = Math.min(64000, Math.round(OUTLINE_TOKENS * 1.35));
   const wantSections = targetSectionCount(Number(b.targetWordCount) || 0);
-  const sectionCount = (o: any) => (Array.isArray(o?.sections) ? o.sections.length : 0);
+  const sectionCount = (o: Outline | null) => (Array.isArray(o?.sections) ? o.sections.length : 0);
   // Two signals, both definitive, neither previously visible: the provider saying it stopped at
   // the ceiling, and our own JSON salvage admitting it had to re-close open containers. A merely
   // THIN outline is not counted here — the expansion and FAQ passes below repair that far more
@@ -559,7 +775,7 @@ export async function genOutline(b: any): Promise<GenResult> {
 
   let res = await fetchLLMDetailed(prompt, provider, apiKey, OUTLINE_TOKENS, model, baseUrl, outlineTemp);
   let raw = res.text;
-  let parsed0 = extractJsonDetailed(raw);
+  let parsed0 = extractJsonDetailed<Outline>(raw);
   let outline = parsed0.data;
   let wasCutOff = !!outline && cutOff(parsed0.repaired, res.finishReason);
   if (!outline) {
@@ -567,7 +783,7 @@ export async function genOutline(b: any): Promise<GenResult> {
     // temperature just rolls the same dice again.
     res = await fetchLLMDetailed(prompt + (raw ? "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON, без текста и без markdown-обёрток." : ""), provider, apiKey, OUTLINE_TOKENS, model, baseUrl, outlineTemp === undefined ? undefined : 0);
     raw = res.text;
-    parsed0 = extractJsonDetailed(raw);
+    parsed0 = extractJsonDetailed<Outline>(raw);
     outline = parsed0.data;
     wasCutOff = !!outline && cutOff(parsed0.repaired, res.finishReason);
   } else if (wasCutOff) {
@@ -577,7 +793,7 @@ export async function genOutline(b: any): Promise<GenResult> {
     console.error(`[outline] response cut off (finish_reason: ${res.finishReason ?? "n/a"}, sections: ${sectionCount(outline)}/${wantSections}) — retrying with a larger token budget`);
     try {
       const res2 = await fetchLLMDetailed(prompt, provider, apiKey, OUTLINE_TOKENS_RETRY, model, baseUrl, outlineTemp);
-      const parsed2 = extractJsonDetailed(res2.text);
+      const parsed2 = extractJsonDetailed<Outline>(res2.text);
       if (parsed2.data) {
         const cut2 = cutOff(parsed2.repaired, res2.finishReason);
         if (!cut2 || sectionCount(parsed2.data) > sectionCount(outline)) {
@@ -596,7 +812,7 @@ export async function genOutline(b: any): Promise<GenResult> {
   // Deliberately not attempted for content-policy refusals: every provider will refuse the same
   // prompt, so retrying elsewhere just bills the user twice for the same "no".
   let fellBackTo: string | undefined;
-  const fallbacks: any[] = Array.isArray(b.aiFallbacks) ? b.aiFallbacks : [];
+  const fallbacks: AiFallback[] = Array.isArray(b.aiFallbacks) ? b.aiFallbacks : [];
   const contentRefusal = /content|policy|safety|unsafe|sensitive|moderation/i.test(res.error ?? "");
   if (!outline && fallbacks.length && !contentRefusal) {
     for (const fb of fallbacks) {
@@ -606,7 +822,7 @@ export async function genOutline(b: any): Promise<GenResult> {
       console.error(`[outline] ${provider} failed (${res.error ?? "no parseable output"}) — retrying on ${fbProvider}`);
       try {
         const rf = await fetchLLMDetailed(prompt, fbProvider, fbKey, OUTLINE_TOKENS, fb.model ? String(fb.model) : undefined, fb.aiBaseUrl ? String(fb.aiBaseUrl) : undefined, outlineTemp);
-        const pf = extractJsonDetailed(rf.text);
+        const pf = extractJsonDetailed<Outline>(rf.text);
         if (!pf.data) continue;
         // Everything downstream now runs on whichever provider actually answered.
         res = rf; raw = rf.text; outline = pf.data;
@@ -638,21 +854,21 @@ export async function genOutline(b: any): Promise<GenResult> {
     try {
       const scrubPrompt = buildFactScrubPrompt({ outline, keyword, country: String(b.country ?? "us") });
       const scrubRaw = await fetchLLM(scrubPrompt, provider, apiKey, 4000, model, baseUrl);
-      const parsed: any = extractJson(scrubRaw);
+      const parsed = extractJson<{ corrections?: { find?: string; replace?: string }[] }>(scrubRaw);
       const corrections = Array.isArray(parsed?.corrections)
         ? parsed.corrections
-            .filter((c: any) => c && typeof c.find === "string" && c.find.trim() && typeof c.replace === "string" && c.find !== c.replace)
+            .filter((c) => c && typeof c.find === "string" && c.find.trim() && typeof c.replace === "string" && c.find !== c.replace)
             .slice(0, 40)
         : [];
       if (corrections.length) {
         outline = applyCorrections(outline, corrections);
-        (outline as any)._scrub = { applied: corrections.length };
+        outline._scrub = { applied: corrections.length };
       }
     } catch { /* scrub is best-effort; never block outline on it */ }
   }
 
   // Deterministically stamp region/voice into meta so the text step inherits them reliably.
-  const meta = ((outline as any).meta ||= {});
+  const meta = (outline.meta ||= {});
   meta.country = String(b.country ?? "us");
   meta.language = String(b.language ?? "en");
   // Self-describing outline: genText and every later consumer fall back to this when no
@@ -667,10 +883,10 @@ export async function genOutline(b: any): Promise<GenResult> {
   // Recorded rather than thrown away: the repair passes below usually make a truncated response
   // whole again, but "this outline was rebuilt from a cut-off answer" is exactly the context
   // needed when someone later asks why a generation looks thin, and it costs one boolean.
-  if (wasCutOff) { (outline as any)._truncated = true; meta.truncated = true; }
+  if (wasCutOff) { outline._truncated = true; meta.truncated = true; }
   // Which provider actually wrote this, when it was not the configured one. Without it a
   // successful job hides the fact that the primary provider is broken, and nobody fixes it.
-  if (fellBackTo) { (outline as any)._fallback_provider = fellBackTo; meta.fallback_provider = fellBackTo; }
+  if (fellBackTo) { outline._fallback_provider = fellBackTo; meta.fallback_provider = fellBackTo; }
   // EXPAND pass (default on): if the outline is flat (most H2s have <2 child H3s — typical
   // with user templates), graft model-proposed H3 subsections deterministically. Runs BEFORE
   // the volume guard so budgets are redistributed across the new sections too. Off with expand:false.
@@ -685,7 +901,7 @@ export async function genOutline(b: any): Promise<GenResult> {
         structureRules: b.structureRules ? String(b.structureRules) : undefined,
         policy: b.policy, tone: b.tone ? String(b.tone) : undefined,
       });
-      if (grown) (outline as any)._expanded = true;
+      if (grown) outline._expanded = true;
     } catch { /* expansion is best-effort */ }
   }
 
@@ -699,7 +915,7 @@ export async function genOutline(b: any): Promise<GenResult> {
         provider, apiKey, model, baseUrl,
         pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
       });
-      if (renamed) (outline as any)._localized = true;
+      if (renamed) outline._localized = true;
     } catch { /* localization is best-effort */ }
   }
 
@@ -717,7 +933,7 @@ export async function genOutline(b: any): Promise<GenResult> {
         pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
         paa: Array.isArray(b.paa) ? b.paa : undefined,
       });
-      if (built) (outline as any)._faq_backfilled = true;
+      if (built) outline._faq_backfilled = true;
     } catch { /* backfill is best-effort; an outline without FAQ is still usable */ }
   }
 
@@ -735,8 +951,8 @@ export async function genOutline(b: any): Promise<GenResult> {
     meta.target_word_count = targetWc;
     // FAQ answers are written ON TOP of the sections — reserve their words (~50/question)
     // out of the section budgets, reference-tool style ("Available for Content").
-    const faqReserve = Math.min(Math.round(targetWc * 0.25), (Array.isArray((outline as any).faq) ? (outline as any).faq.length : 0) * 50);
-    if (normalizeWordBudgets(outline, Math.max(300, targetWc - faqReserve))) (outline as any)._wc_rescaled = true;
+    const faqReserve = Math.min(Math.round(targetWc * 0.25), (Array.isArray(outline.faq) ? outline.faq.length : 0) * 50);
+    if (normalizeWordBudgets(outline, Math.max(300, targetWc - faqReserve))) outline._wc_rescaled = true;
   }
 
   // ENRICH pass (default on): deepen every section's EAV detail in parallel batches —
@@ -757,7 +973,7 @@ export async function genOutline(b: any): Promise<GenResult> {
         custom: b.custom ? String(b.custom) : undefined,
         bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
       });
-      if (ok) (outline as any)._enriched = true;
+      if (ok) outline._enriched = true;
     } catch { /* enrichment is best-effort */ }
   }
   // Persist the real competitor facts that grounded the outline, so the TEXT step is built on the
@@ -772,7 +988,7 @@ export async function genOutline(b: any): Promise<GenResult> {
       domain: (c.url.match(/^https?:\/\/([^/]+)/)?.[1] || "").replace(/^www\./, ""),
       snippet: String(c.text_sample).replace(/\s+/g, " ").trim().slice(0, c.site_type === "official_store" ? 3500 : 2500),
     }));
-  if (carriedSources.length) (meta as any).sources = carriedSources;
+  if (carriedSources.length) meta.sources = carriedSources;
   // Consolidated FACTS BANK from the map stage — the article is written from it AND the auto
   // fact-clean later verifies against it (so fact-check confirms instead of re-searching).
   const factsBank = competitors
@@ -799,7 +1015,7 @@ export async function genOutline(b: any): Promise<GenResult> {
         .replace(/\b202[0-5]\b/g, String(NOW_YEAR))
         .replace(/§KEEP(202[0-5])§/g, "$1")
     : s;
-  for (const sec of (Array.isArray((outline as any).sections) ? (outline as any).sections : [])) {
+  for (const sec of (Array.isArray(outline.sections) ? outline.sections : [])) {
     sec.heading = fixYear(sec.heading);
     if (Array.isArray(sec.keywords)) sec.keywords = sec.keywords.map(fixYear);
   }
@@ -825,12 +1041,12 @@ export async function genOutline(b: any): Promise<GenResult> {
     });
     if (footprintConcerns.length) outline._footprint = footprintConcerns;
   } catch { /* best-effort */ }
-  for (const q of (Array.isArray((outline as any).faq) ? (outline as any).faq : [])) {
+  for (const q of (Array.isArray(outline.faq) ? outline.faq : [])) {
     if (q?.question) q.question = fixYear(q.question);
   }
-  if (Array.isArray((outline as any).sections)) {
-    const secsAll: any[] = (outline as any).sections;
-    const hasFaqArr = Array.isArray((outline as any).faq) && (outline as any).faq.length > 0;
+  if (Array.isArray(outline.sections)) {
+    const secsAll: OutlineSection[] = outline.sections;
+    const hasFaqArr = Array.isArray(outline.faq) && outline.faq.length > 0;
     for (let i = secsAll.length - 1; i >= 0; i--) {
       if (String(secsAll[i]?.h_level || "").toUpperCase() === "H1") {
         if (!meta.h1 && secsAll[i].heading) meta.h1 = secsAll[i].heading;
@@ -845,9 +1061,9 @@ export async function genOutline(b: any): Promise<GenResult> {
 
   // RAG facts join the facts bank FIRST (highest trust) so both the text step and the
   // auto fact-clean verify against the knowledge base, not only scraped competitors.
-  if (rag?.bankEntry) factsBank.unshift(rag.bankEntry as any);
-  if (factsBank.length) (meta as any).facts_bank = factsBank;
-  if (b.useRag) (meta as any).use_rag = true;
+  if (rag?.bankEntry) factsBank.unshift(rag.bankEntry);
+  if (factsBank.length) meta.facts_bank = factsBank;
+  if (b.useRag) meta.use_rag = true;
 
   // Independent QA judge (per-task "judge" slot; falls back to the writer's own provider).
   // Runs on the FINAL outline, after expand/localize/FAQ backfill — those passes reshape the
@@ -875,7 +1091,7 @@ export async function genOutline(b: any): Promise<GenResult> {
     if (verdict.verdict === "reject") {
       return { ok: false, error: `judge_rejected: ${verdict.blockers?.join("; ") || "the QA reviewer rejected the outline"}` };
     }
-    if (verdict.concerns?.length) (outline as any)._judgeConcerns = verdict.concerns;
+    if (verdict.concerns?.length) outline._judgeConcerns = verdict.concerns;
   }
 
   return { ok: true, data: outline };
@@ -938,7 +1154,7 @@ interface ChunkedTextResult {
   lastError?: string;
 }
 
-async function writeTextInChunks(outline: any, ctx: {
+async function writeTextInChunks(outline: Outline, ctx: {
   keyword: string; language: string; tone: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; ragFacts?: string;
   sources?: { title: string; snippet: string; url: string; domain: string }[];
@@ -968,8 +1184,8 @@ async function writeTextInChunks(outline: any, ctx: {
   // sanitizer existed still carry the template's "H2: FAQ" duplicate): the FAQ is rendered
   // exclusively from the faq[] array by the dedicated call below.
   const hasFaqArr = Array.isArray(outline?.faq) && outline.faq.length > 0;
-  const secs: any[] = (Array.isArray(outline?.sections) ? outline.sections : [])
-    .filter((s: any) => !(hasFaqArr && FAQ_LIKE_RE.test(String(s?.heading || ""))));
+  const secs: OutlineSection[] = (Array.isArray(outline?.sections) ? outline.sections : [])
+    .filter((s) => !(hasFaqArr && FAQ_LIKE_RE.test(String(s?.heading || ""))));
   if (!secs.length) return { text: null, wroteChunks: 0, totalChunks: 0, missingHeadings: [] };
   const meta = outline.meta || {};
 
@@ -977,7 +1193,7 @@ async function writeTextInChunks(outline: any, ctx: {
   // total includes its children — passing both made models write the intro at full total
   // AND the children at theirs, overshooting the article by ~35-40%).
   const own = ownRanges(secs);
-  const specs: any[] = secs.map((s: any, i: number) => ({
+  const specs: SectionSpec[] = secs.map((s, i) => ({
     h_level: s.h_level, heading: s.heading,
     word_count: own[i] || [60, 100],
     entities_to_cover: s.entities_to_cover, keywords: s.keywords, summary: s.summary,
@@ -1018,10 +1234,10 @@ async function writeTextInChunks(outline: any, ctx: {
   // "most tabular" headings and doesn't know to skip FAQ) or from the keyword fallback below
   // (whose regex includes words like "bonus"/"limit"/"retrait" that commonly appear IN an FAQ
   // heading too, e.g. "FAQ — Bonus & Retraits").
-  const isFaqHeading = (h: any) => /\bfaq\b|frequently asked/i.test(String(h || "").trim());
+  const isFaqHeading = (h: unknown) => /\bfaq\b|frequently asked/i.test(String(h || "").trim());
   for (const s of specs) if (isFaqHeading(s.heading)) s.visual_elements = [];
-  const hasTableVe = (s: any) => (Array.isArray(s.visual_elements) ? s.visual_elements : [])
-    .some((v: any) => typeof v === "object" ? /table/i.test(String(v?.type || "")) : /table|таблиц/i.test(String(v)));
+  const hasTableVe = (s: SectionSpec) => (Array.isArray(s.visual_elements) ? s.visual_elements : [])
+    .some((v) => typeof v === "object" ? /table/i.test(String((v as { type?: string } | null)?.type || "")) : /table|таблиц/i.test(String(v)));
   let tablesKept = 0;
   for (const s of specs) {
     if (!hasTableVe(s)) continue;
@@ -1036,29 +1252,29 @@ async function writeTextInChunks(outline: any, ctx: {
 
 
   // Units = H2 with its H3 children (never split a unit across chunks).
-  const units: any[][] = [];
+  const units: SectionSpec[][] = [];
   for (const s of specs) {
     if (s.h_level === "H2" || !units.length) units.push([s]);
     else units[units.length - 1].push(s);
   }
   // Greedy chunks of ~2-3 units / ≤chunkSections sections.
   const maxPerChunk = Math.max(2, Math.min(5, Math.round(Number(ctx.chunkSections) || 5)));
-  const chunks: any[][] = [];
+  const chunks: SectionSpec[][] = [];
   for (const u of units) {
     const last = chunks[chunks.length - 1];
     if (last && last.length + u.length <= maxPerChunk) last.push(...u);
     else chunks.push([...u]);
   }
 
-  const allHeadings = specs.map((s: any) => ({ h_level: s.h_level, heading: s.heading }));
+  const allHeadings = specs.map((s) => ({ h_level: s.h_level, heading: s.heading }));
   const faq = Array.isArray(outline.faq) ? outline.faq : [];
   const verdictRe = /verdict|вердикт|итог|conclusion|заключение|avis final|final|raisons|choisir|pourquoi|почему|avantages|преимуществ/i;
 
   const parts: (string | null)[] = new Array(chunks.length).fill(null);
   let lastChunkError: string | undefined;
-  const writeChunk = async ({ c, i }: { c: any[]; i: number }) => {
-    const lo = c.reduce((a: number, s: any) => a + (s.word_count?.[0] || 0), 0);
-    const hi = c.reduce((a: number, s: any) => a + (s.word_count?.[1] || 0), 0);
+  const writeChunk = async ({ c, i }: { c: SectionSpec[]; i: number }) => {
+    const lo = c.reduce((a: number, s) => a + (s.word_count?.[0] || 0), 0);
+    const hi = c.reduce((a: number, s) => a + (s.word_count?.[1] || 0), 0);
     // The last chunk also carries the FAQ (~55 words/question) — include that in its budget
     // and allowance so neither the ceiling nor the scoped trim squeezes the sections to
     // make room for FAQ.
@@ -1070,7 +1286,7 @@ async function writeTextInChunks(outline: any, ctx: {
       // FAQ is NEVER written by a chunk — it's rendered by a dedicated call below. Chunks
       // renamed/localized the FAQ heading and melted questions into prose too often.
       ragFacts: ctx.ragFacts, sources: ctx.sources, sourceMode: ctx.sourceMode,
-      isVerdictChunk: c.some((s: any) => verdictRe.test(String(s.heading || ""))),
+      isVerdictChunk: c.some((s) => verdictRe.test(String(s.heading || ""))),
       chunkBudget: hi > 0 ? [lo, hi] : undefined,
       bannedWords: ctx.bannedWords,
       policy: ctx.policy, custom: ctx.custom, promptType: ctx.promptType,
@@ -1148,7 +1364,7 @@ async function writeTextInChunks(outline: any, ctx: {
   // Frozen BEFORE the FAQ pass, which rewrites `parts` in place and would otherwise turn a
   // still-missing chunk into an empty string indistinguishable from a written one.
   const missingIdx = parts.map((p, i) => (p == null ? i : -1)).filter(i => i >= 0);
-  const missingHeadings = missingIdx.flatMap(i => chunks[i].map((s: any) => String(s.heading || "")).filter(Boolean));
+  const missingHeadings = missingIdx.flatMap(i => chunks[i].map((s) => String(s.heading || "")).filter(Boolean));
   const wroteChunks = chunks.length - missingIdx.length;
   if (!wroteChunks) return { text: null, wroteChunks: 0, totalChunks: chunks.length, missingHeadings, lastError: lastChunkError };
 
@@ -1189,13 +1405,13 @@ async function writeTextInChunks(outline: any, ctx: {
   }
 
   // Deterministic assembly: H1 → (optional TOC) → sections → FAQ came with the last chunk.
-  const pick = (v: any) => Array.isArray(v) ? (v.find((x: any) => x && String(x).trim()) || "") : (v || "");
+  const pick = (v: unknown) => Array.isArray(v) ? (v.find((x) => x && String(x).trim()) || "") : (v || "");
   const h1 = pick(meta.h1) || pick(meta.title_options) || ctx.keyword;
   const slug = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, "-");
   const tocLabel = tocLabelFor(ctx.language);
-  const hasFaqH2 = secs.some((s: any) => s.h_level === "H2" && /^faq/i.test(String(s.heading || "").trim()));
+  const hasFaqH2 = secs.some((s) => s.h_level === "H2" && /^faq/i.test(String(s.heading || "").trim()));
   const toc = ctx.includeToc
-    ? `<div class="toc"><strong>${tocLabel}</strong><ul>${secs.filter((s: any) => s.h_level === "H2").map((s: any) => `<li><a href="#${slug(String(s.heading))}">${s.heading}</a></li>`).join("")}${faq.length && !hasFaqH2 ? `<li><a href="#faq">FAQ</a></li>` : ""}</ul></div>\n\n`
+    ? `<div class="toc"><strong>${tocLabel}</strong><ul>${secs.filter((s) => s.h_level === "H2").map((s) => `<li><a href="#${slug(String(s.heading))}">${s.heading}</a></li>`).join("")}${faq.length && !hasFaqH2 ? `<li><a href="#faq">FAQ</a></li>` : ""}</ul></div>\n\n`
     : "";
   const body = parts.filter((p): p is string => p != null && p.trim().length > 0).join("\n\n");
   return {
@@ -1266,7 +1482,7 @@ async function enforceVolumeTarget(text: string, targetWc: number, ctx: {
 }
 
 // ─── Article text ─────────────────────────────────────────────────────────────────
-export async function genText(b: any): Promise<GenResult> {
+export async function genText(b: GenBody): Promise<GenResult> {
   if (!b.outline) return { ok: false, error: "no_outline" };
   const provider = String(b.aiProvider ?? "anthropic");
   const apiKey = String(b.aiApiKey ?? "");
@@ -1286,7 +1502,7 @@ export async function genText(b: any): Promise<GenResult> {
     try {
       const serp = await runSerp(String(b.serpProvider || "serper"), String(b.serpKey), keyword, { gl: b.gl, hl: b.hl, num: 10, engine: "google", baseUrl: b.serpBaseUrl ? String(b.serpBaseUrl) : undefined });
       const top = (serp.results || []).slice(0, Math.max(1, Math.min(10, Number(b.scrapeCount ?? 6))));
-      let scraped: any[] = [];
+      let scraped: ScrapedPage[] = [];
       try { scraped = await scrapeMany(top.map(r => r.url), b.firecrawlKey ? String(b.firecrawlKey) : undefined, 4); } catch {}
       sources = top.map(r => {
         const sc = scraped.find(s => s.url === r.url);
@@ -1300,7 +1516,7 @@ export async function genText(b: any): Promise<GenResult> {
   if (!sources.length) {
     const bank = Array.isArray(b.outline?.meta?.facts_bank) ? b.outline.meta.facts_bank : [];
     if (bank.length) {
-      sources = bank.map((x: any) => ({ title: (x.official ? "[ОФИЦИАЛЬНЫЙ] " : "") + (x.domain || x.source), url: x.source, domain: x.domain || "", snippet: x.facts }));
+      sources = bank.map((x) => ({ title: (x.official ? "[ОФИЦИАЛЬНЫЙ] " : "") + (x.domain || x.source), url: x.source, domain: x.domain || "", snippet: x.facts }));
       effMode = "facts";
     } else {
       const carried = Array.isArray(b.outline?.meta?.sources) ? b.outline.meta.sources : [];
@@ -1311,8 +1527,8 @@ export async function genText(b: any): Promise<GenResult> {
   // Slim the outline the writer actually needs: keep meta + sections + faq + price table; drop the
   // heavy analysis blocks (entity_analysis/sub_intents/entities/…) and the carried sources from meta
   // (they're already fed via the sources block) so we don't bloat/duplicate the prompt → no timeouts.
-  const full = (b.outline || {}) as any;
-  const { sources: _carried, facts_bank: _bank, ...metaSlim } = (full.meta || {});
+  const full: Outline = b.outline || {};
+  const { sources: _carried, facts_bank: _bank, ...metaSlim } = (full.meta || {}) as OutlineMeta;
   void _carried; void _bank;
   
   // Deep-copy to avoid mutating cached memory
@@ -1323,14 +1539,14 @@ export async function genText(b: any): Promise<GenResult> {
     price_table_template: full.price_table_template,
   };
 
-  const secsList: any[] = slimOutline.sections;
-  const depth = (s: any) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
+  const secsList: OutlineSection[] = slimOutline.sections;
+  const depth = (s: OutlineSection) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
   const hasKids = (i: number) => i + 1 < secsList.length && depth(secsList[i + 1]) > depth(secsList[i]);
 
   // 1. Convert FAQ list to H3 sections under the H2 FAQ section
   const faqList = Array.isArray(slimOutline.faq) ? slimOutline.faq : [];
   if (faqList.length > 0) {
-    let faqH2Idx = secsList.findIndex((s: any) => s.h_level === "H2" && (/\bfaq\b|frequently asked|questions\s+fréquentes|часто\s+задаваемые/i.test(s.heading)));
+    let faqH2Idx = secsList.findIndex((s) => s.h_level === "H2" && (/\bfaq\b|frequently asked|questions\s+fréquentes|часто\s+задаваемые/i.test(s.heading)));
     if (faqH2Idx === -1) {
       const faqTitle = "FAQ";
       secsList.push({
@@ -1344,7 +1560,7 @@ export async function genText(b: any): Promise<GenResult> {
       faqH2Idx = secsList.length - 1;
     }
     
-    const faqSubsections = faqList.map((f: any) => ({
+    const faqSubsections = faqList.map((f) => ({
       h_level: "H3",
       heading: f.question,
       word_count_self: [40, 60],
@@ -1373,7 +1589,7 @@ export async function genText(b: any): Promise<GenResult> {
   const textTargetWc = Number(b.targetWordCount) || Number(metaSlim?.target_word_count) || 0;
   const textFaqReserve = Math.min(Math.round(textTargetWc * 0.25), (Array.isArray(slimOutline.faq) ? slimOutline.faq.length : 0) * 50);
   if (textTargetWc >= 500) normalizeWordBudgets(slimOutline, Math.max(300, textTargetWc - textFaqReserve));
-  else if (textTargetWc > 0) (slimOutline.meta as any).target_word_count = ownBudgetSum(slimOutline) || textTargetWc;
+  else if (textTargetWc > 0) slimOutline.meta.target_word_count = ownBudgetSum(slimOutline) || textTargetWc;
 
   // Casino RAG: re-retrieve knowledge-base facts for the text step (fresh + full-length),
   // honoring either the explicit flag or the outline generated with RAG enabled.
@@ -1509,7 +1725,7 @@ export async function genText(b: any): Promise<GenResult> {
   if (b.autoFactCheck !== false && bank.length && text) {
     b.__onProgress?.(72, "factcheck");
     try {
-      const bankText = bank.map((x: any, i: number) => `[${i + 1}]${x.official ? " (ОФИЦИАЛЬНЫЙ)" : ""} ${x.domain || x.source}\n${x.facts}`).join("\n\n");
+      const bankText = bank.map((x, i: number) => `[${i + 1}]${x.official ? " (ОФИЦИАЛЬНЫЙ)" : ""} ${x.domain || x.source}\n${x.facts}`).join("\n\n");
       let cleaned = await fetchLLM(buildAutoFactCleanPrompt({
         article: text, factsBank: bankText, language,
         custom: authorInstruction, bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
@@ -1581,12 +1797,12 @@ export async function genText(b: any): Promise<GenResult> {
       : effMode === "facts"
         ? brandsFromDomains([
             ...sources.map(x => String(x.domain || x.url || "")),
-            ...bank.map((x: any) => String(x?.domain || x?.source || "")),
+            ...bank.map((x) => String(x?.domain || x?.source || "")),
           ])
         : [],
     keywords: [
       String(slimOutline.meta?.keyword ?? ""),
-      ...(Array.isArray(slimOutline.sections) ? slimOutline.sections : []).flatMap((sec: any) => Array.isArray(sec?.keywords) ? sec.keywords.map(String) : []),
+      ...(Array.isArray(slimOutline.sections) ? slimOutline.sections : []).flatMap((sec) => Array.isArray(sec?.keywords) ? sec.keywords.map(String) : []),
     ].filter(Boolean),
   };
   let mechIssues: MechanicsIssue[] = [];
@@ -1711,12 +1927,12 @@ export async function genText(b: any): Promise<GenResult> {
 // Guarantee the SEO meta block (Title/Description/Slug) sits at the very top of the article.
 // The model is asked to emit it, but doesn't always comply — so we add it deterministically from
 // the outline meta if it's missing (the data is known, no need to trust the LLM for this).
-export function ensureMetaBlock(text: string, meta: any): string {
+export function ensureMetaBlock(text: string, meta?: OutlineMeta): string {
   if (!text) return text;
   const firstHeading = text.search(/^#{1,6}\s/m);
   const head = firstHeading > 0 ? text.slice(0, firstHeading) : (firstHeading === 0 ? "" : text);
   if (/(^|\n)\s*(```)?\s*title\s*:/i.test(head)) return text; // already has a meta block
-  const pick = (v: any) => Array.isArray(v) ? (v.find((x: any) => x && String(x).trim()) || "") : (v || "");
+  const pick = (v: unknown) => Array.isArray(v) ? (v.find((x) => x && String(x).trim()) || "") : (v || "");
   const title = pick(meta?.title_options) || pick(meta?.title);
   const desc = pick(meta?.description_options) || pick(meta?.description);
   const slug = pick(meta?.slug_options) || pick(meta?.slug);
@@ -1736,7 +1952,7 @@ export function stripForeignScripts(text: string, language: string): string {
 }
 
 // ─── Wireframe (Landing-flow block skeleton) ─────────────────────────────────────
-export async function genWireframe(b: any): Promise<GenResult> {
+export async function genWireframe(b: GenBody): Promise<GenResult> {
   if (!b.outline) return { ok: false, error: "no_outline" };
   const provider = String(b.aiProvider ?? "anthropic");
   const apiKey = String(b.aiApiKey ?? "");
@@ -1758,27 +1974,27 @@ export async function genWireframe(b: any): Promise<GenResult> {
   });
 
   let raw = await fetchLLM(prompt, provider, apiKey, 8000, model, baseUrl);
-  let wireframe = extractJson(raw);
-  if (!wireframe || !Array.isArray((wireframe as any).blocks)) {
+  let wireframe = extractJson<{ blocks?: unknown[] }>(raw);
+  if (!wireframe || !Array.isArray(wireframe.blocks)) {
     raw = await fetchLLM(prompt + "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON, без текста и без markdown-обёрток.", provider, apiKey, 8000, model, baseUrl);
     wireframe = extractJson(raw);
   }
-  if (!wireframe || !Array.isArray((wireframe as any).blocks)) return { ok: false, error: "parse_failed" };
+  if (!wireframe || !Array.isArray(wireframe.blocks)) return { ok: false, error: "parse_failed" };
   return { ok: true, data: wireframe };
 }
 
 // Slim competitor skeleton persisted with a landing result: enough to redraw each top page's real
 // structure (heading tree, price-table/FAQ markers, size) in the detail view, without the scraped
 // text_sample bulk. Pure scraped data — no extra model call.
-function slimCompetitors(list: any): any[] {
+function slimCompetitors(list: unknown): unknown[] {
   if (!Array.isArray(list)) return [];
   const domainOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
-  return list.slice(0, 30).map((c: any) => ({
+  return list.slice(0, 30).map((c) => ({
     position: Number(c.position) || 0,
     url: String(c.url || ""),
     domain: String(c.domain || domainOf(c.url || "")),
     title: String(c.title || ""),
-    headings: Array.isArray(c.headings) ? c.headings.slice(0, 40).map((h: any) => String(h)) : [],
+    headings: Array.isArray(c.headings) ? c.headings.slice(0, 40).map((h: unknown) => String(h)) : [],
     word_count: Number(c.word_count) || 0,
     has_price_table: !!c.has_price_table,
     has_faq: !!c.has_faq,
@@ -1789,16 +2005,16 @@ function slimCompetitors(list: any): any[] {
 // ─── Landing-flow orchestrator: ТЗ (+ wireframe) (+ текст), per "что генерировать" ───
 // b.generate: "tz" | "tz_text" | "tz_wireframe" | "all" (default "tz_wireframe", matches the
 // reference tool's Landing-flow which always ships a wireframe alongside the ТЗ).
-export async function genLanding(b: any): Promise<GenResult> {
+export async function genLanding(b: GenBody): Promise<GenResult> {
   const want = String(b.generate || "tz_wireframe");
   const wantsWireframe = want === "tz_wireframe" || want === "all";
   const wantsText = want === "tz_text" || want === "all";
 
   const outlineRes = await genOutline(b);
   if (!outlineRes.ok) return outlineRes;
-  const outline = outlineRes.data;
+  const outline = outlineRes.data as Outline;
 
-  const result: any = { outline };
+  const result: Record<string, unknown> = { outline };
 
   // The real top-page skeletons ride along: the wireframe is grounded on them and the detail
   // view shows them next to it as "how the ranking pages are actually built".
@@ -1812,7 +2028,7 @@ export async function genLanding(b: any): Promise<GenResult> {
 
   if (wantsText) {
     const textRes = await genText({ ...b, outline });
-    if (textRes.ok) result.text = (textRes.data as any)?.text ?? textRes.data;
+    if (textRes.ok) result.text = (textRes.data as { text?: unknown })?.text ?? textRes.data;
     else result.textError = textRes.error;
   }
 
@@ -1820,7 +2036,7 @@ export async function genLanding(b: any): Promise<GenResult> {
 }
 
 // ─── Content analysis ──────────────────────────────────────────────────────────────
-export async function genAnalysis(b: any): Promise<GenResult> {
+export async function genAnalysis(b: GenBody): Promise<GenResult> {
   const keyword = String(b.keyword ?? "").trim();
   if (!keyword) return { ok: false, error: "no_keyword" };
   if (!b.targetPage) return { ok: false, error: "no_target_page" };
@@ -1839,7 +2055,7 @@ export async function genAnalysis(b: any): Promise<GenResult> {
   const baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
 
   let raw = await fetchLLM(prompt, provider, apiKey, 16000, model, baseUrl);
-  let report = extractJson(raw);
+  let report = extractJson<Record<string, unknown>>(raw);
   if (!report) {
     raw = await fetchLLM(prompt + "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON.", provider, apiKey, 16000, model, baseUrl);
     report = extractJson(raw);
@@ -1852,7 +2068,7 @@ export async function genAnalysis(b: any): Promise<GenResult> {
 // The interactive Outline page does SERP+scrape client-side (user picks competitors);
 // batch generation from clusters can't stop for that — this wrapper does the whole
 // pipeline unattended: top-10, scrape the best pages, then the regular genOutline.
-export async function genOutlineAuto(b: any): Promise<GenResult> {
+export async function genOutlineAuto(b: GenBody): Promise<GenResult> {
   const keyword = String(b.keyword ?? "").trim();
   if (!keyword) return { ok: false, error: "no_keyword" };
   if (!b.serpKey) return { ok: false, error: "no_serp_key" };
@@ -1864,10 +2080,10 @@ export async function genOutlineAuto(b: any): Promise<GenResult> {
   if (serp.error || !serp.results?.length) return { ok: false, error: serp.error || "serp_failed" };
   const results = serp.results.slice(0, 10);
   b.__onProgress?.(12, "scrape");
-  let pages: any[] = [];
+  let pages: ScrapedPage[] = [];
   try { pages = await scrapeMany(results.map(r => r.url), b.firecrawlKey ? String(b.firecrawlKey) : undefined, 4); } catch { /* outline can run on titles alone */ }
   const competitors: CompetitorInput[] = results.map(r => {
-    const p = pages.find((x: any) => x.url === r.url);
+    const p = pages.find((x) => x.url === r.url);
     return {
       position: r.position, url: r.url,
       site_type: heuristicSiteType(r.domain, r.url, r.title) || undefined,
@@ -1926,9 +2142,9 @@ async function fetchClusterVolumes(
   }
 }
 
-export async function genCluster(b: any): Promise<GenResult> {
+export async function genCluster(b: GenBody): Promise<GenResult> {
   const keywords: string[] = [...new Set((Array.isArray(b.keywords) ? b.keywords : [])
-    .map((k: any) => String(k).trim().toLowerCase()).filter(Boolean))].slice(0, 1000) as string[];
+    .map((k) => String(k).trim().toLowerCase()).filter(Boolean))].slice(0, 1000) as string[];
   if (keywords.length < 2) return { ok: false, error: "no_keywords" };
   const serpKey = String(b.serpKey ?? "");
   if (!serpKey) return { ok: false, error: "no_serp_key" };
@@ -1965,7 +2181,7 @@ export async function genCluster(b: any): Promise<GenResult> {
   const vol = (k: string) => volumes[k] ?? 0;
   const sorted = [...usable].sort((a, z) => vol(z) - vol(a));
   const assigned = new Set<string>();
-  const clusters: any[] = [];
+  const clusters: KeywordCluster[] = [];
   for (const seed of sorted) {
     if (assigned.has(seed)) continue;
     assigned.add(seed);
@@ -2001,7 +2217,7 @@ export async function genCluster(b: any): Promise<GenResult> {
   };
 }
 
-export function genByType(type: string, payload: any): Promise<GenResult> {
+export function genByType(type: string, payload: GenBody): Promise<GenResult> {
   if (type === "outline") return genOutline(payload);
   if (type === "text") return genText(payload);
   if (type === "analysis") return genAnalysis(payload);
