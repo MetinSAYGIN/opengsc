@@ -8,6 +8,8 @@ import {
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 type Role = "viewer" | "editor" | "admin";
+/** Dictionary key accepted by the t() from useLanguage (computed at compile time, erased at runtime). */
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
 type Member = {
   id: string; email: string; name: string | null; role: Role; status: string;
   invitePending: boolean; inviteExpiresAt: string | null; acceptedAt: string | null;
@@ -77,13 +79,13 @@ export default function TeamMembersPanel() {
     void load();
   }
   async function removeMember(id: string, email: string) {
-    if (!window.confirm(t("teamRemoveConfirm" as any).replace("{email}", email))) return;
+    if (!window.confirm(t("teamRemoveConfirm").replace("{email}", email))) return;
     if (await call(`/api/team/members/${encodeURIComponent(id)}`, { method: "DELETE" }, `remove-${id}`)) void load();
   }
 
   if (loading && !data) return <div style={card}><Loader2 className="spin" size={20} /></div>;
-  if (data?.notMigrated) return <div style={card}><AlertTriangle size={18} color="var(--color-accent-orange)" /> {t("teamNotMigrated" as any)}</div>;
-  if (!data) return <div style={card}>{error || t("teamLoadFailed" as any)}</div>;
+  if (data?.notMigrated) return <div style={card}><AlertTriangle size={18} color="var(--color-accent-orange)" /> {t("teamNotMigrated")}</div>;
+  if (!data) return <div style={card}>{error || t("teamLoadFailed")}</div>;
 
   const canManage = data.me.capabilities.includes("manageMembers");
   const isOwner = data.me.role === "owner";
@@ -91,52 +93,52 @@ export default function TeamMembersPanel() {
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
     <div style={card}>
-      <h2 style={h2}>{t("teamRolesTitle" as any)}</h2>
-      <p style={hint}>{t("teamRolesIntro" as any)}</p>
+      <h2 style={h2}>{t("teamRolesTitle")}</h2>
+      <p style={hint}>{t("teamRolesIntro")}</p>
       <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
-        <RoleLine icon={<Crown size={13} color="#F59E0B" />} name={t("teamRoleOwner" as any)} text={t("teamRoleOwnerText" as any)} />
-        <RoleLine icon={<Shield size={13} color="#bf5af2" />} name={t("teamRoleAdmin" as any)} text={t("teamRoleAdminText" as any)} warn />
-        <RoleLine icon={<Check size={13} color="#34c759" />} name={t("teamRoleEditor" as any)} text={t("teamRoleEditorText" as any)} />
-        <RoleLine icon={<Check size={13} color="#8e8e93" />} name={t("teamRoleViewer" as any)} text={t("teamRoleViewerText" as any)} />
+        <RoleLine icon={<Crown size={13} color="#F59E0B" />} name={t("teamRoleOwner")} text={t("teamRoleOwnerText")} />
+        <RoleLine icon={<Shield size={13} color="#bf5af2" />} name={t("teamRoleAdmin")} text={t("teamRoleAdminText")} warn />
+        <RoleLine icon={<Check size={13} color="#34c759" />} name={t("teamRoleEditor")} text={t("teamRoleEditorText")} />
+        <RoleLine icon={<Check size={13} color="#8e8e93" />} name={t("teamRoleViewer")} text={t("teamRoleViewerText")} />
       </div>
     </div>
 
-    {error && <div style={{ ...card, borderColor: "rgba(255,69,58,.35)", color: "#ff6b62" }}>{t(`teamError_${error}` as any) !== `teamError_${error}` ? t(`teamError_${error}` as any) : error}</div>}
+    {error && <div style={{ ...card, borderColor: "rgba(255,69,58,.35)", color: "#ff6b62" }}>{t(`teamError_${error}` as TKey) !== `teamError_${error}` ? t(`teamError_${error}` as TKey) : error}</div>}
 
     {secret && <div style={{ ...card, borderColor: "rgba(52,199,89,.35)" }}>
-      <h2 style={h2}>{secret.password ? t("teamPasswordReady" as any) : t("teamInviteReady" as any)}</h2>
-      <p style={hint}>{t("teamSecretOnce" as any)}</p>
-      <CopyRow label={t("teamEmail" as any)} value={secret.email} />
-      {secret.password && <CopyRow label={t("teamPassword" as any)} value={secret.password} />}
-      {secret.inviteToken && <CopyRow label={t("teamInviteLink" as any)} value={`${typeof window === "undefined" ? "" : window.location.origin}/join?token=${secret.inviteToken}`} />}
-      <button style={ghost} onClick={() => setSecret(null)}>{t("teamDone" as any)}</button>
+      <h2 style={h2}>{secret.password ? t("teamPasswordReady") : t("teamInviteReady")}</h2>
+      <p style={hint}>{t("teamSecretOnce")}</p>
+      <CopyRow label={t("teamEmail")} value={secret.email} />
+      {secret.password && <CopyRow label={t("teamPassword")} value={secret.password} />}
+      {secret.inviteToken && <CopyRow label={t("teamInviteLink")} value={`${typeof window === "undefined" ? "" : window.location.origin}/join?token=${secret.inviteToken}`} />}
+      <button style={ghost} onClick={() => setSecret(null)}>{t("teamDone")}</button>
     </div>}
 
     {canManage && <div style={card}>
-      <h2 style={h2}>{t("teamAddMember" as any)}</h2>
+      <h2 style={h2}>{t("teamAddMember")}</h2>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginTop: 12 }}>
-        <label style={label}>{t("teamEmail" as any)}
+        <label style={label}>{t("teamEmail")}
           <input className="tool-input" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="editor@agency.com" />
         </label>
-        <label style={label}>{t("teamName" as any)}
+        <label style={label}>{t("teamName")}
           <input className="tool-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
         </label>
-        <label style={label}>{t("teamRole" as any)}
+        <label style={label}>{t("teamRole")}
           <select className="tool-input" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as Role }))}>
-            {assignable.map(role => <option key={role} value={role}>{t(`teamRole${role[0].toUpperCase()}${role.slice(1)}` as any)}</option>)}
+            {assignable.map(role => <option key={role} value={role}>{t(`teamRole${role[0].toUpperCase()}${role.slice(1)}` as TKey)}</option>)}
           </select>
         </label>
-        <label style={label}>{t("teamHowToAdd" as any)}
+        <label style={label}>{t("teamHowToAdd")}
           <select className="tool-input" value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value as "password" | "invite" }))}>
-            <option value="password">{t("teamModePassword" as any)}</option>
-            <option value="invite">{t("teamModeInvite" as any)}</option>
+            <option value="password">{t("teamModePassword")}</option>
+            <option value="invite">{t("teamModeInvite")}</option>
           </select>
         </label>
       </div>
-      <p style={{ ...hint, marginTop: 8 }}>{t(form.role === "admin" ? "teamRoleAdminText" : form.role === "editor" ? "teamRoleEditorText" : "teamRoleViewerText" as any)}</p>
-      <p style={{ ...hint, marginTop: 4 }}>{t(form.mode === "password" ? "teamModePasswordHint" : "teamModeInviteHint" as any)}</p>
+      <p style={{ ...hint, marginTop: 8 }}>{t(form.role === "admin" ? "teamRoleAdminText" : form.role === "editor" ? "teamRoleEditorText" : "teamRoleViewerText")}</p>
+      <p style={{ ...hint, marginTop: 4 }}>{t(form.mode === "password" ? "teamModePasswordHint" : "teamModeInviteHint")}</p>
       <button style={primary} disabled={!form.email.trim() || !!busy} onClick={addMember}>
-        {busy === "add" ? <Loader2 className="spin" size={14} /> : <Plus size={14} />} {t("teamAdd" as any)}
+        {busy === "add" ? <Loader2 className="spin" size={14} /> : <Plus size={14} />} {t("teamAdd")}
       </button>
     </div>}
 
@@ -144,15 +146,15 @@ export default function TeamMembersPanel() {
 
     <div style={{ ...card, padding: 0 }}>
       <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <h2 style={{ ...h2, margin: 0 }}>{t("teamMembers" as any)} · {data.members.length + 1}</h2>
-        <button style={ghost} onClick={() => void load()}><RefreshCw size={13} /> {t("teamRefresh" as any)}</button>
+        <h2 style={{ ...h2, margin: 0 }}>{t("teamMembers")} · {data.members.length + 1}</h2>
+        <button style={ghost} onClick={() => void load()}><RefreshCw size={13} /> {t("teamRefresh")}</button>
       </div>
 
       <Row
         title={data.owner?.name || data.owner?.email || "—"}
         subtitle={data.owner?.email || ""}
-        badge={<span style={badge("#F59E0B")}><Crown size={11} /> {t("teamRoleOwner" as any)}</span>}
-        note={t("teamOwnerNote" as any)}
+        badge={<span style={badge("#F59E0B")}><Crown size={11} /> {t("teamRoleOwner")}</span>}
+        note={t("teamOwnerNote")}
       />
 
       {data.members.map(member => <Row
@@ -160,26 +162,26 @@ export default function TeamMembersPanel() {
         title={member.name || member.email}
         subtitle={member.email}
         badge={<span style={badge(member.role === "admin" ? "#bf5af2" : member.role === "editor" ? "#34c759" : "#8e8e93")}>
-          {t(`teamRole${member.role[0].toUpperCase()}${member.role.slice(1)}` as any)}
+          {t(`teamRole${member.role[0].toUpperCase()}${member.role.slice(1)}` as TKey)}
         </span>}
-        note={member.invitePending ? t("teamInvitePending" as any) : member.status === "suspended" ? t("teamSuspended" as any)
-          : member.lastSeenAt ? `${t("teamLastSeen" as any)}: ${new Date(member.lastSeenAt).toLocaleString()}` : t("teamNeverSignedIn" as any)}
+        note={member.invitePending ? t("teamInvitePending") : member.status === "suspended" ? t("teamSuspended")
+          : member.lastSeenAt ? `${t("teamLastSeen")}: ${new Date(member.lastSeenAt).toLocaleString()}` : t("teamNeverSignedIn")}
         actions={canManage && (member.role !== "admin" || isOwner) ? <>
           <select
             className="tool-input" style={{ width: "auto" }} value={member.role} disabled={!!busy}
             onChange={e => patchMember(member.id, { role: e.target.value }, `role-${member.id}`)}
           >
-            {assignable.map(role => <option key={role} value={role}>{t(`teamRole${role[0].toUpperCase()}${role.slice(1)}` as any)}</option>)}
+            {assignable.map(role => <option key={role} value={role}>{t(`teamRole${role[0].toUpperCase()}${role.slice(1)}` as TKey)}</option>)}
           </select>
-          <button style={ghost} disabled={!!busy} title={t("teamResetPassword" as any)}
+          <button style={ghost} disabled={!!busy} title={t("teamResetPassword")}
             onClick={() => patchMember(member.id, { action: "reset_password" }, `pw-${member.id}`)}>
             <KeyRound size={13} />
           </button>
-          <button style={ghost} disabled={!!busy} title={t(member.status === "suspended" ? "teamReactivate" : "teamSuspend" as any)}
+          <button style={ghost} disabled={!!busy} title={t(member.status === "suspended" ? "teamReactivate" : "teamSuspend")}
             onClick={() => patchMember(member.id, { status: member.status === "suspended" ? "active" : "suspended" }, `st-${member.id}`)}>
             <UserX size={13} />
           </button>
-          <button style={{ ...ghost, color: "#ff6b62" }} disabled={!!busy} title={t("teamRemove" as any)}
+          <button style={{ ...ghost, color: "#ff6b62" }} disabled={!!busy} title={t("teamRemove")}
             onClick={() => removeMember(member.id, member.email)}>
             <Trash2 size={13} />
           </button>
