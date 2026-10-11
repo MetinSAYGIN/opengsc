@@ -11,6 +11,7 @@ import { Heart, Loader2 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import type { RecoveryAction, RecoveryRow } from "@/lib/backlinks/recovery";
 import { shareTokenFromPath } from "@/lib/shareParam";
+import { providerLabel, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
 
 const PAGE_ROWS = 50;
 
@@ -29,6 +30,12 @@ export default function RecoveryTab({ siteDbId, guest }: { siteDbId: string; gue
   const [busyId, setBusyId] = useState("");
   const [notice, setNotice] = useState("");
   const [page, setPage] = useState(1);
+  // Who flagged the links lost — "Lost per DataForSEO", not a hard-coded Ahrefs (issue #29).
+  const [provider, setProvider] = useState<BacklinkProviderId | null>(null);
+  const actionLabel = useCallback(
+    (a: RecoveryAction) => String(t(`blRecAction_${a}` as never)).replace("{provider}", providerLabel(provider)),
+    [t, provider],
+  );
 
   // First setState only after the await — the mount effect must not write state synchronously.
   const load = useCallback(async () => {
@@ -44,6 +51,7 @@ export default function RecoveryTab({ siteDbId, guest }: { siteDbId: string; gue
         setNotice(String(t("blNotMigrated" as never)));
       } else if (res.ok) {
         setRows(Array.isArray(d.rows) ? (d.rows as RecoveryRow[]) : []);
+        setProvider(d.provider ?? null);
         setNotice("");
       } else {
         setNotice(String(d.error ?? "error"));
@@ -74,7 +82,7 @@ export default function RecoveryTab({ siteDbId, guest }: { siteDbId: string; gue
           sourceAnchor: row.apiAnchor,
           sourceDr: row.apiDr ?? 0,
           targetAsset: row.urlTo,
-          pitchAngle: `Lost backlink (${t(`blRecAction_${row.action}` as never)}), value ${row.score}`,
+          pitchAngle: `Lost backlink (${actionLabel(row.action)}), value ${row.score}`,
         }),
       });
       const d = await res.json().catch(() => ({}));
@@ -84,7 +92,7 @@ export default function RecoveryTab({ siteDbId, guest }: { siteDbId: string; gue
       setNotice(String((e as Error).message));
     }
     setBusyId("");
-  }, [t]);
+  }, [t, actionLabel]);
 
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_ROWS));
   const pageNo = Math.min(page, pages);
@@ -134,8 +142,8 @@ export default function RecoveryTab({ siteDbId, guest }: { siteDbId: string; gue
                       → {r.urlTo}
                     </div>
                   </td>
-                  <td style={{ ...cell, fontSize: "11.5px", color: "var(--color-text-secondary)" }} title={t(`blRecAction_${r.action}` as never)}>
-                    {ACTION_ICON[r.action]} {t(`blRecAction_${r.action}` as never)}
+                  <td style={{ ...cell, fontSize: "11.5px", color: "var(--color-text-secondary)" }} title={actionLabel(r.action)}>
+                    {ACTION_ICON[r.action]} {actionLabel(r.action)}
                   </td>
                   <td style={{ ...cell, textAlign: "center", color: "var(--color-text-secondary)" }}>{r.apiDr ?? "—"}</td>
                   <td style={{ ...cell, color: "var(--color-text-secondary)", fontSize: "11.5px", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.apiAnchor}>{r.apiAnchor || "—"}</td>

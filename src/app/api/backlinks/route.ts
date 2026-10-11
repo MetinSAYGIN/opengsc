@@ -6,6 +6,7 @@ import {
   parseBacklinkSort, nofollowFilterCondition,
 } from "@/lib/seo/backlinkImport";
 import type { BacklinkListResponse, BacklinkListStats, BacklinkRow, BacklinkSource, PageStatus, PlacementStatus } from "@/lib/seo/backlinkTypes";
+import { latestBacklinkProvider } from "@/lib/seo/siteBacklinkStore";
 
 // Backlinks v2 (T5). Reads and writes go to SiteBacklink — the old `Backlink` model still
 // exists behind /api/backlinks/check-alive and /api/backlinks/check-xr, which stay on it
@@ -110,6 +111,7 @@ export async function GET(req: Request) {
     page,
     pageSize,
     stats,
+    provider: await latestBacklinkProvider(siteDbId),
   };
   return NextResponse.json(body);
 }

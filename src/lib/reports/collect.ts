@@ -21,6 +21,9 @@ import { normDomain } from "@/lib/mcp/shared";
 import { getUserGoogleAccounts, queryGscStrict, type GscAccount } from "@/lib/gscQuery";
 // The two windows (calendar vs Search Console) and their date math live in ./window, which
 // is pure and unit-tested; re-exported so existing imports keep working.
+import { summarizeBacklinks, type BacklinksData, type StoredBacklink } from "./backlinks";
+import { latestBacklinkProvider } from "@/lib/seo/siteBacklinkStore";
+import { providerDrLabel } from "@/lib/seo/backlinkProvider";
 import { DAY_MS, gscRowsToTop, mergeTopRows, reportWindow, type MetricRow, type ReportWindow, type TopRow } from "./window";
 export { reportWindow, type MetricRow, type ReportWindow };
 
@@ -350,39 +353,29 @@ export async function collectUptime(userId: string, siteId: string, w: ReportWin
 }
 
 // ─── backlinks (SiteBacklink) ─────────────────────────────────────────────────
+// The arithmetic lives in ./backlinks (pure, tested); this only reads the rows, the window's
+// api-origin `lost` events and the provider that filled the table.
 
-export interface BacklinkRow { urlFrom: string; domainFrom: string; dr: number | null; anchor: string }
-export interface BacklinksData {
-  newCount: number;
-  lostCount: number;
-  avgDr: number | null;
-  topNew: BacklinkRow[];
-}
+export type { BacklinkRow, BacklinksData } from "./backlinks";
 
 export async function collectBacklinks(siteId: string, w: ReportWindow): Promise<BacklinksData | undefined> {
-  const rows: {
-    urlFrom: string; domainFrom: string; apiDr: number | null; apiAnchor: string;
-    apiFirstSeen: string; apiLost: boolean;
-  }[] = await db.siteBacklink.findMany({
+  const rows: StoredBacklink[] = await db.siteBacklink.findMany({
     where: { siteId },
-    select: { urlFrom: true, domainFrom: true, apiDr: true, apiAnchor: true, apiFirstSeen: true, apiLost: true },
+    select: {
+      id: true, urlFrom: true, domainFrom: true, apiDr: true, apiAnchor: true,
+      apiFirstSeen: true, apiLastSeen: true, apiLost: true,
+    },
   }).catch(() => []); // wave-oct table; absent on old instances
   if (!rows.length) return undefined;
-  const fromDay = w.from.toISOString().slice(0, 10);
-  const toDay = w.to.toISOString().slice(0, 10);
-  const isNew = (r: { apiFirstSeen: string }) => /^\d{4}-\d{2}-\d{2}$/.test(r.apiFirstSeen) && r.apiFirstSeen >= fromDay && r.apiFirstSeen <= toDay;
-  const fresh = rows.filter(isNew);
-  const drs = rows.map(r => r.apiDr).filter((d): d is number => typeof d === "number" && d > 0);
-  const topNew = fresh
-    .sort((a, b) => (b.apiDr ?? 0) - (a.apiDr ?? 0))
-    .slice(0, 10)
-    .map(r => ({ urlFrom: r.urlFrom, domainFrom: r.domainFrom ?? "", dr: r.apiDr ?? null, anchor: r.apiAnchor ?? "" }));
-  return {
-    newCount: fresh.length,
-    lostCount: rows.filter(r => r.apiLost).length,
-    avgDr: drs.length ? Math.round(drs.reduce((s, d) => s + d, 0) / drs.length * 10) / 10 : null,
-    topNew,
-  };
+  const events: { backlinkId: string }[] = await db.siteBacklinkEvent.findMany({
+    where: { siteId, kind: "lost", origin: "api", createdAt: { gte: w.from, lt: w.to } },
+    select: { backlinkId: true },
+  }).catch(() => []);
+  const provider = await latestBacklinkProvider(siteId);
+  return summarizeBacklinks({
+    rows, lostEventIds: events.map(e => e.backlinkId), from: w.from, to: w.to,
+    provider, drLabel: providerDrLabel(provider),
+  });
 }
 
 // ─── AI visibility (share of voice) ───────────────────────────────────────────

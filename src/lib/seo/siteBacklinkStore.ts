@@ -21,6 +21,7 @@ import {
   MappedBacklinkRow, PaginationMode, ExistingApiState,
   mapApiRow, planEvents, probePagination, fetchBacklinksPage,
 } from "@/lib/seo/backlinksApi";
+import { providerFromSyncMode, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
 import { pageByKeyset, pageByOffset, settleCompleteness, type PagingDeps } from "@/lib/seo/exportPaging";
 
 const db = prisma as any;
@@ -163,6 +164,25 @@ function mergeSources(existing?: string | null): string {
 }
 
 // ─── Sync-run bookkeeping ──────────────────────────────────────────────────────
+
+/**
+ * The provider behind a site's api rows — the latest api run that got past "pull" names it
+ * (issue #29). Prefers a completed run; falls back to the newest run of any status, since even
+ * a partial one wrote rows. null = no api export ever ran (CSV/manual rows only).
+ */
+export async function latestBacklinkProvider(siteId: string): Promise<BacklinkProviderId | null> {
+  try {
+    const pick = (status?: string) => db.siteBacklinkSync.findFirst({
+      where: { siteId, kind: "api", ...(status ? { status } : {}) },
+      orderBy: { startedAt: "desc" },
+      select: { paginationMode: true },
+    });
+    const run = (await pick("completed")) ?? (await pick());
+    return run ? providerFromSyncMode(run.paginationMode) : null;
+  } catch {
+    return null; // table absent on an un-pushed schema
+  }
+}
 
 /** A running sync whose heartbeat is fresh enough that a process may still be behind it. */
 const STALE_RUNNING_MS = 10 * 60 * 1000;

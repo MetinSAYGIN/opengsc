@@ -15,6 +15,7 @@ import type { ReportBranding } from "./branding";
 import { DEFAULT_BRANDING } from "./branding";
 import type { ReportSectionId } from "./sections";
 import { SECTION_TITLES_EN } from "./sections";
+import { providerLabel } from "@/lib/seo/backlinkProvider";
 import type { ReportData } from "./collect";
 
 // ─── small pure helpers ───────────────────────────────────────────────────────
@@ -102,7 +103,7 @@ export function buildSummary(data: ReportData): SummaryResult {
     if (critical.length) priorities.push(`Audit: ${fmtInt(critical[0].count)} page(s) with “${critical[0].code.replace(/_/g, " ")}”.`);
   }
   const bl = data.backlinks;
-  if (bl && bl.lostCount > 0) priorities.push(`${fmtInt(bl.lostCount)} backlink(s) currently marked lost.`);
+  if (bl && bl.lostCount > 0) priorities.push(`${fmtInt(bl.lostCount)} backlink(s) lost in this period (per ${providerLabel(bl.provider)}).`);
   if (data.uptime?.incidents.length) {
     const last = data.uptime.incidents[0];
     priorities.push(`Uptime: ${data.uptime.incidents.length} incident(s), latest ${fmtDate(last.startedAt)} (${last.cause}).`);
@@ -388,12 +389,16 @@ function renderBacklinks(data: ReportData): string {
   const kpis = [
     kpi("New links", fmtInt(b.newCount)),
     kpi("Lost links", fmtInt(b.lostCount)),
-    kpi("Avg DR of donors", b.avgDr == null ? "—" : b.avgDr.toFixed(1)),
+    // Only for a provider that stores a per-link DR (issue #29): DataForSEO's rank is a different
+    // metric and is not stored per link, so the KPI is left out instead of showing a dead "—".
+    ...(b.drLabel ? [kpi(`Avg ${b.drLabel} of new donors`, b.avgDr == null ? "—" : b.avgDr.toFixed(1))] : []),
   ].join("");
+  const drCol = b.drLabel ? `<th class="num">${escapeHtml(b.drLabel)}</th>` : "";
   const top = b.topNew.length
-    ? `<table><thead><tr><th>New link from</th><th class="num">DR</th><th>Anchor</th></tr></thead><tbody>${b.topNew.map(r => `<tr><td>${escapeHtml(r.domainFrom || r.urlFrom.slice(0, 60))}</td><td class="num">${r.dr == null ? "—" : r.dr.toFixed(0)}</td><td>${escapeHtml(r.anchor.slice(0, 60)) || "—"}</td></tr>`).join("")}</tbody></table>`
+    ? `<table><thead><tr><th>New link from</th>${drCol}<th>Anchor</th></tr></thead><tbody>${b.topNew.map(r => `<tr><td>${escapeHtml(r.domainFrom || r.urlFrom.slice(0, 60))}</td>${b.drLabel ? `<td class="num">${r.dr == null ? "—" : r.dr.toFixed(0)}</td>` : ""}<td>${escapeHtml(r.anchor.slice(0, 60)) || "—"}</td></tr>`).join("")}</tbody></table>`
     : "";
-  return `<div class="kpis">${kpis}</div>${top}`;
+  const src = `<p class="meta">Source: ${escapeHtml(providerLabel(b.provider))} link index. New = links the provider first saw during this period; lost = links it reported lost during this period. Figures from other link indexes will differ.</p>`;
+  return `<div class="kpis">${kpis}</div>${src}${top}`;
 }
 
 function renderAi(data: ReportData): string {

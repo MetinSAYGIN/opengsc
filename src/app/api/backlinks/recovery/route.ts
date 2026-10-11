@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { backlinksNotMigrated, readRecovery, siteForRead } from "@/lib/backlinks/store";
+import { latestBacklinkProvider } from "@/lib/seo/siteBacklinkStore";
 
 // GET /api/backlinks/recovery?siteId= — the lost-link recovery table: every row the two
 // witnesses call lost (apiLost / our check missing / retargeted / rel-downgraded), scored by
@@ -18,7 +19,8 @@ export async function GET(req: Request) {
     const site = await siteForRead(userId, siteId, shareToken);
     if (!site) return NextResponse.json({ error: userId ? "Site not found" : "Unauthorized" }, { status: userId ? 404 : 401 });
     const rows = await readRecovery(site.id);
-    return NextResponse.json({ rows, total: rows.length });
+    // provider: who said "lost" — the UI names it instead of assuming Ahrefs (issue #29).
+    return NextResponse.json({ rows, total: rows.length, provider: await latestBacklinkProvider(site.id) });
   } catch (error) {
     if (backlinksNotMigrated(error)) {
       return NextResponse.json({ notMigrated: true, hint: "Run `npx prisma db push` to create the SiteBacklink tables." });

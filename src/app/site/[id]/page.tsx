@@ -35,6 +35,7 @@ import BacklinkProfile from "@/components/BacklinkProfile";
 import BacklinkImportDialog from "@/components/BacklinkImportDialog";
 import BacklinkSyncButton from "@/components/backlinks/BacklinkSyncButton";
 import type { BacklinkRow, BacklinkListStats } from "@/lib/seo/backlinkTypes";
+import { providerLabel, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
 import {
   ArrowLeft, Sparkles, Eye, Percent, MoveUp,
   SlidersHorizontal, ChevronDown, Smartphone, Monitor, Tablet,
@@ -2243,6 +2244,9 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
   const [rows, setRows] = useState<BacklinkRow[]>([]);
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<BacklinkListStats | null>(null);
+  // Who filled the api rows (issue #29): every "per Ahrefs" label names the real provider.
+  const [provider, setProvider] = useState<BacklinkProviderId | null>(null);
+  const tp = (k: "bluiFilterLost" | "bluiSourceApi" | "bluiAnchorFromApi") => t(k).replace("{provider}", providerLabel(provider));
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -2321,6 +2325,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
       setRows(d.rows ?? []);
       setTotal(d.total ?? 0);
       setStats(d.stats ?? null);
+      setProvider(d.provider ?? null);
     } catch {}
     if (seq === loadSeq.current) setLoading(false);
   }, [siteDbId, page, pageSize, sort, filters]);
@@ -2617,7 +2622,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
           { label: t("blchkMissing"), value: stats?.missing ?? 0, color: "#F87171" },
           { label: t("blchkBlocked"), value: stats?.blocked ?? 0, color: "#FBBF24" },
           { label: t("blchkUnchecked"), value: stats?.unchecked ?? 0, color: "var(--color-text-secondary)" },
-          { label: t("bluiFilterLost"), value: stats?.apiLost ?? 0, color: "#a78bfa" },
+          { label: tp("bluiFilterLost"), value: stats?.apiLost ?? 0, color: "#a78bfa" },
         ].map(({ label, value, color }) => (
           <span key={label} style={{ fontWeight: 600 }}>
             {label} <span style={{ color }}>{value}</span>
@@ -2648,7 +2653,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
           ], t("bluiFilterRel"))}
           {sel(filters.source, v => updateFilters({ source: v }), [
             { v: "", l: `${t("bluiFilterSource")}: —` },
-            { v: "api", l: t("bluiSourceApi") },
+            { v: "api", l: tp("bluiSourceApi") },
             { v: "csv", l: t("bluiSourceCsv") },
             { v: "manual", l: t("bluiSourceManual") },
           ], t("bluiFilterSource"))}
@@ -2690,7 +2695,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
           </label>
           <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: "pointer" }}>
             <input type="checkbox" checked={filters.lost} onChange={e => updateFilters({ lost: e.target.checked })} style={{ width: 13, height: 13, accentColor: "#a78bfa", cursor: "pointer" }} />
-            {t("bluiFilterLost")}
+            {tp("bluiFilterLost")}
           </label>
         </div>
       </div>
@@ -2831,7 +2836,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
                       {/* Anchor: our check first; Ahrefs' marked as such when it's all we have */}
                       <td style={{ padding: "8px 12px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px" }}>
                         {link.checkAnchor ? <span style={{ color: "var(--color-text-primary)" }}>{link.checkAnchor}</span>
-                          : link.apiAnchor ? <span style={{ color: "var(--color-text-secondary)" }}>{link.apiAnchor} <span style={{ fontSize: "9px", opacity: 0.7 }}>({t("bluiAnchorFromApi")})</span></span>
+                          : link.apiAnchor ? <span style={{ color: "var(--color-text-secondary)" }}>{link.apiAnchor} <span style={{ fontSize: "9px", opacity: 0.7 }}>({tp("bluiAnchorFromApi")})</span></span>
                           : <span style={{ color: "rgba(255,255,255,0.2)" }}>—</span>}
                       </td>
                       {/* rel */}
@@ -2869,7 +2874,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
                         {link.sources.length > 0 ? link.sources.map(src => (
                           <span key={src} style={{ display: "inline-block", fontSize: "9px", fontWeight: 700, borderRadius: "4px", padding: "0 5px", marginRight: "3px",
                             ...(src === "api" ? { color: "#60a5fa", border: "1px solid rgba(96,165,250,0.4)" } : src === "csv" ? { color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)" } : { color: "var(--color-text-secondary)", border: "1px solid var(--color-border)" }) }}>
-                            {src === "api" ? t("bluiSourceApi") : src === "csv" ? t("bluiSourceCsv") : t("bluiSourceManual")}
+                            {src === "api" ? tp("bluiSourceApi") : src === "csv" ? t("bluiSourceCsv") : t("bluiSourceManual")}
                           </span>
                         )) : <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>}
                       </td>

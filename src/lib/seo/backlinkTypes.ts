@@ -112,6 +112,8 @@ export interface BacklinkListResponse {
   page: number;      // 1-based
   pageSize: number;
   stats: BacklinkListStats;   // по всей выборке с учётом фильтров, не по странице
+  /** Кто заполнил api-строки (issue #29) — для подписей «Lost per …». null = выгрузок не было. */
+  provider?: "ahrefs" | "dataforseo" | "keysso" | null;
 }
 
 /** Итог одного прогона — и для выгрузки, и для проверки. Формат общий,
