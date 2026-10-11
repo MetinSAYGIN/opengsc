@@ -224,7 +224,8 @@ export default function CompetitorsPage() {
     return c;
   }, [rows]);
 
-  const visible = useMemo(() => {
+  // No manual useMemo: the compiler refused to preserve it, and the filtered slice is cheap.
+  const visible = (() => {
     const order: Record<Bucket, number> = { close: 0, weak: 1, missing: 2 };
     return rows
       .filter(r => bucket === "all" || bucketOf(r) === bucket)
@@ -235,7 +236,7 @@ export default function CompetitorsPage() {
         return (b.volume ?? 0) - (a.volume ?? 0);
       })
       .slice(0, 500);
-  }, [rows, bucket, search]);
+  })();
 
   const cell: React.CSSProperties = { padding: "9px 12px", fontSize: "13px" };
   const th: React.CSSProperties = { ...cell, fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "left" };

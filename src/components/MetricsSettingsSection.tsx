@@ -23,6 +23,7 @@ import {
   getKeyssoBase, setKeyssoBase,
   type MetricsMode,
 } from "@/lib/seo/metricsClient";
+import { useNow } from "@/lib/useNow";
 import { getAhrefsDrKey, setAhrefsDrKey } from "@/lib/seo/keys";
 import type { MetricsProvider, SubscriptionInfo } from "@/lib/seo/metricsPricing";
 import {
@@ -133,6 +134,7 @@ const unitsToUsd = (u: number) => u * UNIT_PRICE_USD.dataforseo;
 const usdToUnits = (usd: number) => Math.round(usd / UNIT_PRICE_USD.dataforseo);
 
 export default function MetricsSettingsSection() {
+  const now = useNow();
   const { t, language } = useLanguage();
   const [ksBase, setKsBase] = useState("msk");
 
@@ -230,10 +232,10 @@ export default function MetricsSettingsSection() {
       remaining: Math.max(0, limit - used),
       reset: info.usageResetDate || null,
       expires: info.apiKeyExpirationDate || null,
-      expiringSoon: !!info.apiKeyExpirationDate &&
-        new Date(info.apiKeyExpirationDate).getTime() - Date.now() < 7 * 86_400_000,
+      expiringSoon: !!info.apiKeyExpirationDate && now > 0 &&
+        new Date(info.apiKeyExpirationDate).getTime() - now < 7 * 86_400_000,
     };
-  }, [sub]);
+  }, [sub, now]);
 
   const modeOption = (m: MetricsMode, title: string, desc: string) => (
     <button key={m} onClick={() => chooseMode(m)} style={{

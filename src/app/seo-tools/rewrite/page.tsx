@@ -93,6 +93,8 @@ export default function RewritePage() {
   const { t } = useLanguage();
   const [mounted, setMounted] = useState(false);
   const [fp, setFp] = useState<StoredModel | null>(null);
+  const [mode, setMode] = useState<"text" | "url">("text");
+  const [url, setUrl] = useState("");
   useEffect(() => {
     setMounted(true);
     setFp(getActiveModel());
@@ -103,7 +105,6 @@ export default function RewritePage() {
     } catch {}
   }, []);
 
-  const [mode, setMode] = useState<"text" | "url">("text");
   // Deep link (?mode=url): restore on mount, mirror on change. Validated against the union, so
   // a stale param falls back to the default.
   useEffect(() => {
@@ -112,7 +113,6 @@ export default function RewritePage() {
   }, []);
   useEffect(() => { writeUrlParam("mode", mode); }, [mode]);
   const [text, setText] = useState("");
-  const [url, setUrl] = useState("");
   const [variants, setVariants] = useState(2);
   const [language, setLanguage] = useState("");   // "" = keep source
   const [tone, setTone] = useState("");

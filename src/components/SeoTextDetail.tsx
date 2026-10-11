@@ -269,7 +269,8 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
   const outlineItem = item.meta?.outlineId ? getHistoryItem(item.meta.outlineId) : null;
   const outline = outlineItem?.data;
   const artHeadings = useMemo(() => articleHeadings(article), [article]);
-  const outlineHd = useMemo(() => outline ? outlineHeadings(outline) : [], [outline]);
+  // Plain call: `outline` is mutated later, so a manual memo here lies to the reader.
+  const outlineHd = outline ? outlineHeadings(outline) : [];
 
   const planWords = Number(outline?.meta?.target_word_count) || 0;
   const factWords = countWords(article);

@@ -19,6 +19,7 @@ import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import type { AuditHistoryRow } from "@/lib/audit/historyRows";
 import { DEFAULT_AUDIT_QUEUE_SETTINGS, effectiveAuditSchedule, parseSiteAuditSettings, type AuditQueueSettings } from "@/lib/audit/schedule";
 import { validateCron } from "@/lib/cron";
+import { useNow } from "@/lib/useNow";
 
 type NeverAudited = { id: string; url: string; auditSettings?: string | null };
 type SortKey = "newest" | "issues" | "regressions" | "health";
@@ -58,6 +59,7 @@ function pageWindow(cur: number, total: number): (number | "…")[] {
 }
 
 export default function AuditsPage() {
+  const now = useNow();
   const { t } = useLanguage();
   const router = useRouter();
   const [rows, setRows] = useState<AuditHistoryRow[]>([]);
@@ -326,7 +328,7 @@ export default function AuditsPage() {
     const anchor = f.last?.finishedAt ?? f.last?.startedAt;
     if (!anchor) return { text: "—", overdue: true };
     const next = new Date(new Date(anchor).getTime() + sched.days * 86_400_000);
-    const overdue = next.getTime() <= Date.now();
+    const overdue = next.getTime() <= now;
     return { text: next.toLocaleDateString(), overdue };
   };
 

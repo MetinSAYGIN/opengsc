@@ -34,6 +34,7 @@ import { METRICS_GATEWAY_URL } from "@/components/SeoToolsSettings";
 import ToxicityTab from "@/components/backlinks/ToxicityTab";
 import DisavowTab from "@/components/backlinks/DisavowTab";
 import RecoveryTab from "@/components/backlinks/RecoveryTab";
+import { useNow } from "@/lib/useNow";
 
 /** `{host}` / `{n}` placeholders in locale strings — `t()` returns them verbatim by design. */
 const fill = (s: string, vars: Record<string, string>) =>
@@ -120,6 +121,7 @@ interface SourceCfg {
  * catalogue (the route re-verifies ownership — the prop only names the request shape).
  */
 export default function BacklinkProfile({ siteDbId, dropDomain }: { siteDbId?: string; dropDomain?: string }) {
+  const now = useNow();
   const { t } = useLanguage();
   // A client opening a share link sees the profile and cannot refresh it. The server enforces
   // that too — this only keeps a button on screen that would always fail.
@@ -476,7 +478,7 @@ export default function BacklinkProfile({ siteDbId, dropDomain }: { siteDbId?: s
     ? new Date(info.fetchedAt).toLocaleString(undefined, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
     : "";
   const expDate = info?.apiKeyExpirationDate ?? "";
-  const expSoon = !!expDate && new Date(expDate).getTime() - Date.now() < 7 * 86_400_000;
+  const expSoon = now > 0 && !!expDate && new Date(expDate).getTime() - now < 7 * 86_400_000;
   const modeLabel = (m: MetricsMode) => m === "official" ? t("blsrcHostOfficial")
     : m === "reseller" ? t("blsrcHostReseller") : t("blsrcHostCustom");
 

@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Search, Globe, ChevronRight, Activity, RefreshCw, AlertCircle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { useNow } from "@/lib/useNow";
 
 interface LogEntry {
   id: string;
@@ -25,6 +26,7 @@ interface DomainOpt {
 }
 
 export default function IndexerLogsPage() {
+  const now = useNow();
   const { t } = useLanguage();
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [domains, setDomains] = useState<DomainOpt[]>([]);
@@ -136,8 +138,9 @@ export default function IndexerLogsPage() {
   };
 
   const getRelativeTime = (isoString: string) => {
+    if (!now) return "—";
     const d = new Date(isoString);
-    const diffMs = Date.now() - d.getTime();
+    const diffMs = now - d.getTime();
     const diffSec = Math.floor(diffMs / 1000);
     const diffMin = Math.floor(diffSec / 60);
 

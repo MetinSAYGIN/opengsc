@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Archive, Check, Clipboard, ExternalLink, Link2, Loader2, Mail, Plus, RefreshCw, Save, Target, Trash2, UserRound } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { outreachErrorKey, OUTREACH_STAGES } from "@/lib/outreach/types";
+import { useNow } from "@/lib/useNow";
 
 type Mode = "prospects" | "campaigns";
 
@@ -38,6 +39,7 @@ function backlinkState(backlink: any): string {
 }
 
 export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: Props) {
+  const now = useNow();
   const { t, language } = useLanguage() as any;
   const [data, setData] = useState<any>({ campaigns: [], prospects: [], backlinks: [], stats: null });
   const [loading, setLoading] = useState(true);
@@ -274,7 +276,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
           </tr></thead>
           <tbody>
             {filtered.map((prospect: any) => {
-              const due = prospect.nextFollowUpAt && new Date(prospect.nextFollowUpAt).getTime() <= Date.now() && !["won", "lost"].includes(prospect.stage);
+              const due = now > 0 && prospect.nextFollowUpAt && new Date(prospect.nextFollowUpAt).getTime() <= now && !["won", "lost"].includes(prospect.stage);
               const alive = backlinkState(prospect.backlink);
               return (
                 <tr key={prospect.id} style={{ borderBottom: "1px solid var(--color-border)" }}>
