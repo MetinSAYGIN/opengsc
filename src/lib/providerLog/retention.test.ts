@@ -25,6 +25,19 @@ import {
 const DAY = 86_400_000;
 const NOW = new Date("2026-08-29T12:00:00.000Z");
 
+// ─── Fixture shapes: what the sweep hands the table ───────────────────────────
+
+/** A select the sweep issues: cutoff + body-present disjunct, id projection, bounded take. */
+interface SweepFindArgs {
+  where?: { at?: { lt?: Date }; OR?: unknown };
+  take?: number;
+}
+
+/** A scoped write the sweep issues after selecting a batch of ids. */
+interface SweepWriteArgs {
+  where: { id: { in: string[] } };
+}
+
 /**
  * A table that answers like Prisma's does: `findMany` hands back at most `take` ids of rows that
  * still match, and the write that follows makes them stop matching. Without that second half the
@@ -38,20 +51,20 @@ function fakeTable(counts: { withBodies: number; expired: number }) {
   const ids = (n: number) => Array.from({ length: n }, () => ({ id: `c${seq++}` }));
   return {
     ops,
-    async findMany(args: any) {
+    async findMany(args: SweepFindArgs) {
       const bodies = Array.isArray(args?.where?.OR);
       const take = Number(args?.take);
       assert.ok(Number.isFinite(take) && take > 0, "every select must be bounded");
       const left = bodies ? withBodies : expired;
       return ids(Math.min(take, left));
     },
-    async updateMany(args: any) {
+    async updateMany(args: SweepWriteArgs) {
       const n = args.where.id.in.length;
       ops.push({ op: "updateMany", phase: "bodies", n });
       withBodies -= n;
       return { count: n };
     },
-    async deleteMany(args: any) {
+    async deleteMany(args: SweepWriteArgs) {
       const n = args.where.id.in.length;
       ops.push({ op: "deleteMany", phase: "rows", n });
       expired -= n;
@@ -125,9 +138,11 @@ test("nothing to sweep costs one probe per phase and writes nothing", async () =
 });
 
 test("the cutoffs it sweeps by are the cutoffs it computed", async () => {
-  const seen: any[] = [];
+  // The `where` of each select as this test reads it back: the cutoff it swept by, and the
+  // bodies-present disjunct only the first pass carries.
+  const seen: { at: { lt: Date }; OR?: unknown }[] = [];
   __setTableForTests({
-    findMany: async (args: any) => { seen.push(args.where); return []; },
+    findMany: async (args: SweepFindArgs) => { seen.push(args.where as { at: { lt: Date }; OR?: unknown }); return []; },
     updateMany: async () => ({ count: 0 }),
     deleteMany: async () => ({ count: 0 }),
   });

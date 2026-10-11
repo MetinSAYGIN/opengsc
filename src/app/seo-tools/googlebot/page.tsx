@@ -79,7 +79,7 @@ export default function GooglebotViewPage() {
         if (item && item.type === "googlebot") {
           setRes(item.data);
           setUrl(item.data.url);
-          const hasJsRender = item.data.views.some((v: any) => v.ua === "gbRender" || v.ua === "browserRender");
+          const hasJsRender = item.data.views.some((v: View) => v.ua === "gbRender" || v.ua === "browserRender");
           if (hasJsRender) {
             setFirecrawl(true);
             setCompareMode("js");
@@ -112,7 +112,7 @@ export default function GooglebotViewPage() {
         setRes(d);
         const historyData = {
           ...d,
-          views: d.views.map((v: any) => ({
+          views: d.views.map((v: View) => ({
             ...v,
             htmlRaw: "",
           })),

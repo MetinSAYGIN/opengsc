@@ -36,6 +36,23 @@ export interface AuditHistoryRow {
   verification: AuditVerificationCounts | null;
 }
 
+// What the legacy summary JSON is actually read for — everything optional, everything unknown:
+// these rows predate the current shape, so each field is validated before use, never trusted.
+interface AuditSummaryJson {
+  issues?: unknown;
+  healthScore?: unknown;
+  pages?: unknown;
+  pagesWithIssues?: unknown;
+}
+
+interface AuditVerificationJson {
+  counts?: { resolved?: unknown; stillPresent?: unknown; regressions?: unknown; inconclusive?: unknown };
+  resolved?: unknown;
+  stillPresent?: unknown;
+  regressions?: unknown;
+  inconclusive?: unknown;
+}
+
 export function toAuditHistoryRow(
   audit: {
     id: string;
@@ -51,9 +68,9 @@ export function toAuditHistoryRow(
   },
   site: { id: string; url: string; auditSettings?: string | null },
 ): AuditHistoryRow {
-  let summary: any = null;
+  let summary: AuditSummaryJson | null = null;
   try { summary = audit.summary ? JSON.parse(audit.summary) : null; } catch { /* legacy row */ }
-  let verification: any = null;
+  let verification: AuditVerificationJson | null = null;
   try { verification = audit.verification ? JSON.parse(audit.verification) : null; } catch { /* legacy row */ }
 
   // Only critical codes count here: the global table is a triage view, and mixing warnings into
@@ -67,7 +84,7 @@ export function toAuditHistoryRow(
 
   // Newer runs ship a `counts` object; older ones only carry the finding arrays. Prefer the
   // explicit counts, fall back to counting the arrays, so pre-counts verifications still read.
-  const counts = verification?.counts ?? {};
+  const counts: { resolved?: unknown; stillPresent?: unknown; regressions?: unknown; inconclusive?: unknown } = verification?.counts ?? {};
   const len = (v: unknown) => (Array.isArray(v) ? v.length : 0);
   const num = (v: unknown) => (typeof v === "number" ? v : null);
   const verificationCounts: AuditVerificationCounts | null = verification ? {

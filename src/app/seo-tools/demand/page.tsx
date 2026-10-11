@@ -184,7 +184,7 @@ export default function DemandPage() {
     fetch("/api/gsc/sites")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        const list: SiteOption[] = (d?.sites ?? []).map((x: any) => ({ id: x.id, url: x.url }));
+        const list: SiteOption[] = (d?.sites ?? []).map((x: { id: string; url: string }) => ({ id: x.id, url: x.url }));
         setSites(list);
         if (list.length) setSiteId((prev) => prev || list[0].id);
       })

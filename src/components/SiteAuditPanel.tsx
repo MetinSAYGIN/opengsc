@@ -114,6 +114,65 @@ interface PsiItem {
 }
 interface PsiSummaryData { status: "ok" | "partial" | "unavailable" | string; items?: PsiItem[] }
 
+// ─── API response shapes this panel reads ─────────────────────────────────────
+
+/** A row of the audit history list (GET /api/audit). */
+interface AuditListRow {
+  id: string;
+  status: string;
+  startedAt: string;
+  pagesCrawled?: number;
+  error?: string | null;
+  summary?: { healthScore?: number | null } | null;
+}
+
+/** The summary object as the panel renders it (extra summary fields ignored). */
+interface AuditSummaryView {
+  healthScore: number;
+  pages: number;
+  pagesWithIssues: number;
+  avgLoadMs: number;
+  issues: Record<string, number>;
+  aiCrawlability?: AiCrawlSummary;
+  psi?: PsiSummaryData;
+}
+
+/** A verification finding carried over from the baseline run. */
+interface VerificationFinding { url: string; ruleId: string }
+
+/** The verification block of a completed re-run. */
+interface AuditVerificationView {
+  counts?: Record<string, number>;
+  regressions?: VerificationFinding[];
+  stillPresent?: VerificationFinding[];
+}
+
+/** A page row as the panel's table reads it — issues/brokenLinks always arrive populated. */
+interface AuditPageRow {
+  url: string;
+  httpStatus: number;
+  title?: string | null;
+  metaDescription?: string | null;
+  wordCount?: number;
+  loadMs: number;
+  issues: string[];
+  brokenLinks: string[];
+  evidence?: Record<string, string> | null;
+}
+
+/** GET /api/audit/:id — the opened audit plus its page rows. */
+interface AuditDetailView {
+  audit: {
+    id: string;
+    status: string;
+    siteUrl?: string;
+    finishedAt?: string | null;
+    summary?: AuditSummaryView;
+    verification?: AuditVerificationView | null;
+  };
+  pages: AuditPageRow[];
+}
+
 /** good ≤ goodLimit · warn ≤ poorLimit · poor above. null value → no verdict at all. */
 function cwvBand(value: number | null, goodLimit: number, poorLimit: number): "good" | "warn" | "poor" | null {
   if (value == null) return null;
@@ -290,8 +349,8 @@ function MetaFitCard({ state, t, onRunLlm }: {
 export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
   const { t } = useLanguage();
   const guest = isGuestView();
-  const [audits, setAudits] = useState<any[]>([]);
-  const [current, setCurrent] = useState<any>(null); // { audit, pages }
+  const [audits, setAudits] = useState<AuditListRow[]>([]);
+  const [current, setCurrent] = useState<AuditDetailView | null>(null); // { audit, pages }
   // A 200-page crawl rendered 300 rows at once, which is a scroll bar rather than a table. The
   // filter changes what "page 1" means, so the position resets whenever the filter or audit does.
   const [auditPage, setAuditPage] = useState(0);
@@ -331,7 +390,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
   useEffect(() => {
     (async () => {
       const list = await loadList();
-      const latestDone = list.find((a: any) => a.status === "completed");
+      const latestDone = list.find((a: AuditListRow) => a.status === "completed");
       if (latestDone) await openAudit(latestDone.id);
       setLoading(false);
     })();
@@ -345,7 +404,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
     if (!active) return;
     const iv = setInterval(async () => {
       const list = await loadList();
-      const r = list.find((a: any) => a.id === active.id);
+      const r = list.find((a: AuditListRow) => a.id === active.id);
       if (r && r.status !== "running" && r.status !== "queued") {
         clearInterval(iv);
         if (r.status === "completed") openAudit(r.id);
@@ -475,14 +534,14 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
   // 300 rows in one table is a scroll bar pretending to be a report. The filter decides what page
   // one contains, so both it and switching audits reset the position.
   const AUDIT_PAGE_SIZE = 50;
-  const filteredPages: any[] = (current?.pages ?? []).filter((p: any) => !issueFilter || p.issues.includes(issueFilter));
+  const filteredPages: AuditPageRow[] = (current?.pages ?? []).filter(p => !issueFilter || p.issues.includes(issueFilter));
   const auditPageCount = Math.max(1, Math.ceil(filteredPages.length / AUDIT_PAGE_SIZE));
   const safePage = Math.min(auditPage, auditPageCount - 1);
   const visiblePages = filteredPages.slice(safePage * AUDIT_PAGE_SIZE, safePage * AUDIT_PAGE_SIZE + AUDIT_PAGE_SIZE);
   const verification = current?.audit?.verification;
   const verificationOpen = verification ? [
-    ...(verification.regressions ?? []).map((finding: any) => ({ ...finding, kind: "regression" })),
-    ...(verification.stillPresent ?? []).map((finding: any) => ({ ...finding, kind: "still" })),
+    ...(verification.regressions ?? []).map((finding: VerificationFinding) => ({ ...finding, kind: "regression" })),
+    ...(verification.stillPresent ?? []).map((finding: VerificationFinding) => ({ ...finding, kind: "still" })),
   ].slice(0, 6) : [];
 
   return (
@@ -552,7 +611,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
       {/* Summary */}
       {summary && (
         <>
-          {current?.audit?.verification && (
+          {verification && (
             <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               <div>
                 <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("auditVerifyTitle")}</div>
@@ -566,19 +625,19 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
                   ["inconclusive", "auditVerifyInconclusive", "#60a5fa"],
                 ].map(([field, label, color]) => (
                   <div key={field} style={{ padding: "10px 12px", borderRadius: "var(--radius-md)", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
-                    <div style={{ fontSize: "22px", fontWeight: 800, color }}>{current.audit.verification.counts?.[field] ?? 0}</div>
-                    <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t(label as any)}</div>
+                    <div style={{ fontSize: "22px", fontWeight: 800, color }}>{verification.counts?.[field] ?? 0}</div>
+                    <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t(label as Parameters<typeof t>[0])}</div>
                   </div>
                 ))}
               </div>
               {verificationOpen.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px", borderTop: "1px solid var(--color-border)", paddingTop: "10px" }}>
-                  {verificationOpen.map((finding: any) => (
+                  {verificationOpen.map(finding => (
                     <div key={`${finding.kind}:${finding.url}:${finding.ruleId}`} style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, fontSize: "11px" }}>
                       <span style={{ flex: "0 0 auto", padding: "2px 6px", borderRadius: "5px", fontWeight: 700, color: finding.kind === "regression" ? "#ff375f" : "#ff9f0a", background: finding.kind === "regression" ? "rgba(255,55,95,0.12)" : "rgba(255,159,10,0.12)" }}>
                         {t(finding.kind === "regression" ? "auditVerifyRegressions" : "auditVerifyStill")}
                       </span>
-                      <span style={{ flex: "0 0 auto", color: "var(--color-text-primary)", fontWeight: 600 }}>{t((ISSUE_LABEL_KEYS[finding.ruleId] ?? finding.ruleId) as any)}</span>
+                      <span style={{ flex: "0 0 auto", color: "var(--color-text-primary)", fontWeight: 600 }}>{t((ISSUE_LABEL_KEYS[finding.ruleId] ?? finding.ruleId) as Parameters<typeof t>[0])}</span>
                       <a href={finding.url} target="_blank" rel="noreferrer" style={{ color: "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none" }}>{finding.url}</a>
                     </div>
                   ))}
@@ -640,7 +699,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
                   background: issueFilter === code ? "rgba(59,130,246,0.12)" : "var(--color-card)",
                   color: SEVERE.has(code) ? "#ff375f" : INFO.has(code) ? "#60a5fa" : "var(--color-text-primary)",
                 }}>
-                {t((ISSUE_LABEL_KEYS[code] ?? code) as any)} <span style={{ opacity: 0.7 }}>{count}</span>
+                {t((ISSUE_LABEL_KEYS[code] ?? code) as Parameters<typeof t>[0])} <span style={{ opacity: 0.7 }}>{count}</span>
               </button>
             ))}
             {Object.keys(summary.issues ?? {}).length === 0 && (
@@ -662,7 +721,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
                 </tr>
               </thead>
               <tbody>
-                {visiblePages.map((p: any) => (
+                {visiblePages.map(p => (
                   <tr key={p.url} style={{ borderBottom: "1px solid var(--color-border)" }}>
                     <td style={{ padding: "8px 14px", maxWidth: "340px" }}>
                       <a href={p.url} target="_blank" rel="noreferrer" style={{ color: "var(--color-accent-blue)", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}>
@@ -688,7 +747,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
                           const isSevere = SEVERE.has(code);
                           return (
                             <span key={code} style={{ fontSize: "10px", padding: "2px 7px", borderRadius: "5px", background: isSevere ? "rgba(255,55,95,0.12)" : isInfo ? "rgba(96,165,250,0.12)" : "rgba(255,159,10,0.12)", color: isSevere ? "#ff375f" : isInfo ? "#60a5fa" : "#ff9f0a", fontWeight: 600 }}>
-                              {t((ISSUE_LABEL_KEYS[code] ?? code) as any)}
+                              {t((ISSUE_LABEL_KEYS[code] ?? code) as Parameters<typeof t>[0])}
                             </span>
                           );
                         })}

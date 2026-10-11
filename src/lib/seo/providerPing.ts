@@ -14,8 +14,20 @@ import { pingProvider } from "@/lib/llm";
 
 type Candidate = { aiProvider?: string; aiApiKey?: string; model?: string; aiBaseUrl?: string };
 
-export async function pickLiveProvider(payload: any): Promise<{ ok: true; switchedTo?: string } | { ok: false; error: string }> {
-  const primary: Candidate = payload ?? {};
+// The job payload pickLiveProvider reads from (and promotes a fallback INTO — mutation is the
+// point): the provider-selection fields it touches, plus everything else a generation job
+// carries (keyword, outline, creds…) which it leaves alone.
+type ProviderPickPayload = {
+  aiProvider?: unknown;
+  aiApiKey?: unknown;
+  model?: unknown;
+  aiBaseUrl?: unknown;
+  aiFallbacks?: unknown;
+  [key: string]: unknown;
+};
+
+export async function pickLiveProvider(payload: ProviderPickPayload): Promise<{ ok: true; switchedTo?: string } | { ok: false; error: string }> {
+  const primary = payload ?? {};
   const fallbacks: Candidate[] = Array.isArray(payload?.aiFallbacks) ? payload.aiFallbacks : [];
   // Priority order is the whole point: primary first, then the user's fallback chain. First
   // candidate that answers wins; the dead ones ahead of it cost 25s each, not 25 minutes.

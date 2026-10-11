@@ -74,7 +74,7 @@ export async function POST(req: Request) {
 
   const readCache = async (sectionName: Section = section, key = "") => {
     try {
-      const rows: any[] = await rawQuery(
+      const rows = await rawQuery<{ payload: string; checkedAt: string }[]>(
         `SELECT payload, checkedAt FROM "AdIntelCache" WHERE domain = ? AND section = ? AND key = ?`,
         domain, sectionName, key);
       const hit = rows?.[0];

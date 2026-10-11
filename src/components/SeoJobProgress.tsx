@@ -36,7 +36,7 @@ export default function SeoJobProgress({ jobId, keyword, onDone, onError, onCanc
       // The server's real phase progress wins whenever it is ahead of the estimate.
       setProgress(p => Math.min(95, Math.max(p + Math.max(0.05, (95 - p) * 0.008), serverProgressRef.current)));
     }, 1000);
-    let poll: any;
+    let poll: ReturnType<typeof setTimeout> | undefined;
     async function tick() {
       const job = await getJob(jobId);
       if (stop.current) return;

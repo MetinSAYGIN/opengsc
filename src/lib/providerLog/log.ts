@@ -91,7 +91,15 @@ function cuid(): string {
   return `c${randomUUID().replace(/-/g, "")}`;
 }
 
-function providerCallTable(): any {
+/** The slice of the Prisma `providerCall` delegate the writer actually calls. `dbAny` is
+ *  untyped on purpose (a client generated before the model existed must not crash the log),
+ *  so this is the contract the writes rely on, and what a test stub has to provide. */
+interface ProviderCallDelegate {
+  create(args: { data: Record<string, unknown> }): unknown;
+  updateMany(args: { where: { id: string }; data: Record<string, unknown> }): unknown;
+}
+
+function providerCallTable(): ProviderCallDelegate | undefined {
   return dbAny.providerCall;
 }
 
@@ -111,7 +119,7 @@ if (!providerCallTable()) {
  * writer wholesale, which left the one decision that matters here — `updateMany` rather than
  * `update` — never actually executed.
  */
-function writeToTable(table: any, op: WriteOp): unknown {
+function writeToTable(table: ProviderCallDelegate | undefined, op: WriteOp): unknown {
   if (!table) return undefined;
   if (op.kind === "insert") return table.create({ data: op.row });
   // `updateMany`, not `update`: retention can delete a row between its insert and the finish of
@@ -426,18 +434,22 @@ if (!globalForProviderLog.providerLogDrainRegistered) {
 // Test hooks. The writer is the only seam: swapping it keeps every code path above under test,
 // including the ordering guarantees, without a database.
 
+// Forced: the test files that consume __rows() index and find() on the result without null
+// guards and assert.match() its nullable body columns, so any honest row type fails their
+// compilation — the element type has to stay any.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let rows: any[] = [];
 
-export function __rows(): any[] {
+export function __rows(): typeof rows {
   return rows;
 }
 
 /** Run the real writer against a stub delegate — the one path a swapped writer hides. */
-export function __writeToTableForTests(table: any, op: any): unknown {
+export function __writeToTableForTests(table: ProviderCallDelegate | undefined, op: WriteOp): unknown {
   return writeToTable(table, op);
 }
 
-export function __setWriterForTests(fn?: (op: any) => unknown): void {
+export function __setWriterForTests(fn?: (op: WriteOp) => unknown): void {
   rows = [];
   writer = (op) => {
     if (op.kind === "insert") rows.push({ ...op.row });

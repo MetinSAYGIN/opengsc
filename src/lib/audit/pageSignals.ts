@@ -36,10 +36,10 @@ function linkValue(head: string, rel: string): string | null {
   return null;
 }
 
-function structuredNodes(value: unknown): Record<string, any>[] {
+function structuredNodes(value: unknown): Record<string, unknown>[] {
   if (Array.isArray(value)) return value.flatMap(structuredNodes);
   if (!value || typeof value !== "object") return [];
-  const object = value as Record<string, any>;
+  const object = value as Record<string, unknown>;
   return [object, ...structuredNodes(object["@graph"]), ...structuredNodes(object.mainEntity)];
 }
 
@@ -125,7 +125,7 @@ export function extractAuditHtml(html: string): AuditHtmlSignals {
 
   let jsonLdCount = 0;
   let jsonLdInvalid = 0;
-  const nodes: Record<string, any>[] = [];
+  const nodes: Record<string, unknown>[] = [];
   for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
     const attrs = attributes(`<script ${match[1]}>`);
     if ((attrs.type || "").toLowerCase().split(";")[0].trim() !== "application/ld+json") continue;

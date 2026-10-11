@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { Prisma } from '@/generated/prisma';
 import { safeFetch } from '@/lib/security/safeFetch';
 
 // POST { siteDbId, ids?: string[] }  — checks if backlink pages return 2xx
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
   if (!site) return NextResponse.json({ error: 'Site not found' }, { status: 404 });
 
   // Pick which links to check
-  const where: any = { siteId: siteDbId };
+  const where: Prisma.BacklinkWhereInput = { siteId: siteDbId };
   if (ids.length > 0) {
     where.id = { in: ids };
   } else if (!forceAll) {
@@ -113,7 +114,7 @@ export async function POST(req: Request) {
   let alive = 0, dead = 0, blocked = 0;
 
   await Promise.allSettled(
-    links.map(async (link: any) => {
+    links.map(async (link) => {
       let outcome: Outcome | null = null;
       // Retry only the transient class. A firm 404 / blocked stays — re-asking a page that
       // returned 404 three times wastes three requests to learn the same thing.

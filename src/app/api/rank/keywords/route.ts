@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
+import { Prisma, Site } from "@/generated/prisma";
 import { verifyAuthOrShare } from "@/lib/authShare";
 import { getUserSerpCreds } from "@/lib/rank";
 import { getUserGoogleAccounts, queryGsc, isoDaysAgo } from "@/lib/gscQuery";
@@ -20,8 +21,8 @@ export async function GET(req: Request) {
   
   const shareToken = searchParams.get("shareToken");
   let userId: string;
-  let site: any = null;
-  let whereClause: any = {};
+  let site: Site | null = null;
+  let whereClause: Prisma.TrackedKeywordWhereInput = {};
 
   if (shareToken) {
     site = await prisma.site.findFirst({ where: { shareToken, shareEnabled: true } });

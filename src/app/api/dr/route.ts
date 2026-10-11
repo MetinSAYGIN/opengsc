@@ -55,7 +55,7 @@ export async function GET(req: Request) {
   if (!domains.length) return NextResponse.json({ ratings: {} });
 
   const out: Record<string, { dr: number; checkedAt: string }> = {};
-  let cached: any[] = [];
+  let cached: { domain: string; dr: number; checkedAt: string }[] = [];
   try {
     cached = await rawQuery(
       `SELECT domain, dr, checkedAt FROM "DrCache" WHERE domain IN (${domains.map(() => "?").join(",")})`, ...domains);

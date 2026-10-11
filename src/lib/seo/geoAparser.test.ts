@@ -47,11 +47,23 @@ test("an empty answer is not a result", () => {
   assert.equal(mapGeoAparserRow(null), null);
 });
 
+/** An A-Parser oneRequest response, as the stub answers it: either results or an error string. */
+interface AparserStubResponse {
+  success: number;
+  data: string | { results?: { answer?: string; model?: string; sources?: unknown }[] };
+}
+
+/** A captured request body: the oneRequest call the GEO client sends. */
+interface AparserRequestBody {
+  action: string;
+  data: { parser: string; rawResults: number; options?: { type: string; id: string; value: number }[] };
+}
+
 /** Stubs fetch with one A-Parser API response; returns the captured request bodies. */
-function stub(responses: any[]): { bodies: () => any[]; done: () => void } {
+function stub(responses: AparserStubResponse[]): { bodies: () => AparserRequestBody[]; done: () => void } {
   const g = globalThis as unknown as { fetch: typeof fetch };
   const real = g.fetch;
-  const seen: any[] = [];
+  const seen: AparserRequestBody[] = [];
   let i = 0;
   g.fetch = (async (_url: unknown, init: { body?: string } = {}) => {
     seen.push(JSON.parse(String(init.body ?? "{}")));

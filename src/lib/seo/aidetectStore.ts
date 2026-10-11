@@ -23,7 +23,7 @@ export function loadModels(): StoredModel[] {
     const raw = localStorage.getItem(KEY);
     if (!raw) return [];
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter((x: any) => x?.name && x?.model?.weights) : [];
+    return Array.isArray(arr) ? arr.filter(x => x?.name && x?.model?.weights) : [];
   } catch { return []; }
 }
 

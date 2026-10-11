@@ -48,7 +48,7 @@ export async function readKeywordCache(
   for (let i = 0; i < keys.length; i += 400) {
     const chunk = keys.slice(i, i + 400);
     try {
-      const rows: any[] = await rawQuery(
+      const rows = await rawQuery<CachedKeyword[]>(
         `SELECT keyword, country, provider, volume, difficulty, cpc, globalVolume, parentTopic,
                 intents, source, checkedAt
            FROM "KeywordMetricCache"
@@ -95,7 +95,7 @@ export async function readKeywordCacheAny(
   for (let i = 0; i < keys.length; i += 400) {
     const chunk = keys.slice(i, i + 400);
     try {
-      const rows: any[] = await rawQuery(
+      const rows = await rawQuery<CachedKeyword[]>(
         `SELECT keyword, country, provider, volume, difficulty, cpc, globalVolume, parentTopic,
                 intents, source, checkedAt
            FROM "KeywordMetricCache"
@@ -137,7 +137,8 @@ export interface KeywordWrite {
   globalVolume?: number | null;
   parentTopic?: string | null;
   intents?: string | null;
-  payload?: any;
+  /** Raw provider response kept for later re-derivation (e.g. Majestic TF/CF); not read here. */
+  payload?: unknown;
 }
 
 /**
@@ -244,12 +245,27 @@ function majesticFlowFromPayload(payload: unknown): { tf: number | null; cf: num
   return { tf: pick("trustflow"), cf: pick("citationflow") };
 }
 
+/** The stored row behind a {@link CachedDomain}: same columns plus the raw payload it derives TF/CF from. */
+interface DomainMetricRow {
+  domain: string;
+  provider: string;
+  dr: number | null;
+  refDomains: number | null;
+  backlinks: number | null;
+  orgTraffic: number | null;
+  orgKeywords: number | null;
+  orgCost: number | null;
+  payload: unknown;
+  source: MetricSource;
+  checkedAt: string;
+}
+
 export async function readDomainCache(domains: string[], provider: string): Promise<Record<string, CachedDomain>> {
   const list = [...new Set(domains.map(d => d.trim().toLowerCase().replace(/^www\./, "")).filter(Boolean))];
   if (!list.length) return {};
   const out: Record<string, CachedDomain> = {};
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<DomainMetricRow[]>(
       `SELECT domain, provider, dr, refDomains, backlinks, orgTraffic, orgKeywords, orgCost, payload, source, checkedAt
          FROM "DomainMetricCache"
         WHERE provider = ? AND domain IN (${list.map(() => "?").join(",")})`,
@@ -271,7 +287,8 @@ export interface DomainWrite {
   orgTraffic?: number | null;
   orgKeywords?: number | null;
   orgCost?: number | null;
-  payload?: any;
+  /** Raw provider response kept for later re-derivation (e.g. Majestic TF/CF); not read here. */
+  payload?: unknown;
 }
 
 export async function writeDomainCache(
@@ -324,7 +341,7 @@ export interface UsageState {
 export async function readUsage(userId: string, provider: string): Promise<UsageState> {
   const month = monthKey();
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<{ units: number; requests: number }[]>(
       `SELECT units, requests FROM "ApiUsage" WHERE userId = ? AND provider = ? AND month = ?`,
       userId, provider, month,
     );
@@ -444,7 +461,7 @@ export async function markFieldSupported(
  */
 export async function unsupportedFields(host: string, endpoint: string): Promise<Set<string>> {
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<{ field: string }[]>(
       `SELECT field FROM "${FIELD_SUPPORT_TABLE}" WHERE host = ? AND endpoint = ? AND supported = 0`,
       host, endpoint,
     );
@@ -459,7 +476,7 @@ export async function unsupportedFields(host: string, endpoint: string): Promise
  * judge by — an empty result set says nothing about which columns a gateway forwards.
  */
 export async function learnFieldSupport(
-  host: string, endpoint: string, optionalFields: string[], rows: Record<string, any>[],
+  host: string, endpoint: string, optionalFields: string[], rows: Record<string, unknown>[],
   opts: { witnessField?: string; minRows?: number } = {},
 ): Promise<void> {
   const minRows = opts.minRows ?? 20;

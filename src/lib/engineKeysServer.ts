@@ -6,7 +6,7 @@ import { rawQuery } from "@/lib/db/raw";// Server-side mirror of resolveEngineKe
 // client does — honouring the per-site account selection.
 type Engine = "bing" | "yandex";
 
-export function resolveEngineKeyFromSettings(settings: Record<string, any>, engine: Engine, siteId: string): string {
+export function resolveEngineKeyFromSettings(settings: Record<string, string>, engine: Engine, siteId: string): string {
   const s = settings || {};
   const globalKey = (s[`seoKey_${engine}`] || "").trim();
   let accounts: { id: string; key: string }[] = [];
@@ -22,9 +22,9 @@ export function resolveEngineKeyFromSettings(settings: Record<string, any>, engi
 }
 
 // The owner's full saved settings snapshot (read once, then resolve many sites in-memory).
-export async function getOwnerSettings(ownerUserId: string): Promise<Record<string, any>> {
+export async function getOwnerSettings(ownerUserId: string): Promise<Record<string, string>> {
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, ownerUserId);
+    const rows = await rawQuery<{ seoSettings: string }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, ownerUserId);
     return rows?.[0]?.seoSettings ? JSON.parse(rows[0].seoSettings) : {};
   } catch {
     return {};
@@ -38,7 +38,7 @@ export async function getOwnerEngineKey(ownerUserId: string, engine: Engine, sit
 
 // Every key/token configured for an engine (all connected accounts + the legacy global),
 // deduped — used to enumerate the engine's OWN verified sites across all accounts.
-export function listEngineKeys(settings: Record<string, any>, engine: Engine): string[] {
+export function listEngineKeys(settings: Record<string, string>, engine: Engine): string[] {
   const out: string[] = [];
   try { for (const a of JSON.parse(settings[`seoKey_${engine}_accounts_list`] || "[]")) if (a?.key) out.push(String(a.key).trim()); } catch { /* ignore */ }
   const g = (settings[`seoKey_${engine}`] || "").trim();

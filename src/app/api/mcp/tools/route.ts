@@ -34,7 +34,7 @@ async function authUserId(req: Request): Promise<string | null> {
   }
   if (token.startsWith("ogsc_")) {
     try {
-      const rows: any[] = await rawQuery(`SELECT id FROM "User" WHERE mcpToken = ?`, token);
+      const rows = await rawQuery<{ id: string }[]>(`SELECT id FROM "User" WHERE mcpToken = ?`, token);
       if (rows?.[0]?.id) return rows[0].id;
     } catch {
       // mcpToken column missing (prisma db push not run yet) — fall through to the session.
