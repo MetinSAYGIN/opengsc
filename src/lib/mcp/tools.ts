@@ -782,7 +782,7 @@ const CORE_TOOLS: McpTool[] = [
           ? rawPath
           : path.resolve(/* turbopackIgnore: true */ process.cwd(), rawPath);
         // better-sqlite3 ships no bundled types (@types not installed).
-        // @ts-ignore -- no declaration file for better-sqlite3
+        // @ts-expect-error -- no declaration file for better-sqlite3
         const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as any;
         const db = new Database(dbPath, { readonly: true, fileMustExist: true });
         try {

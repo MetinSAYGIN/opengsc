@@ -223,7 +223,6 @@ export const authOptions: NextAuthOptions = {
       // not amended — otherwise getServerSession would keep handing out a user id.
       if (!token?.sub) return { expires: new Date(0).toISOString() } as typeof session;
       if (session?.user) {
-        // @ts-ignore
         session.user.id = token.sub;
       }
       return session;

@@ -171,7 +171,7 @@ async function openReadonly(): Promise<ReadonlyDb> {
   // better-sqlite3 is a native addon without bundled types and must stay out of the bundler's
   // graph — the same dynamic + ts-ignore import execute_sql uses. readonly: true makes the
   // connection physically incapable of writing, which is the whole point of this script.
-  // @ts-ignore -- no declaration file for better-sqlite3
+  // @ts-expect-error -- no declaration file for better-sqlite3
   const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as any;
   return new Database(dbFile(), { readonly: true, fileMustExist: true }) as ReadonlyDb;
 }
