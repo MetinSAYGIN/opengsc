@@ -172,7 +172,10 @@ export async function GET(req: Request) {
     .sort((a: any, b: any) => a.clicksLast2mPct - b.clicksLast2mPct);
 
   return NextResponse.json({
-    pages:   pages.map(p => ({ url: p.path, vals: p.vals, siteName: p.siteName })),
+    // `url` stays the path (the column is narrow and the domain repeats on every row); `fullUrl`
+    // is what the UI links to and copies — a path alone can't be opened, and on the portfolio
+    // view it doesn't even say which site it belongs to (#28).
+    pages:   pages.map(p => ({ url: p.path, fullUrl: p.url, vals: p.vals, siteName: p.siteName })),
     cols:    buckets.map(b => b.label),
     years:   periodType === 'month' ? buckets.map(b => b.year) : undefined,
     allVals,

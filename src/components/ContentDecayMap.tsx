@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Copy, Check, ExternalLink, Download } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { ScatterChart, Scatter, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { withShare, isGuestView } from "@/lib/shareParam";
@@ -13,7 +13,7 @@ import { getKeywordCapableCreds } from "@/lib/seo/metricsClient";
 type HeatMetric = "clicks" | "impressions";
 type HeatPeriod = "month" | "week";
 
-interface PageRow { url: string; vals: number[]; siteName?: string }
+interface PageRow { url: string; fullUrl?: string; vals: number[]; siteName?: string }
 interface DecayRow {
   page: string; url: string;
   clicksLast2m: number; clicksLast2mPct: number;
@@ -41,6 +41,104 @@ function heatColor(val: number, max: number, threshold: number): string {
 function fmt(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
+}
+
+// ─── URL cell (#28) ─────────────────────────────────────────────────────────────
+// Both tables show a truncated path. Reviewing old URLs after a migration needs the whole
+// thing: to open it (does it 404? redirect?) and to paste it into a redirect map. So the path
+// is a real link to the full URL, the full URL is in the tooltip, and a button copies it.
+
+/**
+ * navigator.clipboard only exists in a secure context. Plenty of self-hosted instances are
+ * reached over plain http on a LAN IP, where it is undefined — fall back to a hidden
+ * textarea + execCommand, which still works there.
+ */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the legacy path */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.opacity = "0"; ta.style.pointerEvents = "none";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
+/** Only http(s) becomes a link — a stored value that is anything else is shown as text. */
+function isHttpUrl(u: string): boolean {
+  return /^https?:\/\//i.test(u);
+}
+
+function UrlCell({ label, href, fontSize = 13 }: { label: string; href: string; fontSize?: number }) {
+  const { t } = useLanguage();
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(id);
+  }, [copied]);
+
+  const text: React.CSSProperties = {
+    color: "#3B82F6", fontWeight: 500, fontSize, minWidth: 0,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  };
+  const iconBtn: React.CSSProperties = {
+    display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+    width: 20, height: 20, padding: 0, borderRadius: 5, border: "none", background: "transparent",
+    color: "var(--color-text-tertiary)", cursor: "pointer", textDecoration: "none",
+  };
+
+  const linkable = isHttpUrl(href);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 2, minWidth: 0, maxWidth: "100%" }}>
+      {linkable ? (
+        <a href={href} target="_blank" rel="noopener noreferrer" title={href}
+          onClick={e => e.stopPropagation()}
+          style={{ ...text, textDecoration: "none" }}>
+          {label}
+        </a>
+      ) : (
+        <span style={text} title={href}>{label}</span>
+      )}
+      {linkable && (
+        <a href={href} target="_blank" rel="noopener noreferrer" title={t("cdmOpenUrl")} aria-label={t("cdmOpenUrl")}
+          onClick={e => e.stopPropagation()} style={iconBtn}>
+          <ExternalLink size={12} />
+        </a>
+      )}
+      <button type="button" title={copied ? t("cdmUrlCopied") : t("cdmCopyUrl")} aria-label={t("cdmCopyUrl")}
+        onClick={async e => { e.stopPropagation(); if (await copyText(href)) setCopied(true); }}
+        style={{ ...iconBtn, color: copied ? "#10B981" : iconBtn.color }}>
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+      </button>
+    </span>
+  );
+}
+
+// ─── CSV ───────────────────────────────────────────────────────────────────────
+// Quoted, and a leading = + - @ is defused so a spreadsheet never evaluates a cell as a formula.
+// BOM so Excel reads UTF-8 (non-Latin paths) instead of guessing a code page.
+function downloadCsv(name: string, headers: string[], rows: (string | number)[][]) {
+  const cell = (v: string | number) => {
+    let s = String(v);
+    if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const lines = [headers, ...rows].map(r => r.map(cell).join(","));
+  const url = URL.createObjectURL(new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" }));
+  const a = document.createElement("a"); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 // ─── How it works block ────────────────────────────────────────────────────────
@@ -125,6 +223,25 @@ function DecayingPagesTable({ rows }: { rows: DecayRow[] }) {
     setDemandBusy(null);
   }
 
+  function exportCsv() {
+    const hasSite = rows.some(r => r.siteName);
+    const headers = [
+      "URL", ...(hasSite ? ["Site"] : []), "Path",
+      t("cdmClicksLast2m"), "%", t("cdmClicksYoY"), t("clicks"), t("cdmDemand"), t("cdmStatus"),
+    ];
+    const body = rows.map(r => {
+      const d = demand[r.url];
+      return [
+        r.url, ...(hasSite ? [r.siteName ?? ""] : []), r.page,
+        r.clicksLast2m, r.clicksLast2mPct, r.clicksYoY ?? "", r.clicks,
+        d && !d.err && d.trendPct != null ? d.trendPct : "",
+        r.status,
+      ];
+    });
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadCsv(`decaying-pages-${stamp}.csv`, headers, body);
+  }
+
   if (rows.length === 0) {
     return (
       <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "13px", textAlign: "center" }}>
@@ -135,8 +252,16 @@ function DecayingPagesTable({ rows }: { rows: DecayRow[] }) {
 
   return (
     <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--color-border)" }}>
-      <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "14px" }}>
-        {t("cdmTableTitle")}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "14px" }}>
+        <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>
+          {t("cdmTableTitle")}
+        </div>
+        {/* Exports every flagged row, not just the page currently shown — the list is what goes
+            into a redirect map or an audit sheet. Demand is included where it was checked. */}
+        <button type="button" onClick={exportCsv} title={t("exportCsv")}
+          style={{ display: "inline-flex", alignItems: "center", gap: "5px", flexShrink: 0, padding: "5px 10px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+          <Download size={13} /> CSV
+        </button>
       </div>
 
       <div style={{
@@ -164,9 +289,7 @@ function DecayingPagesTable({ rows }: { rows: DecayRow[] }) {
             alignItems: "center", fontSize: "13px",
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, overflow: "hidden" }}>
-              <span style={{ color: "#3B82F6", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.url}>
-                {row.page}
-              </span>
+              <UrlCell label={row.page} href={row.url} />
               {row.siteName && (
                 <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 }} title={row.siteName}>
                   {row.siteName}
@@ -438,8 +561,8 @@ function Heatmap({
                 const total = p.vals.reduce((a, b) => a + b, 0);
                 return (
                   <tr key={p.url}>
-                    <td style={{ fontSize: "12px", color: "#3B82F6", fontWeight: 500, paddingRight: "12px", paddingBottom: "3px", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <span title={p.url}>{p.url}</span>
+                    <td style={{ paddingRight: "12px", paddingBottom: "3px", maxWidth: "260px", overflow: "hidden", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <UrlCell label={p.url} href={p.fullUrl ?? p.url} fontSize={12} />
                       {p.siteName && (
                         <span style={{ fontSize: "9px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.05)", padding: "1px 5px", borderRadius: "3px", flexShrink: 0 }}>
                           {p.siteName}
