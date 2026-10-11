@@ -42,7 +42,7 @@ export async function touchSeoJob(jobId: string, data: { stage?: string; progres
 }
 export function withSeoJobHeartbeat<T>(jobId: string, work: Promise<T>, everyMs = 60_000): Promise<T> {
   const beat = setInterval(() => touchSeoJob(jobId).catch(() => { /* row removed or update in progress */ }), everyMs);
-  (beat as any).unref?.();
+  beat.unref?.();
   return work.finally(() => clearInterval(beat));
 }
 
@@ -78,7 +78,9 @@ export async function failStaleSeoJobs(userId?: string): Promise<number> {
   // wedged chain, not a slow one. One OR-clause sweep so a single query covers every type.
   const now = Date.now();
   const knownTypes = Object.keys(JOB_WALL_CLOCK_MS);
-  const overdue: any[] = knownTypes.map(type => ({ type, createdAt: { lt: new Date(now - JOB_WALL_CLOCK_MS[type]) } }));
+  // One entry per known type (matched by string), plus a catch-all for unknown types (notIn).
+  const overdue: Array<{ type: string | { notIn: string[] }; createdAt: { lt: Date } }> =
+    knownTypes.map(type => ({ type, createdAt: { lt: new Date(now - JOB_WALL_CLOCK_MS[type]) } }));
   overdue.push({ type: { notIn: knownTypes }, createdAt: { lt: new Date(now - JOB_WALL_CLOCK_DEFAULT_MS) } });
   try {
     const result = await seoJobs().updateMany({

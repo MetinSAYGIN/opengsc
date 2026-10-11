@@ -9,12 +9,13 @@ import {
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-import type { ClarityMetric, PageRow } from "@/lib/clarityParse";
+import type { ClarityMetric, ClarityMetricBlock, PageRow } from "@/lib/clarityParse";
 
 interface Snapshot {
   fetchedAt: string;
   periodDays: number;
-  data: { traffic: any[]; ux: any[]; fetchedWith: { days: number } };
+  // The UX dimension is only ever stringified back out here, so its element shape stays unopened.
+  data: { traffic: ClarityMetricBlock[]; ux: unknown[]; fetchedWith: { days: number } };
 }
 
 // Aggregated view across collected snapshots (computed server-side).

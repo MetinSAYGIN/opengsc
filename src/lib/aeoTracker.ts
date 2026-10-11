@@ -3,6 +3,7 @@
 // server-side settings snapshot, persist a check row + denormalized latest state" shape.
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma";
 import {
   runAeoCheck, AEO_ENGINES, AEO_DEFAULT_MODEL, hostOf,
   type AeoEngine, type AeoCheckResult, type AeoRunOptions, type AeoStatus, type AioContext,
@@ -298,7 +299,7 @@ export async function checkSiteQuestions(
 ): Promise<{ checked: number; remaining: number }> {
   const limit = opts.limit ?? 5; // small — each question is up to 4 sequential billed API calls
   const staleBefore = new Date(Date.now() - AEO_STALE_MS);
-  const where: any = { siteId };
+  const where: Prisma.TrackedQuestionWhereInput = { siteId };
   if (opts.onlyIds?.length) where.id = { in: opts.onlyIds };
   else if (!opts.force) where.OR = [{ lastCheckedAt: null }, { lastCheckedAt: { lt: staleBefore } }];
 

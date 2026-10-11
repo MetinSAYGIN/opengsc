@@ -26,7 +26,7 @@ export async function POST(req: Request) {
 
   const b = await req.json().catch(() => ({}));
   const domains: string[] = Array.isArray(b.domains)
-    ? [...new Set<string>(b.domains.map((d: any) => norm(String(d))))].filter(d => d.includes("."))
+    ? [...new Set<string>(b.domains.map((d: unknown) => norm(String(d))))].filter(d => d.includes("."))
     : [];
   if (!domains.length) return NextResponse.json({ metrics: {}, units: 0 });
 

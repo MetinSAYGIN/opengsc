@@ -19,7 +19,7 @@ export async function GET() {
   const userId = await uid("manageSecrets");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const rows: any[] = await rawQuery(`SELECT mcpToken FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ mcpToken: string | null }>>(`SELECT mcpToken FROM "User" WHERE id = ?`, userId);
     return NextResponse.json({ token: rows?.[0]?.mcpToken ?? null });
   } catch {
     return NextResponse.json({ token: null, notMigrated: true });

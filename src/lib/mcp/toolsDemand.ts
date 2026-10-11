@@ -42,6 +42,17 @@ const PROVIDER = "dataforseo";
 
 type Verdict = "reach" | "wrong_page" | "none";
 
+/** A `DemandSearch` row as the cache reads in this file read it (the columns the SELECTs list). */
+interface DemandSearchRow {
+  seed: string;
+  country: string;
+  language: string | null;
+  mode: string | null;
+  source: string;
+  rows: string;
+  createdAt: string | Date;
+}
+
 /**
  * The DataForSEO credential from the server-side settings mirror.
  *
@@ -224,9 +235,9 @@ export const DEMAND_TOOLS: McpTool[] = [
       // No seed: an index of what has been bought, so an agent can see the shape of existing
       // research before deciding anything costs money.
       if (!seed) {
-        let searches: any[] = [];
+        let searches: DemandSearchRow[] = [];
         try {
-          searches = await rawQuery(
+          searches = await rawQuery<DemandSearchRow[]>(
             `SELECT seed, country, language, mode, source, createdAt FROM "DemandSearch"
               WHERE userId = ? ORDER BY createdAt DESC LIMIT 100`,
             userId,
@@ -240,9 +251,9 @@ export const DEMAND_TOOLS: McpTool[] = [
         };
       }
 
-      let hit: any;
+      let hit: DemandSearchRow | null | undefined;
       try {
-        const rows: any[] = await rawQuery(
+        const rows = await rawQuery<DemandSearchRow[]>(
           `SELECT rows, source, mode, language, createdAt FROM "DemandSearch"
             WHERE userId = ? AND seed = ? AND country = ?
             ORDER BY createdAt DESC LIMIT 1`,
@@ -350,7 +361,7 @@ export const DEMAND_TOOLS: McpTool[] = [
       // skipped the free tool should not be billed for the omission.
       const key = cacheKeyFor(seed, country, language, mode, limit, clickstream, kw.source);
       try {
-        const cached: any[] = await rawQuery(
+        const cached = await rawQuery<DemandSearchRow[]>(
           `SELECT rows, source, createdAt FROM "DemandSearch" WHERE userId = ? AND cacheKey = ?`,
           userId, key,
         );

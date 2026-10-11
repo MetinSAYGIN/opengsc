@@ -179,7 +179,9 @@ export default function AdsIntelTab({ domain }: { domain: string }) {
   const hostId = overview.payload?.hostId ?? null;
   const noKey = !hasKey;
 
-  const sectionHeader = (label: string, section: "titles" | "statistics" | "images", state: Cached<any>, emptyText: string) => (
+  // The header only checks "is the cached payload an empty collection", so it takes every
+  // section's Cached variant; the payload itself is never opened here.
+  const sectionHeader = (label: string, section: "titles" | "statistics" | "images", state: Cached<AdTitle[]> | Cached<Statistics> | Cached<Record<string, string>>, emptyText: string) => (
     <div style={{ display: "flex", alignItems: "center", gap: "10px", margin: "22px 0 10px", flexWrap: "wrap" }}>
       <h4 style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{label}</h4>
       {(

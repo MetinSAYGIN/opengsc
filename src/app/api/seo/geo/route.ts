@@ -18,8 +18,8 @@ function runAudit(id: string, params: { query: string; language: string; country
       if (r.ok) await audits().update({ where: { id }, data: { status: "completed", report: JSON.stringify(r.data) } });
       else await audits().update({ where: { id }, data: { status: "error", error: r.error } });
     })
-    .catch(async (e: any) => {
-      try { await audits().update({ where: { id }, data: { status: "error", error: String(e?.message ?? e) } }); } catch {}
+    .catch(async (e: unknown) => {
+      try { await audits().update({ where: { id }, data: { status: "error", error: String((e as Error)?.message ?? e) } }); } catch {}
     });
 }
 
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
         }
       : undefined;
 
-  let rec: any;
+  let rec: { id: string };
   try {
     rec = await audits().create({ data: { userId, query, language, country, model, status: "processing" } });
   } catch (e) {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { Prisma } from "@/generated/prisma";
 import { loggedFetch } from '@/lib/providerLog/log';
 
 // POST { siteDbId, ids?: string[] }  — checks XML River index status for backlinks
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
   if (!user?.xmlRiverUserId || !user?.xmlRiverApiKey)
     return NextResponse.json({ error: 'XML River not configured' }, { status: 400 });
 
-  const where: any = { siteId: siteDbId };
+  const where: Prisma.BacklinkWhereInput = { siteId: siteDbId };
   if (ids.length > 0) where.id = { in: ids };
 
   const links = await prisma.backlink.findMany({ where, take: 200, select: { id: true, url: true } });

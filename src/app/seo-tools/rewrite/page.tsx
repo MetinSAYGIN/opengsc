@@ -15,6 +15,10 @@ import FactDriftPanel from "@/components/FactDriftPanel";
 import { slugFromSource, renderAs, downloadFile, extensionFor, EXPORT_FORMATS, type ExportFormat } from "@/lib/seo/exportFormats";
 import { uniquenessPct, wordCount, type KeywordCoverage } from "@/lib/seo/textMetrics";
 
+// The i18n key union, derived from the translator's own shape (same idiom as the policy page)
+// so a plain `string` — TONES' labelKey — can be asserted into it honestly.
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
 type StructureCheck = { expected: number[]; got: number[]; ok: boolean };
 type Variant = { content: string; uniqueness: number; words: number; aiScore?: number; drift?: FactDrift; structure?: StructureCheck; repaired?: boolean; coverage?: KeywordCoverage; marksScrub?: { total: number; byClass: Record<string, number> } };
 type Snippet = { sourceTitle: string; sourceDescription: string; title: string; description: string };
@@ -148,7 +152,7 @@ export default function RewritePage() {
     try {
       const res = await fetch(`/api/gsc/page-queries?url=${encodeURIComponent(url.trim())}&limit=30`);
       const d = await res.json().catch(() => ({}));
-      const found: string[] = (d.queries ?? []).map((q: any) => String(q.keyword)).filter(Boolean);
+      const found: string[] = (d.queries ?? []).map((q: { keyword?: unknown }) => String(q.keyword)).filter(Boolean);
       if (!res.ok || !found.length) {
         setGscNote(d.error === "not_your_site" ? t("rwGscNotYours") : t("rwGscEmpty"));
       } else {
@@ -310,7 +314,7 @@ export default function RewritePage() {
           <label style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("rwTone")}
             <select value={tone} onChange={e => setTone(e.target.value)} style={{ ...inputStyle, marginTop: "4px" }}>
               <option value="">{t("rwToneAuto")}</option>
-              {TONES.map(x => <option key={x.value} value={x.value}>{t(x.labelKey as any)}</option>)}
+              {TONES.map(x => <option key={x.value} value={x.value}>{t(x.labelKey as TKey)}</option>)}
             </select>
           </label>
         </div>
@@ -326,15 +330,15 @@ export default function RewritePage() {
             <Scale size={14} /> {t("rwJudge" as never)}
           </label>
 
-          <label title={fp ? t("rwBannedHint" as any) : t("hmNoModelHint" as any)}
+          <label title={fp ? t("rwBannedHint") : t("hmNoModelHint")}
             style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", cursor: fp ? "pointer" : "default", opacity: fp ? 1 : 0.5, color: useBanned && fp ? "#ff6482" : "var(--color-text-secondary)" }}>
             <input type="checkbox" disabled={!fp} checked={useBanned && !!fp} onChange={e => setUseBanned(e.target.checked)} style={{ accentColor: "#ff6482" }} />
-            <Fingerprint size={14} /> {t("rwBanned" as any)}{fp ? ` · ${fp.name}` : ""}
+            <Fingerprint size={14} /> {t("rwBanned")}{fp ? ` · ${fp.name}` : ""}
           </label>
 
-          <label title={t("rwTempHint" as any)} style={{ display: "inline-flex", alignItems: "center", gap: "7px", fontSize: "13px", color: "var(--color-text-secondary)" }}>
-            {t("rwTemp" as any)}
-            <input value={temp} onChange={e => setTemp(e.target.value)} placeholder={t("rwTempAuto" as any)}
+          <label title={t("rwTempHint")} style={{ display: "inline-flex", alignItems: "center", gap: "7px", fontSize: "13px", color: "var(--color-text-secondary)" }}>
+            {t("rwTemp")}
+            <input value={temp} onChange={e => setTemp(e.target.value)} placeholder={t("rwTempAuto")}
               style={{ ...inputStyle, width: "92px", padding: "6px 9px" }} />
           </label>
 
@@ -442,8 +446,8 @@ export default function RewritePage() {
             <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("rwVariant")} {i + 1}</div>
             <span title={t("rwUniqueHint")} style={{ fontSize: "11px", fontWeight: 700, padding: "2px 9px", borderRadius: "20px", color: uColor(v.uniqueness), background: `${uColor(v.uniqueness)}1f` }}>{v.uniqueness}% {t("rwUnique")}</span>
             {v.aiScore !== undefined && (
-              <span title={t("hmProxyWarning" as any)} style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 700, padding: "2px 9px", borderRadius: "20px", color: aColor(v.aiScore), background: `${aColor(v.aiScore)}1f` }}>
-                <Fingerprint size={11} /> {v.aiScore}% {t("hmBenchScoreCol" as any)}
+              <span title={t("hmProxyWarning")} style={{ display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "11px", fontWeight: 700, padding: "2px 9px", borderRadius: "20px", color: aColor(v.aiScore), background: `${aColor(v.aiScore)}1f` }}>
+                <Fingerprint size={11} /> {v.aiScore}% {t("hmBenchScoreCol")}
               </span>
             )}
             <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{v.words} {t("rwWords")}</span>

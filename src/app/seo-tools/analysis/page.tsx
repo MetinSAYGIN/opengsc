@@ -12,10 +12,19 @@ import { getSeoGenCreds, getTaskCreds, getSerpCreds, getFirecrawlKey, loadPolici
 import { COUNTRIES, LANGUAGES, defaultLanguageFor } from "@/lib/seo/regions";
 import { takeView } from "@/lib/seo/history";
 import { startJob, importJob } from "@/lib/seo/jobs";
+import type { ScrapedPage } from "@/lib/seo/scrape";
+import type { SerpResultItem, SerpIntent, SiteType } from "@/lib/seo/serp";
 
 const card = "panel";
 const SITE_TYPE_COLOR: Record<string, string> = { official_store: "#10A37F", aggregator: "#ff9f0a", forum_ugc: "#34c759", editorial: "#2997ff", monobrand: "#bf5af2" };
 const SITE_TYPE_KEY: Record<string, string> = { official_store: "seoStOfficial", aggregator: "seoStAggregator", forum_ugc: "seoStForum", editorial: "seoStEditorial", monobrand: "seoStMonobrand" };
+
+/** A SERP row as this page consumes it: the shared result shape plus the site_type/intent heuristics /api/seo/serp attaches for the UI. */
+type SerpRow = SerpResultItem & { site_type?: SiteType | null; intent?: SerpIntent };
+/** The report object SeoContentAnalysis renders (its prop type, derived — the component keeps it private). */
+type AnalysisReportView = Parameters<typeof SeoContentAnalysis>[0]["report"];
+// The i18n key union, derived from the translator's own shape so a plain `string` can be asserted into it.
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
 
 function host(u: string): string { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
 
@@ -41,7 +50,7 @@ export default function AnalysisPage() {
 
   // step 2
   const [targetUrl, setTargetUrl] = useState("");
-  const [serp, setSerp] = useState<any[]>([]);
+  const [serp, setSerp] = useState<SerpRow[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [manual, setManual] = useState("");
 
@@ -50,9 +59,9 @@ export default function AnalysisPage() {
   const [progress, setProgress] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [err, setErr] = useState("");
-  const [report, setReport] = useState<any>(null);
+  const [report, setReport] = useState<AnalysisReportView | null>(null);
   const [anJobId, setAnJobId] = useState<string | null>(null);
-  const timer = useRef<any>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Read after mount only — SSR/first-render mismatch causes React #418.
   const [mounted, setMounted] = useState(false);
@@ -87,7 +96,7 @@ export default function AnalysisPage() {
     try {
       // Saver #3: cache SERP by query for 30 min — re-running the same keyword won't re-hit the API.
       const cacheKey = `serpCache:${sp}:${country}:${language}:${city}:${topN}:${keyword.trim().toLowerCase()}`;
-      let data: any = null;
+      let data: { results?: SerpRow[]; error?: string } | null = null;
       try { const c = sessionStorage.getItem(cacheKey); if (c) { const o = JSON.parse(c); if (Date.now() - o.ts < 1800000) data = o.data; } } catch {}
       if (!data) {
         const res = await fetch("/api/seo/serp", {
@@ -95,13 +104,13 @@ export default function AnalysisPage() {
           body: JSON.stringify({ keyword, provider: sp, apiKey: sk, baseUrl: sbu, gl: country, hl: language, location: city || undefined, num: topN }),
         });
         data = await res.json();
-        if (!res.ok) { setErr(data.error || t("seoErrSerp")); setBusy(false); return; }
+        if (!res.ok) { setErr(data!.error || t("seoErrSerp")); setBusy(false); return; }
         try { sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), data })); } catch {}
       }
-      const items = (data.results || []).slice(0, topN);
+      const items = (data!.results || []).slice(0, topN);
       setSerp(items);
       const sel: Record<string, boolean> = {};
-      items.forEach((r: any) => { sel[r.url] = true; });
+      items.forEach((r) => { sel[r.url] = true; });
       setSelected(sel);
       setStep(2);
     } catch (e) { setErr(String((e as Error)?.message ?? e)); }
@@ -130,13 +139,13 @@ export default function AnalysisPage() {
         fetch("/api/seo/scrape", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: compUrls, firecrawlKey: fc }) }).then(r => r.json()),
         fetch("/api/seo/scrape", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: [targetUrl], firecrawlKey: fc }) }).then(r => r.json()),
       ]);
-      const pages = compScrape.pages || [];
-      const target = (targetScrape.pages || [])[0];
+      const pages: ScrapedPage[] = compScrape.pages || [];
+      const target: ScrapedPage | undefined = (targetScrape.pages || [])[0];
 
-      const serpByUrl: Record<string, any> = {};
+      const serpByUrl: Record<string, SerpRow> = {};
       serp.forEach(r => { serpByUrl[r.url] = r; });
       const competitors = compUrls.map((url, i) => {
-        const p = pages.find((x: any) => x.url === url);
+        const p = pages.find((x) => x.url === url);
         const s = serpByUrl[url];
         return { position: s?.position || i + 1, url, site_type: s?.site_type || undefined, title: p?.title || s?.title || url, headings: p?.headings || [], word_count: p?.wordCount || 0, has_price_table: !!p?.hasPriceTable, has_faq: !!p?.hasFaq };
       });
@@ -232,7 +241,7 @@ export default function AnalysisPage() {
                         <span className="pill" style={{ flexShrink: 0 }}>#{r.position || i + 1}</span>
                         <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{r.title}</span>
                         {r.intent && <span style={{ fontSize: "10px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", flexShrink: 0, color: r.intent === "buy" ? "#10A37F" : "var(--color-text-secondary)", background: r.intent === "buy" ? "rgba(16,163,127,0.12)" : "var(--color-bg)" }}>{t(r.intent === "buy" ? "seoIntentBuy" : "seoIntentInfo")}</span>}
-                        {r.site_type && <span style={{ fontSize: "10px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", flexShrink: 0, color: SITE_TYPE_COLOR[r.site_type] || "var(--color-text-secondary)", background: `${SITE_TYPE_COLOR[r.site_type] || "#888"}1a` }}>{t((SITE_TYPE_KEY[r.site_type] || "") as any) || r.site_type}</span>}
+                        {r.site_type && <span style={{ fontSize: "10px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", flexShrink: 0, color: SITE_TYPE_COLOR[r.site_type] || "var(--color-text-secondary)", background: `${SITE_TYPE_COLOR[r.site_type] || "#888"}1a` }}>{t((SITE_TYPE_KEY[r.site_type] || "") as TKey) || r.site_type}</span>}
                       </div>
                       <div style={{ fontSize: "12px", color: "var(--color-accent-blue)", marginTop: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.url}</div>
                     </div>

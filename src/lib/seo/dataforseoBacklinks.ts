@@ -18,7 +18,7 @@ import {
   fetchDataforseoNewLost, REFDOMAIN_PAGE_SIZE, type MetricsCreds,
 } from "@/lib/seo/metrics";
 import type { DfsNewLostPoint } from "@/lib/seo/dataforseoBacklinksParse";
-import { readDomainCache, recordUsage, releaseUnusedUnits, withinCap, writeDomainCache } from "@/lib/seo/metricsStore";
+import { readDomainCache, recordUsage, releaseUnusedUnits, withinCap, writeDomainCache, type CachedDomain } from "@/lib/seo/metricsStore";
 import { normDomain, readSnapshots, syncRefDomains, writeSnapshot } from "@/lib/seo/backlinkStore";
 import { createApiSync, runDataforseoBacklinkExport, runningApiSync } from "@/lib/seo/siteBacklinkStore";
 
@@ -31,7 +31,7 @@ export function parseDfsAutoMode(v: unknown): DfsAutoMode {
 /** Settings the background paths need, read from the owner's `seoSettings` mirror. */
 export async function dataforseoSettings(userId: string): Promise<{ creds: MetricsCreds | null; cap: number; auto: DfsAutoMode }> {
   try {
-    const rows: any[] = await rawQuery(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ seoSettings?: string | null }>>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const s = JSON.parse(rows?.[0]?.seoSettings ?? "{}") as Record<string, unknown>;
     const key = String(s.seoKey_dataforseo ?? s.dataforseoKey ?? "").trim();
     return {
@@ -67,16 +67,29 @@ export interface DfsExtras {
   historyPoints: number;
 }
 
-export async function writeDfsSummary(target: string, raw: any): Promise<void> {
-  if (!raw || raw.source !== "dataforseo") return;
+/** The numeric fields of the raw DataForSEO summary envelope (a JsonRecord at the call sites). */
+interface DfsSummaryEnvelope {
+  source?: unknown;
+  rank?: number | null;
+  refDomains?: number | null;
+  backlinks?: number | null;
+  spamScore?: number | null;
+  brokenBacklinks?: number | null;
+  refMainDomains?: number | null;
+}
+
+export async function writeDfsSummary(target: string, raw: Record<string, unknown>): Promise<void> {
+  // Narrowing view only — the same object, with the numbers this writer reads typed as numbers.
+  const e = raw as DfsSummaryEnvelope;
+  if (!raw || e.source !== "dataforseo") return;
   await writeDomainCache([{
     domain: normDomain(target),
-    dr: raw.rank ?? null,
-    refDomains: raw.refDomains ?? null,
-    backlinks: raw.backlinks ?? null,
+    dr: e.rank ?? null,
+    refDomains: e.refDomains ?? null,
+    backlinks: e.backlinks ?? null,
     payload: {
-      source: "dataforseo", rankScale: 100, rank: raw.rank ?? null, spamScore: raw.spamScore ?? null,
-      brokenBacklinks: raw.brokenBacklinks ?? null, refMainDomains: raw.refMainDomains ?? null,
+      source: "dataforseo", rankScale: 100, rank: e.rank ?? null, spamScore: e.spamScore ?? null,
+      brokenBacklinks: e.brokenBacklinks ?? null, refMainDomains: e.refMainDomains ?? null,
     },
   }], "dataforseo", "api");
 }
@@ -86,19 +99,25 @@ const parsePayload = (p: unknown) => {
   try { return typeof p === "string" ? JSON.parse(p) : p; } catch { return null; }
 };
 
+/**
+ * CachedDomain plus the `payload` column readDomainCache's SELECT also returns (the exported
+ * interface does not list it) — the extras are re-derived from that payload here.
+ */
+type CachedDomainRow = CachedDomain & { payload?: unknown };
+
 export async function readDfsExtras(target: string): Promise<DfsExtras> {
   const t = normDomain(target);
   const [summary, newLost] = await Promise.all([
     readDomainCache([t], "dataforseo"),
     readDomainCache([t], NEWLOST_KEY),
   ]);
-  const s = summary[t] as any;
+  const s = summary[t] as CachedDomainRow | undefined;
   const sp = parsePayload(s?.payload);
-  const nl = newLost[t] as any;
+  const nl = newLost[t] as CachedDomainRow | undefined;
   const np = parsePayload(nl?.payload);
   let historyPoints = 0;
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<Array<{ n?: number | string | null }>>(
       `SELECT COUNT(*) AS n FROM "BacklinkSnapshot" WHERE target = ? AND provider = 'dataforseo' AND source = 'history'`, t,
     );
     historyPoints = Number(rows?.[0]?.n ?? 0) || 0;

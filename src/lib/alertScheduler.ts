@@ -82,7 +82,7 @@ export const DEFAULT_ALERT_SETTINGS: AlertSettings = {
 
 export async function getAlertSettings(userId: string): Promise<AlertSettings> {
   try {
-    const rows: any[] = await rawQuery(`SELECT alertSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ alertSettings?: string | null }>>(`SELECT alertSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.alertSettings;
     if (!raw) return DEFAULT_ALERT_SETTINGS;
     const s = JSON.parse(raw);
@@ -108,6 +108,23 @@ export async function getAlertSettings(userId: string): Promise<AlertSettings> {
 
 type Pending = { type: string; siteId?: string; title: string; message: string; dedupeKey: string };
 
+/** ProviderBalance row as the balance_low rule reads it (dbAny — the model may not be migrated yet). */
+interface BalanceRow {
+  provider: unknown;
+  fetchedAt: string | Date;
+  ok?: boolean;
+  left?: number | null;
+  limit?: number | null;
+  resetAt?: string | Date | null;
+  unit?: string | null;
+}
+
+/** ProviderCall row as the provider_down rule reads it. */
+interface ProviderCallRow {
+  provider: unknown;
+  status: number;
+}
+
 const isoDay = () => new Date().toISOString().slice(0, 10);
 const isoWeek = () => {
   const d = new Date();
@@ -127,8 +144,8 @@ async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
   // периода, а не новость, поэтому за 36 часов до resetAt правило молчит.
   if (s.balanceLow.on) {
     try {
-      let rows: any[] = await dbAny.providerBalance.findMany({ where: { userId } });
-      const freshest = rows.reduce((m: number, r: any) => Math.max(m, new Date(r.fetchedAt).getTime()), 0);
+      let rows: BalanceRow[] = await dbAny.providerBalance.findMany({ where: { userId } });
+      const freshest = rows.reduce((m: number, r: BalanceRow) => Math.max(m, new Date(r.fetchedAt).getTime()), 0);
       if (Date.now() - freshest > 6 * 3600_000) {
         await refreshProviderBalances(userId);
         rows = await dbAny.providerBalance.findMany({ where: { userId } });
@@ -157,7 +174,7 @@ async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
   if (s.providerDown.on) {
     try {
       const since = new Date(Date.now() - 60 * 60_000);
-      const rows: any[] = await dbAny.providerCall.findMany({
+      const rows: ProviderCallRow[] = await dbAny.providerCall.findMany({
         where: { at: { gte: since } },
         select: { provider: true, status: true },
         take: 5000,
@@ -428,9 +445,9 @@ export async function runAlertsOnce(userId?: string): Promise<number> {
   // Users worth checking = users with a connected Telegram or Slack Webhook (alerts go nowhere otherwise).
   let userIds: string[] = [];
   try {
-    const rows: any[] = userId
+    const rows = userId
       ? [{ id: userId }]
-      : await rawQuery(`SELECT id FROM "User" WHERE (telegramBotToken IS NOT NULL AND telegramChatId IS NOT NULL) OR slackWebhook IS NOT NULL`);
+      : await rawQuery<{ id: string }[]>(`SELECT id FROM "User" WHERE (telegramBotToken IS NOT NULL AND telegramChatId IS NOT NULL) OR slackWebhook IS NOT NULL`);
     userIds = rows.map(r => r.id);
   } catch {
     return 0; // columns not migrated yet

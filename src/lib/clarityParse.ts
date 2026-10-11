@@ -25,8 +25,21 @@ export function emptyTotals(): ClarityTotals {
 // Normalize a Clarity metricName / field key: strip non-alphanumerics, lowercase.
 const norm = (s: string) => (s || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
 
+/** A URL-dimension row of a Clarity export: arbitrary CSV-ish keys (pickNum scans them all). */
+export interface ClarityRow {
+  URL?: string;
+  url?: string;
+  [key: string]: unknown;
+}
+
+/** One Clarity export block: a metric name plus its rows. */
+export interface ClarityMetricBlock {
+  metricName?: string;
+  information?: ClarityRow[];
+}
+
 // First numeric field in a row whose normalized key matches a candidate.
-function pickNum(row: any, candidates: string[]): number {
+function pickNum(row: ClarityRow, candidates: string[]): number {
   for (const k of Object.keys(row || {})) {
     const kn = norm(k);
     if (candidates.some(c => kn === c || kn.includes(c))) {
@@ -38,7 +51,7 @@ function pickNum(row: any, candidates: string[]): number {
 }
 
 // Parse ONE Clarity response array (the URL-dimension call) into raw totals.
-export function parseTraffic(traffic: any[]): ClarityTotals {
+export function parseTraffic(traffic: ClarityMetricBlock[]): ClarityTotals {
   const t = emptyTotals();
   for (const metric of traffic || []) {
     const n = norm(metric.metricName ?? "");
@@ -126,7 +139,7 @@ export function totalsToPages(t: ClarityTotals): PageRow[] {
     .slice(0, 20);
 }
 
-type SnapLike = { fetchedAt: string | Date; data: { traffic?: any[] } };
+type SnapLike = { fetchedAt: string | Date; data: { traffic?: ClarityMetricBlock[] } };
 
 // Aggregate snapshots within the last `maxDays`, deduped by calendar day
 // (keeping the latest snapshot per day), summed into one window.

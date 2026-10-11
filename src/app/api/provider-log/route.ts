@@ -33,8 +33,31 @@ export const PAGE_SIZE_MAX = 100;
 // delegate is absent, and a settings screen should say "nothing recorded yet" rather than 500.
 const providerCalls = () => dbAny.providerCall;
 
+/** A ProviderCall row as the DTO reads it (via dbAny — the delegate may not be generated yet). */
+interface ProviderCallRow {
+  id: string;
+  at: Date | string;
+  userId: string | null;
+  feature: string | null;
+  provider: string;
+  model: string | null;
+  endpoint: string;
+  status: number;
+  ms: number;
+  attempt: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  /** Only what the provider stated — never computed from a price table. */
+  costUsd: number | null;
+  error: string | null;
+  complete: boolean;
+  /** Present only when body capture was switched on. Redacted and truncated. */
+  requestBody?: string | null;
+  responseBody?: string | null;
+}
+
 /** What the list shows. Deliberately without the bodies — see `rowWithBodies`. */
-function dto(r: any) {
+function dto(r: ProviderCallRow) {
   return {
     id: r.id,
     at: r.at,
@@ -87,9 +110,14 @@ function clampInt(raw: string | null, def: number, min: number, max: number): nu
   return Math.min(max, Math.max(min, n));
 }
 
+/** The groupBy slice of the providerCall delegate (dbAny keeps the whole delegate loose). */
+interface GroupableDelegate {
+  groupBy(args: { by: string[]; where: Record<string, unknown> }): Promise<Array<Record<string, unknown>>>;
+}
+
 /** The distinct non-null values of one column, within what this caller can see. */
-async function facet(table: any, column: "provider" | "feature", scope: Record<string, unknown>): Promise<string[]> {
-  const groups: any[] = await table.groupBy({ by: [column], where: scope });
+async function facet(table: GroupableDelegate, column: "provider" | "feature", scope: Record<string, unknown>): Promise<string[]> {
+  const groups = await table.groupBy({ by: [column], where: scope });
   return groups.map(g => g[column]).filter((v: unknown): v is string => typeof v === "string" && v.length > 0).sort();
 }
 

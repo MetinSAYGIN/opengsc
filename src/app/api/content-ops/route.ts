@@ -20,7 +20,7 @@ export async function GET() {
         include: { repository: true, events: { orderBy: { createdAt: "desc" }, take: 40 } },
       }),
       prisma.contentRepository.findMany({ where: { userId }, orderBy: { name: "asc" } }),
-      rawQuery<any[]>(
+      rawQuery<Array<{ id: string; type: string; keyword: string | null; data: string; createdAt: Date | string }>>(
         `SELECT id, type, keyword, data, createdAt FROM "SeoHistory"
          WHERE userId = ? AND status = ? AND type IN (?, ?, ?)
          ORDER BY createdAt DESC LIMIT 60`,
@@ -53,7 +53,7 @@ export async function POST(req: Request) {
 
   if (sourceType === "history") {
     if (!sourceRef) return NextResponse.json({ error: "missing_history_item" }, { status: 400 });
-    const rows = await rawQuery<any[]>(`SELECT data FROM "SeoHistory" WHERE id = ? AND userId = ? LIMIT 1`, sourceRef, userId).catch(() => []);
+    const rows = await rawQuery<Array<{ data: string }>>(`SELECT data FROM "SeoHistory" WHERE id = ? AND userId = ? LIMIT 1`, sourceRef, userId).catch(() => []);
     if (!rows[0]) return NextResponse.json({ error: "history_item_not_found" }, { status: 404 });
     let data: unknown = rows[0].data;
     try { data = JSON.parse(rows[0].data); } catch { /* legacy plain string */ }

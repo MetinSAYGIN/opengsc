@@ -132,8 +132,16 @@ function domainOf(url: string): string {
 // ─── Serper.dev ────────────────────────────────────────────────────────────────
 // Docs: https://serper.dev — single POST, returns clean JSON. Cheap.
 
+/** One organic row of Serper's answer (`organic`), plus the PAA/related blocks on page 1. */
+interface SerperPageData {
+  organic?: { link?: string; title?: string; snippet?: string }[];
+  peopleAlsoAsk?: { question?: string }[];
+  relatedSearches?: { query?: string }[];
+  places?: unknown;
+}
+
 type SerperPageResult =
-  | { ok: true; data: any }
+  | { ok: true; data: SerperPageData }
   | { ok: false; error: string };
 
 async function serperFetchPage(
@@ -191,12 +199,12 @@ async function serperSearch(
 
   const seen = new Set<string>();
   const results: SerpResultItem[] = [];
-  const paa: string[] = (page1.data.peopleAlsoAsk ?? []).map((p: any) => p.question).filter(Boolean);
-  const related: string[] = (page1.data.relatedSearches ?? []).map((p: any) => p.query).filter(Boolean);
+  const paa: string[] = ((page1.data.peopleAlsoAsk ?? []).map((p) => p.question).filter(Boolean)) as string[];
+  const related: string[] = ((page1.data.relatedSearches ?? []).map((p) => p.query).filter(Boolean)) as string[];
 
   for (const s of settled) {
     if (!s.ok) break; // a failed page (rare) — trust only the contiguous run before it
-    const organic: any[] = s.data.organic ?? [];
+    const organic = s.data.organic ?? [];
     for (const r of organic) {
       if (!r.link || seen.has(r.link)) continue;
       seen.add(r.link);
@@ -246,13 +254,30 @@ export const DFS_LOC: Record<string, number> = {
  * that is not a finite number is null: a missing field is not a free request, it is a
  * request whose price we were not told.
  */
-export function dfsCostUsd(data: any): number | null {
+export function dfsCostUsd(data: { cost?: unknown } | null | undefined): number | null {
   const n = Number(data?.cost);
   return Number.isFinite(n) ? n : null;
 }
 
 // Docs: https://docs.dataforseo.com — SERP API (Live Advanced). Auth: HTTP Basic.
 // Credential field accepts EITHER "login:password" OR the ready Base64 token from the dashboard.
+
+/**
+ * One element of a DataForSEO SERP `items` array: organic rows, feature blocks
+ * (people_also_ask / related_searches / local_pack) all share this envelope and are told
+ * apart by `type`. `items` rides only on feature blocks, and its element shape depends on
+ * the feature: PAA rows carry `title`, related searches are plain strings.
+ */
+interface DfsSerpItem {
+  type?: string;
+  rank_absolute?: number;
+  rank_group?: number;
+  url?: string;
+  title?: string;
+  description?: string;
+  items?: unknown[];
+}
+
 async function dataForSeoSearch(
   credential: string,
   keyword: string,
@@ -318,19 +343,19 @@ async function dataForSeoSearch(
     return { engine, provider: "dataforseo", keyword, results: [], error, ...(locErr ? { errorDetail: `dataforseo task ${taskObj.status_code}: ${taskObj.status_message}` } : {}) };
   }
   call.finish({ costUsd, responseBody: data });
-  const items: any[] = taskObj?.result?.[0]?.items ?? [];
+  const items: DfsSerpItem[] = taskObj?.result?.[0]?.items ?? [];
   const organic = items.filter((it) => it.type === "organic");
   const results: SerpResultItem[] = organic.slice(0, opts.num || 10).map((r, i) => ({
     position: r.rank_absolute ?? r.rank_group ?? i + 1,
-    url: r.url,
+    url: r.url as string,
     title: r.title ?? "",
     snippet: r.description ?? "",
     domain: domainOf(r.url ?? ""),
   }));
-  const paa = items.filter((it) => it.type === "people_also_ask")
-    .flatMap((it) => (it.items ?? []).map((q: any) => q.title)).filter(Boolean);
-  const related = items.filter((it) => it.type === "related_searches")
-    .flatMap((it) => (it.items ?? [])).filter(Boolean);
+  const paa: string[] = (items.filter((it) => it.type === "people_also_ask")
+    .flatMap((it) => (it.items ?? []).map((q) => (q as { title?: string }).title)).filter(Boolean)) as string[];
+  const related: string[] = items.filter((it) => it.type === "related_searches")
+    .flatMap((it) => (it.items ?? []) as string[]).filter(Boolean);
   // wave-nov N3, geolocated queries only: items of type "local_pack" are the map pack, one
   // item per business. DataForSEO parses every SERP feature, so "no such item" = no pack.
   const local = opts.location
@@ -395,9 +420,25 @@ const SR_ENDPOINT = "https://api.scraping.rayobyte.com/";
 
 // Primary path: the structured Google SERP module ("GoogleScraper") — returns parsed
 // organicResults / relatedQueries / peopleAlsoAsk. One page (~10 organic) per credit.
+
+/** ScrapingRobot envelope: `result` is the module payload — structured for GoogleScraper, raw HTML (string or `{ html }`) for HtmlRequestScraper. */
+interface SrEnvelope {
+  status?: string;
+  error?: string;
+  result?: { html?: string } | string;
+}
+
+/** The GoogleScraper module's `result` payload. */
+interface SrModuleResults {
+  organicResults?: { url?: string; title?: string; description?: string }[];
+  peopleAlsoAsk?: { question?: string }[];
+  relatedQueries?: { title?: string }[];
+  hasNextPage?: boolean;
+}
+
 async function scrapingRobotModulePage(
   apiKey: string, keyword: string, gl: string, hl: string, page: number,
-): Promise<{ ok: boolean; results?: any; error?: string }> {
+): Promise<{ ok: boolean; results?: SrModuleResults; error?: string }> {
   let res: Response;
   let call: CallHandle;
   try {
@@ -414,7 +455,7 @@ async function scrapingRobotModulePage(
   } catch (e) {
     return { ok: false, error: `сеть ScrapingRobot: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
-  let data: any;
+  let data: SrEnvelope;
   try { data = await res.json(); } catch {
     const error = `scrapingrobot: non-JSON response (${res.status})`;
     call.finish({ error });
@@ -426,7 +467,7 @@ async function scrapingRobotModulePage(
     return { ok: false, error };
   }
   call.finish({ responseBody: data });
-  return { ok: true, results: data.result };
+  return { ok: true, results: data.result as SrModuleResults };
 }
 
 // Fallback path: plain HTML scrape of a Google SERP page + tolerant regex parsing
@@ -451,7 +492,7 @@ async function scrapingRobotHtmlPage(
   } catch (e) {
     return { ok: false, error: `сеть ScrapingRobot: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
-  let data: any;
+  let data: SrEnvelope;
   try { data = await res.json(); } catch {
     const error = `scrapingrobot: non-JSON response (${res.status})`;
     call.finish({ error });
@@ -496,11 +537,11 @@ async function scrapingRobotSearch(
       if (page === 1) { moduleWorks = false; break; } // fall back to HTML mode below
       break;
     }
-    const organic: any[] = r.results?.organicResults ?? [];
+    const organic = r.results?.organicResults ?? [];
     for (const o of organic) push(o.url ?? "", o.title ?? "", o.description ?? "");
     if (page === 1) {
-      paa = (r.results?.peopleAlsoAsk ?? []).map((p: any) => p.question).filter(Boolean);
-      related = (r.results?.relatedQueries ?? []).map((q: any) => q.title).filter(Boolean);
+      paa = ((r.results?.peopleAlsoAsk ?? []).map((p) => p.question).filter(Boolean)) as string[];
+      related = ((r.results?.relatedQueries ?? []).map((q) => q.title).filter(Boolean)) as string[];
     }
     if (results.length >= want) break;
     if (r.results?.hasNextPage === false) break;

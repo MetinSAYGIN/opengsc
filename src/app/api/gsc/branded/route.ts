@@ -56,7 +56,8 @@ export async function GET(req: Request) {
     const startStr = since.toISOString().split('T')[0];
     const endStr = end.toISOString().split('T')[0];
 
-    let queryRows: any[] = [];
+    // Search Console query rows — only `keys` (the dimension values) is read here.
+    let queryRows: Array<{ keys?: string[] | null }> = [];
     for (const account of accounts) {
       try {
         const oauth2 = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);

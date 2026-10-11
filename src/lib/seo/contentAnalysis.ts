@@ -16,6 +16,25 @@ function dfsAuth(cred: string): string {
   return c.includes(":") ? Buffer.from(c).toString("base64") : c;
 }
 
+/** One DataForSEO Content Analysis mention item, as this parser reads it. */
+interface DfsMentionItem {
+  url?: string;
+  domain?: string;
+  main_domain?: string;
+  fetch_time?: string;
+  score?: number | string;
+  content_info?: {
+    main_title?: string;
+    title?: string;
+    snippet?: string;
+    highlighted_text?: string;
+    date_published?: string;
+    group_date?: string;
+    connotation_types?: Record<string, number>;
+    sentiment_connotations?: Record<string, number>;
+  };
+}
+
 function maxKey<T extends string>(obj: Record<string, number> | undefined, keys: readonly T[]): T | undefined {
   if (!obj) return undefined;
   let best: T | undefined; let bestV = -Infinity;
@@ -72,10 +91,10 @@ export async function runContentSearch(
 
   const result = taskObj?.result?.[0] ?? {};
   const total: number = result.total_count ?? (result.items?.length ?? 0);
-  const items: Citation[] = (result.items ?? []).map((it: any) => {
-    const ci = it.content_info ?? {};
-    const ct = ci.connotation_types ?? {};
-    const sc = ci.sentiment_connotations ?? {};
+  const items: Citation[] = (result.items ?? []).map((it: DfsMentionItem) => {
+    const ci: NonNullable<DfsMentionItem["content_info"]> = it.content_info ?? {};
+    const ct: Record<string, number> = ci.connotation_types ?? {};
+    const sc: Record<string, number> = ci.sentiment_connotations ?? {};
     const emotions = Object.fromEntries(EMOTIONS.map(e => [e, Number(sc[e] ?? 0)])) as Record<Emotion, number>;
     const polarity = (maxKey(ct, ["positive", "neutral", "negative"] as const) ?? "neutral") as Polarity;
     return {

@@ -150,21 +150,32 @@ export function judgeArticle(
 }
 
 /**
+ * The outline fields the compact view reads. The canonical Outline (generate.ts) carries far
+ * more; this is the judged subset, so both it and the plain literals the tests pass fit.
+ */
+interface JudgedOutline {
+  meta?: unknown;
+  sections?: Array<{ h_level?: unknown; heading?: unknown; word_count?: unknown }>;
+  faq?: Array<string | { question?: unknown }>;
+}
+
+/**
  * Outline judge — for the outline pipeline. A parsed outline can still be structurally hollow:
  * headings unrelated to the keyword, duplicated sections, empty guidance. The judge sees a
  * COMPACT view (meta + headings + FAQ), never the facts bank — the bank is reference material,
  * not structure, and sending it would both cost tokens and tempt the judge to review facts.
  */
 export function judgeOutline(
-  outline: any,
+  outline: JudgedOutline,
   ctx: JudgeContext,
   opts: { keyword: string; language?: string; country?: string; constraints?: string },
 ): Promise<JudgeOutcome> {
   const secs = Array.isArray(outline?.sections) ? outline.sections : [];
   const compact = {
     meta: outline?.meta ?? {},
-    headings: secs.map((s: any) => ({ level: s?.h_level, heading: s?.heading, words: s?.word_count })),
-    faq: Array.isArray(outline?.faq) ? outline.faq.map((f: any) => f?.question ?? f) : [],
+    headings: secs.map((s) => ({ level: s?.h_level, heading: s?.heading, words: s?.word_count })),
+    // FAQ items are objects with `question`; a bare string is passed through as-is.
+    faq: Array.isArray(outline?.faq) ? outline.faq.map((f) => (f as unknown as { question?: unknown })?.question ?? f) : [],
   };
   const langLine = opts.language ? `The headings must be in: ${opts.language}. ` : "";
   // "The structure does not cover what the query asks for" is the outline judge's main rejection,
