@@ -45,7 +45,7 @@
 // provider call is worse than no bookkeeping.
 
 import { randomUUID } from "node:crypto";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { currentCallContext } from "./context";
 import { redact, redactText, safeEndpoint } from "./redact";
 
@@ -92,7 +92,7 @@ function cuid(): string {
 }
 
 function providerCallTable(): any {
-  return (prisma as any).providerCall;
+  return dbAny.providerCall;
 }
 
 // A client generated before this model existed would make every write a silent no-op, and an

@@ -16,7 +16,7 @@
 // pushes at container start rather than at build time.
 import { createHash } from "node:crypto";
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { apexOf } from "@/lib/drops/registries";
 import { COUNTRIES, defaultLanguageFor } from "@/lib/seo/regions";
 import { hostMatches, ignorePredicate, parseHostList } from "./hosts";
@@ -32,7 +32,7 @@ import {
 } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 /**
  * Row and client shapes coming back through the untyped accessor are `any` by definition. One

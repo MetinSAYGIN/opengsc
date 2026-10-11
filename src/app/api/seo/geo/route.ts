@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { OPENAI_FALLBACK_MODELS } from "@/lib/seo/models";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { runGeoAudit, type GeoEngine, type GeoAnalysisCreds } from "@/lib/seo/geo";
 import { GEO_APARSER_PARSER } from "@/lib/seo/geoAparser";
 import { defaultLanguageFor } from "@/lib/seo/regions";
 
 // GeoAudit isn't in the committed generated client until `prisma generate` re-runs on
 // build; access it via a loose handle so types resolve everywhere (mirrors SeoJob).
-const audits = () => (prisma as any).geoAudit;
+const audits = () => dbAny.geoAudit;
 
 // Detached background run — not awaited by the request, so the result is persisted even
 // if the client navigates away. The API key lives only in memory for the run.

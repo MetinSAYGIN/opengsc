@@ -1,3 +1,4 @@
+import { dbAny } from "@/lib/prisma";
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
@@ -113,7 +114,7 @@ export async function GET(req: Request) {
   const period = searchParams.get('period') ?? '28d';
 
   const [clusterDefs, groupDefs] = await Promise.all([
-    (prisma as any).topicCluster.findMany({ where: { siteId }, orderBy: { createdAt: 'asc' } }),
+    dbAny.topicCluster.findMany({ where: { siteId }, orderBy: { createdAt: 'asc' } }),
     prisma.contentGroup.findMany({ where: { siteId }, orderBy: { createdAt: 'asc' } }),
   ]);
 

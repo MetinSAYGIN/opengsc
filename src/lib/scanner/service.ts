@@ -1,11 +1,11 @@
 import "server-only";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { describeFingerprint, fingerprintStrength } from "./fingerprints";
 import { runScan, scanHost, type ScanReport } from "./scan";
 
 // Same dynamic access as the other post-1.4.0 tables: an instance mid-update may not have the table
 // yet, and a hard import would break the route instead of degrading to "not migrated".
-const scans = () => (prisma as any).siteScan;
+const scans = () => dbAny.siteScan;
 
 export interface RelatedDomain {
   host: string;

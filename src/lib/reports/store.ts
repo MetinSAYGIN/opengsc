@@ -7,7 +7,7 @@
 // notMigrated instead of crashing on a missing table at import time.
 
 import { randomBytes } from "node:crypto";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { instanceUrl } from "@/lib/notify/channels";
 import { notifyUser } from "@/lib/notify";
 import { NOTIFY_L, normalizeLang, type NotifyLang } from "@/lib/notifyI18n";
@@ -20,7 +20,7 @@ import { renderReportPdf } from "./pdf";
 import { buildReportEmail, isSmtpConfigured, sendReportEmail } from "./mail";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 /** One row of a table that may predate the pushed schema — every field is read defensively. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema

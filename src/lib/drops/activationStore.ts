@@ -3,14 +3,14 @@
 // Contract: docs/tasks/drops-activation/CONTRACT.md.
 
 import { randomUUID } from "node:crypto";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import {
   ACTIVATION_STAGES, DOORWAY_WINDOW_DAYS, GOOGLE_CRAWL_MIN_HITS, isDonorAllowed,
   type ActivationStage,
 } from "./activation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema (see store.ts)
-const db = prisma as any;
+const db = dbAny;
 
 /** Rows per statement — the SQLite parameter ceiling, same number as store.ts. */
 const CHUNK = 400;

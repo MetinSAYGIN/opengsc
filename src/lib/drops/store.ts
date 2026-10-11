@@ -1,7 +1,7 @@
 // The only module in src/lib/drops that talks to the database. Everything else stays pure so it
 // can be tested without one; the interesting decisions here are about volume, not about logic.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { rawQuery } from "@/lib/db/raw";
 import { monthKey, readDrHistory } from "@/lib/seo/drHistory";
 import { parseDomainRows, summariseSkips, type ColumnMap } from "./ingest";
@@ -30,7 +30,7 @@ const CHUNK = 400;
  * restarted yet fail to compile.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 /**
  * True when the failure is "this table does not exist" rather than a real error — an instance

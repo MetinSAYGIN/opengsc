@@ -12,7 +12,7 @@
 //   4. whatever budget is left goes to T4's host enrichment queue.
 // All of a project's work happens inside withCallContext({ userId, feature: "serpmon-cron" }) so
 // the A-Parser calls land in the provider log under the project owner. Logs carry no keys.
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { resolveCaptureBodies } from "@/lib/providerLog/bodies";
 import { withCallContext } from "@/lib/providerLog/context";
 import { advanceRun, startRun } from "./collector";
@@ -31,7 +31,7 @@ let kickQueued = false;
 let disabled = false;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 async function tick(): Promise<void> {
   if (running || disabled) return;

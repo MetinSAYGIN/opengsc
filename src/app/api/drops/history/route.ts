@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { setHistoryVerdict, schemaMissing, storedWaybackTimestamps } from "@/lib/drops/store";
 import { fetchSnapshotTimestamps, type WaybackFetch } from "@/lib/drops/wayback";
 import { analyseDomainHistory } from "@/lib/drops/history";
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
       .slice(0, MAX_ROWS);
     if (!ids.length) return NextResponse.json({ error: "no_rows" }, { status: 400 });
 
-    const rows = (await (prisma as any).dropCandidate.findMany({
+    const rows = (await dbAny.dropCandidate.findMany({
       where: { userId, id: { in: ids } },
       select: { id: true, domain: true },
     })) as { id: string; domain: string }[];

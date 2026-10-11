@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import {
   VERIFY_FILTERS,
   isVerifyRunning,
@@ -21,7 +21,7 @@ import {
 // Permission: workspaceUserId("act") — the check spends no provider units, it is our own HTTP
 // (the render recheck bills the user's own Firecrawl key, passed per request, never stored).
 
-const store = () => (prisma as any).siteBacklinkSync; // siteBacklinkSync arrives with T0's migration
+const store = () => dbAny.siteBacklinkSync; // siteBacklinkSync arrives with T0's migration
 
 export async function POST(req: Request) {
   const userId = await workspaceUserId("act");

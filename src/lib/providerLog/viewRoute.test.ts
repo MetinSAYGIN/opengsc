@@ -124,6 +124,7 @@ const STUBS: Record<string, string> = {
         },
       },
     };
+    exports.dbAny = exports.prisma;
   `),
   "@/lib/team/workspace": stub("workspace.cjs", `
     // A plain Response, because this stub is written to a temp directory and cannot resolve

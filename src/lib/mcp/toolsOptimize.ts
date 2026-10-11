@@ -17,7 +17,7 @@
 // policy and banned-word list. Those tools are marked PAID, are gated behind
 // confirm: true, and run on the key in User.seoSettings.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { rawQuery } from "@/lib/db/raw";
 import {
   McpTool, lim, pct, r1, sinceDate, resolveSite, siteArg,
@@ -38,7 +38,7 @@ import { coerceOutline } from "./outlineShape";
 import { saveJobToHistory } from "@/lib/seo/historyServer";
 import { pickLiveProvider } from "@/lib/seo/providerPing";
 
-const jobs = () => (prisma as any).seoJob;
+const jobs = () => dbAny.seoJob;
 
 // Match a stored URL against what the agent passed: full URL, path, or a fragment of one.
 const pathOf = (u: string) => u.replace(/^https?:\/\/[^/]+/, "") || "/";

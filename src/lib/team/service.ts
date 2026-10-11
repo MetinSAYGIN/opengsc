@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import {
   assignableRoles, canManageMember, isTeamRole, normalizeEmail, passwordProblem,
   type TeamRole, type WorkspaceRole,
@@ -10,7 +10,7 @@ import { workspaceOwner, type WorkspaceContext } from "./workspace";
 
 // Same dynamic access as `workspace.ts`: an instance mid-update may not have the table yet, and a
 // hard import would take down every route instead of this one.
-const memberships = () => (prisma as any).membership;
+const memberships = () => dbAny.membership;
 
 const BCRYPT_ROUNDS = 12;
 const INVITE_TTL_MS = 72 * 60 * 60 * 1000;

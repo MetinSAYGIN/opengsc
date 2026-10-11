@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { resolveCaptureBodies } from "@/lib/providerLog/bodies";
 import { workspaceOwner } from "./owner";
 import { enterCallContext, type CallContext } from "@/lib/providerLog/context";
@@ -26,7 +26,7 @@ import {
 // Accessed dynamically for the same reason `jobs/lifecycle.ts` does it: during a rolling update the
 // generated client can briefly predate the table, and a hard import would break every route at once
 // instead of degrading to "no membership found".
-const memberships = () => (prisma as any).membership;
+const memberships = () => dbAny.membership;
 
 // Lives in ./owner so that `auth.ts` can resolve the owner without importing this file, which imports
 // `authOptions` from it.

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { genByType } from "@/lib/seo/generate";
 import { resolveAiFallbacks } from "@/lib/mcp/shared";
 import { failStaleSeoJobs, touchSeoJob, withSeoJobHeartbeat } from "@/lib/jobs/lifecycle";
@@ -12,7 +12,7 @@ import { withCallContext } from "@/lib/providerLog/context";
 
 // SeoJob model isn't in the committed generated client until `prisma generate` re-runs
 // on build; access it via a loose handle so types resolve everywhere.
-const jobs = () => (prisma as any).seoJob;
+const jobs = () => dbAny.seoJob;
 
 // Detached background run — not awaited by the request, so the result is persisted even
 // if the client navigates away or closes the tab. Keys live only in memory for the run.

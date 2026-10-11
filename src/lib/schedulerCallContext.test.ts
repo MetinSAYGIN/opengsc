@@ -85,7 +85,7 @@ const forward = (ns: string, names: string[], consts: Record<string, unknown> = 
   ].join("\n");
 
 const STUBS: Record<string, string> = {
-  "@/lib/prisma": stub("prisma.cjs", "exports.prisma = new Proxy({}, { get: (_t, k) => globalThis.__sched.prisma[k] });"),
+  "@/lib/prisma": stub("prisma.cjs", "exports.prisma = new Proxy({}, { get: (_t, k) => globalThis.__sched.prisma[k] }); exports.dbAny = exports.prisma;"),
   "@/lib/db/raw": stub("raw.cjs", forward("raw", ["rawQuery", "rawExec"])),
   "@/lib/rank": stub("rank.cjs", forward("rank", ["getUserSerpCreds", "checkSiteKeywords"], { RANK_STALE_MS: 72_000_000 })),
   "@/lib/aeoTracker": stub("aeoTracker.cjs", forward("aeo", ["getUserAeoCreds", "hasAnyAeoCreds", "siteAeoConfig", "checkSiteQuestions"], { AEO_STALE_MS: 86_400_000 })),

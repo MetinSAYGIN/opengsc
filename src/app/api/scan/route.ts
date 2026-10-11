@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { createScan, scanDto } from "@/lib/scanner/service";
 import { requireWorkspace } from "@/lib/team/workspace";
 
@@ -13,7 +13,7 @@ export async function GET() {
   const guard = await requireWorkspace("read");
   if (!guard.ok) return guard.response;
   try {
-    const rows = await (prisma as any).siteScan.findMany({
+    const rows = await dbAny.siteScan.findMany({
       where: { userId: guard.ws.ownerId },
       orderBy: { createdAt: "desc" },
       take: 50,

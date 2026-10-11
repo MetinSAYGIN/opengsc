@@ -1,6 +1,6 @@
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 
-const seoJobs = () => (prisma as any).seoJob;
+const seoJobs = () => dbAny.seoJob;
 export const SEO_JOB_STALE_MS = 20 * 60_000;
 
 // Absolute wall-clock caps by job type. The stale sweep below only catches a job whose

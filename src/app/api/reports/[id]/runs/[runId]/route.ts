@@ -4,13 +4,13 @@
 import { NextResponse } from "next/server";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { reportsSchemaMissing } from "@/lib/reports/store";
 import { reportPdfPath } from "@/lib/reports/pdf";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 const fileResponse = (body: BodyInit, filename: string, type: string, inline: boolean): Response =>
   new Response(body, {

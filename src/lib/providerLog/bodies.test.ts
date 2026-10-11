@@ -41,7 +41,7 @@ const stub = (name: string, src: string) => {
   return pathToFileURL(p).href;
 };
 const STUBS: Record<string, string> = {
-  "@/lib/prisma": stub("prisma.cjs", "exports.prisma = {};"),
+  "@/lib/prisma": stub("prisma.cjs", "exports.prisma = {}; exports.dbAny = {};"),
   // The one query `resolveCaptureBodies` makes, answered from the world above: the settings
   // snapshot SeoKeysSync mirrors out of the browser, per user.
   "@/lib/db/raw": stub("raw.cjs", `

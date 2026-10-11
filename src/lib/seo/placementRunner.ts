@@ -19,7 +19,7 @@
 // neither ever generates an event: an event is a statement, and about a refused or failed
 // check we know nothing.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { safeFetch, SafeFetchError, type SafeFetchErrorCode } from "@/lib/security/safeFetch";
 // T0's type module does not exist on this branch yet (parallel wave, docs/tasks/README.md):
 // the import is type-only, so tsx erases it and the unit tests run pre-merge; `tsc` reports
@@ -414,9 +414,9 @@ export async function scanOneRow(
 
 // Pre-T0 this branch has no siteBacklink models in the generated client; `as any` keeps the
 // file compilable now and correct after T0's migration lands.
-const backlinkStore = () => (prisma as any).siteBacklink;
-const eventStore = () => (prisma as any).siteBacklinkEvent;
-const syncStore = () => (prisma as any).siteBacklinkSync;
+const backlinkStore = () => dbAny.siteBacklink;
+const eventStore = () => dbAny.siteBacklinkEvent;
+const syncStore = () => dbAny.siteBacklinkSync;
 
 /** The check* group and nothing else — api, favorite, note and urlTo belong to other writers
  *  (CONTRACT.md §1: one row, three writers, each names only its own fields). pageTitle is

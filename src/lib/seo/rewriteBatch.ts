@@ -18,12 +18,12 @@
 // for stays retrievable. The incremental write also keeps `updatedAt` moving, so the
 // 20-minute staleness sweep in /api/seo/jobs cannot mistake a long batch for a dead one.
 
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { rewriteContent, type RewriteBody } from "./rewrite";
 import { driftSeverity } from "./factDrift";
 import type { MetaFitResult } from "./metaLimits";
 
-const jobs = () => (prisma as any).seoJob;
+const jobs = () => dbAny.seoJob;
 
 export interface RewriteBatchItem {
   /** Page to fetch and rewrite. Mutually exclusive with `text`. */

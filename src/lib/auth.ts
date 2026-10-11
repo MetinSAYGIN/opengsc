@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { decode } from "next-auth/jwt";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { prisma } from "./prisma";
+import { prisma, dbAny } from "./prisma";
 import { ownerAuthState } from "./team/owner";
 import { decideGoogleSignIn, envFlag, parseEmailList } from "./googleSignIn";
 import { clientIpFromHeaders, loginAttempts } from "./auth/loginRateLimit";
@@ -39,8 +39,7 @@ async function ownerSessionPresent(ownerId: string): Promise<boolean> {
 
 
 export const authOptions: NextAuthOptions = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adapter: PrismaAdapter(prisma as any),
+  adapter: PrismaAdapter(dbAny),
   session: {
     strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
@@ -97,7 +96,7 @@ export const authOptions: NextAuthOptions = {
         // A password account is worthless without a live membership: revoking access is a single
         // status change, and it takes effect on the very next request.
         if (!user.isOwner) {
-          const membership = await (prisma as any).membership.findFirst({
+          const membership = await dbAny.membership.findFirst({
             where: { email, status: "active" },
             select: { id: true },
           }).catch(() => null);

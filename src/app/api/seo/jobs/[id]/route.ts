@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { failStaleSeoJobs } from "@/lib/jobs/lifecycle";
 
-const jobs = () => (prisma as any).seoJob;
+const jobs = () => dbAny.seoJob;
 
 // GET /api/seo/jobs/[id] — poll a single job (status + result when done).
 export async function GET(_req: Request, context: { params: Promise<{ id: string }> }) {

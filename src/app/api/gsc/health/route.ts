@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { assertSafeTarget } from "@/lib/security/safeFetch";
 import * as tls from "tls";
 
@@ -184,8 +184,8 @@ export async function GET(req: NextRequest) {
   }
 
   const site = userId
-    ? await (prisma as any).site.findFirst({ where: { id: siteId, userId }, include: { siteHealth: true } })
-    : await (prisma as any).site.findUnique({ where: { id: siteId }, include: { siteHealth: true } });
+    ? await dbAny.site.findFirst({ where: { id: siteId, userId }, include: { siteHealth: true } })
+    : await dbAny.site.findUnique({ where: { id: siteId }, include: { siteHealth: true } });
   if (!site) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Return cached result if less than 24 h old
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
   const { siteId, safeBrowsingKey = "", googleApiKey = "", virusTotalKey = "" } = body;
   if (!siteId) return NextResponse.json({ error: "siteId required" }, { status: 400 });
 
-  const site = await (prisma as any).site.findFirst({ where: { id: siteId, userId } });
+  const site = await dbAny.site.findFirst({ where: { id: siteId, userId } });
   if (!site) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Extract clean hostname. siteId may be a Domain Property ("sc-domain:example.com"),
@@ -237,7 +237,7 @@ export async function POST(req: NextRequest) {
   ]);
 
   // Upsert to DB
-  await (prisma as any).siteHealth.upsert({
+  await dbAny.siteHealth.upsert({
     where:  { siteId },
     update: {
       checkedAt:    new Date(),

@@ -1,3 +1,4 @@
+import { dbAny } from "@/lib/prisma";
 import { NextResponse } from 'next/server';
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
@@ -14,7 +15,7 @@ import { latestBacklinkProvider } from "@/lib/seo/siteBacklinkStore";
 //
 // Pre-T0 the generated client has no siteBacklink model; the cast keeps this route compiling
 // before that merge lands (same pattern as placementRunner).
-const store = () => (prisma as any).siteBacklink;
+const store = () => dbAny.siteBacklink;
 
 const PAGE_SIZES = [50, 100, 250, 500];
 const IMPORT_ROW_CAP = 5000;

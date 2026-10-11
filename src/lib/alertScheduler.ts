@@ -13,7 +13,7 @@
 //   favorite_link — a link marked favourite was lost, downgraded to nofollow or re-targeted
 //   purchased_link — a BOUGHT placement (меджики) was lost, re-anchored, downgraded or re-targeted
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { notifyUser } from "@/lib/notify";
 import { NOTIFY_L, normalizeLang, type NotifyLang } from "@/lib/notifyI18n";
 import { lostSince } from "@/lib/seo/backlinkStore";
@@ -127,11 +127,11 @@ async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
   // периода, а не новость, поэтому за 36 часов до resetAt правило молчит.
   if (s.balanceLow.on) {
     try {
-      let rows: any[] = await (prisma as any).providerBalance.findMany({ where: { userId } });
+      let rows: any[] = await dbAny.providerBalance.findMany({ where: { userId } });
       const freshest = rows.reduce((m: number, r: any) => Math.max(m, new Date(r.fetchedAt).getTime()), 0);
       if (Date.now() - freshest > 6 * 3600_000) {
         await refreshProviderBalances(userId);
-        rows = await (prisma as any).providerBalance.findMany({ where: { userId } });
+        rows = await dbAny.providerBalance.findMany({ where: { userId } });
       }
       for (const r of rows) {
         if (!r.ok || r.left == null) continue;
@@ -157,7 +157,7 @@ async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
   if (s.providerDown.on) {
     try {
       const since = new Date(Date.now() - 60 * 60_000);
-      const rows: any[] = await (prisma as any).providerCall.findMany({
+      const rows: any[] = await dbAny.providerCall.findMany({
         where: { at: { gte: since } },
         select: { provider: true, status: true },
         take: 5000,

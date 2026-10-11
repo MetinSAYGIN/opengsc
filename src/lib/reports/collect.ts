@@ -12,7 +12,7 @@
 // client only knows ClientReport* after `prisma db push`, and a pulled-but-not-restarted
 // instance must answer `notMigrated`, not crash at import time.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { uptimeSummary } from "@/lib/uptime/store";
 import { sovForSite } from "@/lib/visibility/store";
 import { AUDIT_RULES } from "@/lib/audit/rules";
@@ -28,7 +28,7 @@ import { DAY_MS, gscRowsToTop, mergeTopRows, reportWindow, type MetricRow, type 
 export { reportWindow, type MetricRow, type ReportWindow };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 // ─── traffic ──────────────────────────────────────────────────────────────────
 

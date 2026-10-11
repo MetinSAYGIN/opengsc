@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
 import { workspaceUserId } from "@/lib/team/workspace";
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 
-const audits = () => (prisma as any).geoAudit;
+const audits = () => dbAny.geoAudit;
 
 // GET /api/seo/geo/[id] — poll a single audit (status + full report when done).
 export async function GET(_req: Request, context: { params: Promise<{ id: string }> }) {

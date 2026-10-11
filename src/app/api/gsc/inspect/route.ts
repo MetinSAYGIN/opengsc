@@ -1,3 +1,4 @@
+import { dbAny } from "@/lib/prisma";
 import { NextResponse } from 'next/server';
 import { authOptions } from '@/lib/auth';
 import { workspaceUserId } from "@/lib/team/workspace";
@@ -35,7 +36,7 @@ export async function GET(req: Request) {
   const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
   if (!site) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const pi = (prisma as any).pageInspection;
+  const pi = dbAny.pageInspection;
   const inspections = await pi.findMany({
     where: { siteId },
     orderBy: { lastInspect: 'desc' },
@@ -141,8 +142,8 @@ export async function POST(req: Request) {
   }
 
   // ── Decide which URLs actually need a fresh API call (24h TTL) ───────────────
-  const pi  = (prisma as any).pageInspection;
-  const pih = (prisma as any).pageInspectionHistory;
+  const pi  = dbAny.pageInspection;
+  const pih = dbAny.pageInspectionHistory;
 
   const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const cached = await pi.findMany({

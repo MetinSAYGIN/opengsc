@@ -157,4 +157,13 @@ function createPrismaClient() {
 
 export const prisma = globalForPrisma.prisma || createPrismaClient()
 
+/**
+ * Untyped access for models whose rows this code must survive reading/writing even when the
+ * locally generated client lags the deployed schema (tables added by `prisma db push` between
+ * deploys). This is the one sanctioned `any` over Prisma in the codebase — import it instead
+ * of writing `prisma as any` at call sites.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const dbAny: any = prisma
+
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma

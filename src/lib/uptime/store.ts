@@ -7,14 +7,14 @@
 // pushes at container start. An instance that pulled the code but has not restarted yet gets
 // `{ notMigrated: true }` (uptimeSchemaMissing) rather than a 500.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { rawQuery } from "@/lib/db/raw";
 import { parseAcceptStatus } from "./check";
 import { DEFAULT_UPTIME_SETTINGS, UPTIME_INTERVALS } from "./types";
 import type { UptimeBadge, UptimeSummary, UptimeWorkspaceSettings } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 /** True when the failure is "the Uptime tables/columns do not exist", not a real error. */
 export function uptimeSchemaMissing(error: unknown): boolean {

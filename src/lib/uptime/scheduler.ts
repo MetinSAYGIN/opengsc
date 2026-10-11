@@ -22,7 +22,7 @@
 // safeFetch — NOT loggedFetch: a monitor check is not a provider call, and 50 sites × 5 min
 // would drown the provider log (14k rows/day of noise).
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { rawExec } from "@/lib/db/raw";
 import { notifyUser } from "@/lib/notify";
 import { NOTIFY_L, formatDuration, type NotifyLang } from "@/lib/notifyI18n";
@@ -65,7 +65,7 @@ const heartbeatLast = new Map<string, number>();
 const alertAttempts = new Map<string, number>();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 // ─── small helpers ────────────────────────────────────────────────────────────
 

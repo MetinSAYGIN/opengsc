@@ -50,7 +50,7 @@ const STUBS: Record<string, string> = {
   "server-only": stub("server-only.cjs", "module.exports = {};"),
   "next-auth": stub("next-auth.cjs", "exports.getServerSession = async () => globalThis.__ws.session;"),
   "@/lib/auth": stub("auth.cjs", "exports.authOptions = {};"),
-  "@/lib/prisma": stub("prisma.cjs", "exports.prisma = new Proxy({}, { get: (_t, k) => globalThis.__ws.prisma[k] });"),
+  "@/lib/prisma": stub("prisma.cjs", "exports.prisma = new Proxy({}, { get: (_t, k) => globalThis.__ws.prisma[k] }); exports.dbAny = exports.prisma;"),
   "next/headers": stub("headers.cjs", "exports.headers = async () => globalThis.__ws.headers;"),
   "@/lib/db/raw": stub("raw.cjs", `
     exports.rawQuery = async (_sql, id) => {

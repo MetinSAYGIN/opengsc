@@ -6,7 +6,7 @@
 //
 // Every provider call here happens inside the scheduler's withCallContext, so the provider log
 // attributes each A-Parser request to the project owner without threading a userId through runSerp.
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { runSerp, type SerpOptions, type SerpResponse } from "@/lib/seo/serp";
 import { credsTag, getAparserServerCreds, type ServerAparserCreds } from "@/lib/seo/aparserServerCreds";
 
@@ -27,7 +27,7 @@ import { kickSerpmonScheduler, kickSerpmonSchedulerIn } from "./scheduler";
 import type { RunRowLike } from "./store";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same untyped rows as the store
 type DbRow = any;
 

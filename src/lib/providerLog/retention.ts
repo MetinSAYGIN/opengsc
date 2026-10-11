@@ -24,7 +24,7 @@
 // housekeeping. Ten thousand rows a tick, hourly, retires far more than any instance produces,
 // and a backlog drains over a few hours instead of stalling one of them.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 
 /** Days a captured request/response body is kept. */
 export const BODY_RETENTION_DAYS = 7;
@@ -75,7 +75,7 @@ let tableOverride: unknown;
 
 function table(): any {
   if (tableOverride !== undefined) return tableOverride;
-  return (prisma as any).providerCall;
+  return dbAny.providerCall;
 }
 
 /** Test hook: run the sweep against a stub. Called with no argument to restore Prisma. */

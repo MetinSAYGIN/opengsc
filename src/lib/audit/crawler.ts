@@ -4,7 +4,7 @@
 // all live in the raw HTML). Runs as a fire-and-forget job (same pattern as SeoJob):
 // POST /api/audit creates the SiteAudit row and calls runAudit() without awaiting it.
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { checkAiCrawlability, fetchRobots } from "@/lib/audit/aiCrawl";
 import { safeFetch } from "@/lib/security/safeFetch";
 import { extractAuditHtml, missingSecurityHeaders, robotsDirectivesConflict, type AuditHtmlSignals } from "@/lib/audit/pageSignals";
@@ -138,7 +138,7 @@ export function storedOptions(value?: string | null): AuditOptions | undefined {
  * are never resumed automatically because repeating an uncertain provider call could double bill.
  */
 export async function recoverStaleAudits(siteId?: string): Promise<number> {
-  const store = (prisma as any).siteAudit;
+  const store = dbAny.siteAudit;
   const cutoff = new Date(Date.now() - AUDIT_STALE_MS);
   let stale: any[] = [];
   try {
@@ -237,7 +237,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     const audit = await prisma.siteAudit.findUnique({ where: { id: auditId }, include: { site: true } });
     if (!audit) return;
     await prisma.siteAuditPage.deleteMany({ where: { auditId } });
-    await (prisma as any).siteAudit.update({
+    await dbAny.siteAudit.update({
       where: { id: auditId },
       data: { status: "running", stage: "crawl", progress: 0, pagesCrawled: 0, heartbeatAt: new Date(), finishedAt: null, error: null },
     });
@@ -321,7 +321,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         }
         results.set(item.url, entry);
         if (crawled % 10 === 0) {
-          await (prisma as any).siteAudit.update({
+          await dbAny.siteAudit.update({
             where: { id: auditId },
             data: { pagesCrawled: crawled, progress: Math.min(74, Math.round((crawled / maxPages) * 75)), heartbeatAt: new Date() },
           }).catch(() => {});
@@ -331,7 +331,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     });
     await Promise.all(workers);
 
-    await (prisma as any).siteAudit.update({ where: { id: auditId }, data: { stage: "analyze", progress: 78, heartbeatAt: new Date() } }).catch(() => {});
+    await dbAny.siteAudit.update({ where: { id: auditId }, data: { stage: "analyze", progress: 78, heartbeatAt: new Date() } }).catch(() => {});
 
     // ── second pass: issues (needs the full crawl map for broken links & duplicate titles)
     const statusOf = new Map<string, number>();
@@ -567,7 +567,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     // item errors and status "partial"; the audit still completes.
     let psi: { status: string; items: unknown[] } | null = null;
     {
-      const heartbeat = () => (prisma as any).siteAudit
+      const heartbeat = () => dbAny.siteAudit
         .update({ where: { id: auditId }, data: { stage: "psi", heartbeatAt: new Date() } })
         .catch(() => {});
       const captureBodies = await resolveCaptureBodies(audit.site.userId).catch(() => false);
@@ -608,7 +608,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
       });
     }
 
-    await (prisma as any).siteAudit.update({ where: { id: auditId }, data: { stage: "persist", progress: 90, heartbeatAt: new Date() } }).catch(() => {});
+    await dbAny.siteAudit.update({ where: { id: auditId }, data: { stage: "persist", progress: 90, heartbeatAt: new Date() } }).catch(() => {});
 
     // Rows carried arrays so the PSI stage could append findings; they become JSON only here,
     // at the storage boundary.

@@ -8,13 +8,13 @@
 // answers 200 even when every data endpoint on the host is failing), OpenRouter (/api/v1/key)
 // and 2index.ninja (/api/v1/balance). Providers that publish no such endpoint are invisible
 // here by design — for those, the provider_down alert over the call log is the coverage.
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { rawQuery } from "@/lib/db/raw";
 import { getOwnerSettings } from "@/lib/engineKeysServer";
 
 // Loose handle: the table exists after the migration even before `prisma generate` re-runs
 // (same stance as GeoAudit in the geo route).
-const balances = () => (prisma as any).providerBalance;
+const balances = () => dbAny.providerBalance;
 
 export interface BalanceFetch {
   provider: string;

@@ -9,12 +9,12 @@
 // gateway's pagination dialect, page through the whole profile, persist each page, and keep the
 // SiteBacklinkSync row honest (heartbeat, progress, units actually billed).
 //
-// The Prisma models are reached through `(prisma as any)`, the same way the audit crawler reaches
+// The Prisma models are reached through `dbAny`, the same way the audit crawler reaches
 // SiteAudit: the models arrive with the T0 migration and the generated client may lag the schema
 // on a checkout that has the code but not the migration. Typed access would turn that lag into a
 // build break; the cast makes the module compile before and after the client catches up.
 
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { MetricsCreds, fetchKeyssoBacklinksPage, fetchDataforseoBacklinksPage } from "@/lib/seo/metrics";
 import { recordUsage, releaseUnusedUnits } from "@/lib/seo/metricsStore";
 import {
@@ -24,7 +24,7 @@ import {
 import { providerFromSyncMode, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
 import { pageByKeyset, pageByOffset, settleCompleteness, type PagingDeps } from "@/lib/seo/exportPaging";
 
-const db = prisma as any;
+const db = dbAny;
 
 // ─── Page persistence ──────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { requireWorkspace } from "@/lib/team/workspace";
 
 // Reading the provider call log back.
@@ -31,7 +31,7 @@ export const PAGE_SIZE_MAX = 100;
 
 // Same loose handle as everywhere else this model is touched: until `prisma generate` re-runs the
 // delegate is absent, and a settings screen should say "nothing recorded yet" rather than 500.
-const providerCalls = () => (prisma as any).providerCall;
+const providerCalls = () => dbAny.providerCall;
 
 /** What the list shows. Deliberately without the bodies — see `rowWithBodies`. */
 function dto(r: any) {

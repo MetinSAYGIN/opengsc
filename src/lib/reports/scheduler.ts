@@ -10,7 +10,7 @@
 // within the hour, e.g. SMTP down) nextSendAt is advanced to the next period, so one
 // broken SMTP never spins the renderer every hour.
 
-import { prisma } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { resolveCaptureBodies } from "@/lib/providerLog/bodies";
 import { withCallContext } from "@/lib/providerLog/context";
 import { createAndSendRun, reportsSchemaMissing, reschedule } from "./store";
@@ -24,7 +24,7 @@ let running = false;
 let disabled = false;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the client predates the schema
-const db = prisma as any;
+const db = dbAny;
 
 /** What the tick needs from a due report — db is untyped, this keeps the loop readable. */
 interface DueReport {
