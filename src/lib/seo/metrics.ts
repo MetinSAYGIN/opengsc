@@ -81,7 +81,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 async function requestWithRetry(
   url: string, init: RequestInit, poolKey: string, provider: MetricsProvider,
 ): Promise<Response> {
-  let lastErr: any = null;
+  let lastErr: unknown = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       // One row per attempt, numbered. Each attempt is a request the gateway answered, and the
@@ -179,6 +179,13 @@ export async function fetchSubscriptionInfo(creds: MetricsCreds): Promise<Subscr
 
 // ─── Normalized shapes ─────────────────────────────────────────────────────────
 
+/**
+ * A parsed provider response object, before any field is validated. Every read below goes
+ * through `num` / `String(...)` / `mjPick` precisely because nothing on it can be trusted —
+ * providers rename columns and omit fields across their own versions.
+ */
+type JsonRecord = Record<string, unknown>;
+
 export interface KeywordMetric {
   keyword: string;
   volume: number | null;
@@ -187,7 +194,7 @@ export interface KeywordMetric {
   globalVolume: number | null;
   parentTopic: string | null;
   intents: string | null;
-  payload: any;
+  payload: JsonRecord;
 }
 
 export interface DomainMetric {
@@ -198,7 +205,7 @@ export interface DomainMetric {
   orgTraffic: number | null;
   orgKeywords: number | null;
   orgCost: number | null;
-  payload: any;
+  payload: JsonRecord;
 }
 
 export interface MetricsResult<T> {
@@ -220,7 +227,7 @@ export interface MetricsResult<T> {
  * one carries `volume = NULL`, while 88 carry `cpc = NULL` — because `cpc` was the single field
  * guarded by hand at its call site and the others were not. The asymmetry is the proof.
  */
-const num = (v: any): number | null => {
+const num = (v: unknown): number | null => {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -279,7 +286,7 @@ async function ahrefsKeywords(
 
   // Every Ahrefs list endpoint answers with one top-level object keyed by report name.
   const data = await res.json();
-  const rows: any[] = Array.isArray(data?.keywords) ? data.keywords : [];
+  const rows: JsonRecord[] = Array.isArray(data?.keywords) ? data.keywords : [];
 
   // Billed on the rows that came back, not the keywords asked for — the same reconciliation
   // `ahrefsIdeas` does. A keyword the provider has never seen simply does not arrive, and
@@ -435,7 +442,7 @@ export interface BacklinkStatsTotals {
 export async function fetchBacklinkStats(
   creds: MetricsCreds,
   domain: string,
-): Promise<{ ok: true; raw: any; totals: BacklinkStatsTotals } | { ok: false; error: string }> {
+): Promise<{ ok: true; raw: JsonRecord; totals: BacklinkStatsTotals } | { ok: false; error: string }> {
   if (creds.provider === "majestic") {
     const r = await majesticItemInfo(creds, [domain]);
     if (!r.items.length) return { ok: false, error: r.error ?? "majestic empty" };
@@ -486,7 +493,7 @@ const REFDOMAINS_MODE_CACHE_MS = 24 * 3600 * 1000;
 async function ahrefsProfile(
   creds: MetricsCreds,
   domain: string,
-  opts: { minDr?: number; stats?: any } = {},
+  opts: { minDr?: number; stats?: JsonRecord } = {},
 ): Promise<MetricsResult<BacklinkProfile> & { sawEnd?: boolean; unitsSpent?: number }> {
   const base = (creds.baseUrl || DEFAULT_BASE_URL.ahrefs).replace(/\/+$/, "");
   const auth = { headers: { Authorization: `Bearer ${creds.apiKey}`, Accept: "application/json" } };
@@ -505,7 +512,7 @@ async function ahrefsProfile(
 
   const refDomains: RefDomainItem[] = [];
   const seen = new Set<string>();
-  const addPage = (rawRows: any[]): number => {
+  const addPage = (rawRows: JsonRecord[]): number => {
     let added = 0;
     for (const r of rawRows) {
       const refDomain = String(r.domain ?? "").toLowerCase().replace(/^www\./, "");
@@ -526,7 +533,7 @@ async function ahrefsProfile(
   const fetchPage = async (params: URLSearchParams) => {
     const res = await requestWithRetry(`${base}/v3/site-explorer/refdomains?${params}`, auth, creds.apiKey, creds.provider);
     if (!res.ok) return { ok: false as const, error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
-    return { ok: true as const, rows: ((await res.json())?.refdomains ?? []) as any[] };
+    return { ok: true as const, rows: ((await res.json())?.refdomains ?? []) as JsonRecord[] };
   };
 
   // Paging only matters when the profile is bigger than one page. When it is, probe the gateway
@@ -545,7 +552,7 @@ async function ahrefsProfile(
       target: domain, mode: "domain", limit: "10", offset: String(offset),
       select: "domain", order_by: "domain:asc",
     });
-    const keyOf = (rows: any[]) => rows.map(r => String(r.domain ?? "").toLowerCase()).filter(Boolean);
+    const keyOf = (rows: JsonRecord[]) => rows.map(r => String(r.domain ?? "").toLowerCase()).filter(Boolean);
     const a = await fetchPage(probeParams(0));
     // Only a definitive answer is cached for the day: a 400 means the gateway does not know
     // `offset`, a clean comparison means it does. A transient 5xx or a 429 says nothing about
@@ -657,7 +664,7 @@ async function ahrefsProfile(
 export async function fetchBacklinkProfile(
   creds: MetricsCreds,
   domain: string,
-  opts: { minDr?: number; stats?: any } = {},
+  opts: { minDr?: number; stats?: JsonRecord } = {},
 ): Promise<MetricsResult<BacklinkProfile> & { sawEnd?: boolean; unitsSpent?: number; shortfall?: RefdomainShortfall }> {
   if (!creds.apiKey) return { items: [], units: 0, error: "no_key" };
   try {
@@ -697,7 +704,7 @@ const SEMRUSH_BACKLINKS_PAGE_SIZE = 1000;
 async function semrushBacklinksCall(
   creds: MetricsCreds,
   params: Record<string, string>,
-): Promise<{ rows: Record<string, any>[]; total: number | null; error?: string }> {
+): Promise<{ rows: JsonRecord[]; total: number | null; error?: string }> {
   const base = (creds.baseUrl || DEFAULT_BASE_URL.semrush).replace(/\/+$/, "");
   const search = new URLSearchParams({ key: creds.apiKey, ...params });
   const res = await requestWithRetry(
@@ -733,7 +740,7 @@ async function semrushBacklinksCall(
 async function semrushProfile(
   creds: MetricsCreds,
   domain: string,
-  opts: { minDr?: number; stats?: any } = {},
+  opts: { minDr?: number; stats?: JsonRecord } = {},
 ): Promise<MetricsResult<BacklinkProfile> & { sawEnd?: boolean; unitsSpent?: number }> {
   let stats = opts.stats ?? null;
   if (!stats) {
@@ -829,7 +836,7 @@ async function semrushProfile(
 const MAJESTIC_DATASOURCE = "fresh";
 
 /** Read one row field across the names it has shipped under, case-insensitively. */
-function mjPick(row: Record<string, any>, ...names: string[]): any {
+function mjPick(row: JsonRecord, ...names: string[]): unknown {
   const lower = new Map(Object.keys(row).map(k => [k.toLowerCase(), k]));
   for (const n of names) {
     const k = lower.get(n.toLowerCase());
@@ -845,7 +852,7 @@ function mjPick(row: Record<string, any>, ...names: string[]): any {
  * Matched case-insensitively by prefix; the profile pull requests one item per call, so the
  * first hit is the one.
  */
-function mjPickPrefix(row: Record<string, any>, prefix: string): any {
+function mjPickPrefix(row: JsonRecord, prefix: string): unknown {
   const p = prefix.toLowerCase();
   for (const k of Object.keys(row)) {
     if (k.toLowerCase().startsWith(p) && row[k] !== "" && row[k] != null) return row[k];
@@ -855,8 +862,8 @@ function mjPickPrefix(row: Record<string, any>, prefix: string): any {
 
 /** Rows of a named DataTable. The docs pin table names per cmd (`Results`, `BackLinks`, …);
  *  matching without case costs nothing and survives a rename. */
-function mjTable(d: any, ...names: string[]): Record<string, any>[] {
-  const tables = d?.DataTables ?? {};
+function mjTable(d: JsonRecord, ...names: string[]): JsonRecord[] {
+  const tables = (d?.DataTables ?? {}) as Record<string, { Data?: unknown }>;
   const wanted = names.map(n => n.toLowerCase());
   for (const key of Object.keys(tables)) {
     if (wanted.includes(key.toLowerCase()) && Array.isArray(tables[key]?.Data)) return tables[key].Data;
@@ -864,7 +871,7 @@ function mjTable(d: any, ...names: string[]): Record<string, any>[] {
   return [];
 }
 
-function mjError(d: any): string | null {
+function mjError(d: JsonRecord | null): string | null {
   if (!d || d.Code === "OK") return null;
   const msg = String(d.ErrorMessage ?? d.FullError ?? "error").slice(0, 300);
   if (/invalid/i.test(msg) && /key/i.test(msg)) return `majestic 401: ${msg}`;
@@ -876,7 +883,7 @@ function mjError(d: any): string | null {
 async function majesticCall(
   creds: MetricsCreds,
   params: Record<string, string>,
-): Promise<{ ok: true; data: any } | { ok: false; error: string }> {
+): Promise<{ ok: true; data: JsonRecord } | { ok: false; error: string }> {
   const base = (creds.baseUrl || DEFAULT_BASE_URL.majestic).replace(/\/+$/, "");
   const search = new URLSearchParams({ app_api_key: creds.apiKey, ...params });
   try {
@@ -901,7 +908,7 @@ export interface MajesticItemStats {
   citationFlow: number | null;
   refDomains: number | null;
   backlinks: number | null;
-  raw: any;
+  raw: JsonRecord;
 }
 
 /**
@@ -1004,7 +1011,7 @@ async function majesticDomain(creds: MetricsCreds, domain: string): Promise<Metr
 async function majesticProfile(
   creds: MetricsCreds,
   domain: string,
-  opts: { minDr?: number; stats?: any } = {},
+  opts: { minDr?: number; stats?: JsonRecord } = {},
 ): Promise<MetricsResult<BacklinkProfile> & { sawEnd?: boolean; unitsSpent?: number }> {
   let stats = opts.stats ?? null;
   if (!stats) {
@@ -1111,7 +1118,7 @@ async function majesticProfile(
 
 const KEYSSO_MAX_IN_FLIGHT = 2;
 
-type KeyssoAnswer = { ok: true; data: any } | { ok: false; status: number; error: string };
+type KeyssoAnswer = { ok: true; data: JsonRecord } | { ok: false; status: number; error: string };
 
 async function keyssoGet(creds: MetricsCreds, path: string, params: Record<string, string> = {}): Promise<KeyssoAnswer> {
   const base = (creds.baseUrl || DEFAULT_BASE_URL.keysso).replace(/\/+$/, "");
@@ -1201,7 +1208,7 @@ async function keyssoTotals(creds: MetricsCreds, domain: string) {
 
 async function keyssoBacklinkStats(
   creds: MetricsCreds, domain: string,
-): Promise<{ ok: true; raw: any; totals: BacklinkStatsTotals } | { ok: false; error: string }> {
+): Promise<{ ok: true; raw: JsonRecord; totals: BacklinkStatsTotals } | { ok: false; error: string }> {
   const t = await keyssoTotals(creds, domain);
   if (!t.ok) return { ok: false, error: t.error ?? "keysso empty" };
   return {
@@ -1252,7 +1259,7 @@ const KEYSSO_MAX_PAGES = 2000;
 async function keyssoProfile(
   creds: MetricsCreds,
   domain: string,
-  opts: { minDr?: number; stats?: any } = {},
+  opts: { minDr?: number; stats?: JsonRecord } = {},
 ): Promise<MetricsResult<BacklinkProfile> & { sawEnd?: boolean; unitsSpent?: number }> {
   let stats = opts.stats ?? null;
   if (!stats) {
@@ -1557,7 +1564,7 @@ const DFS_MAX_IN_FLIGHT = 6;
 const DFS_TIMEOUT_MS = 60_000;
 
 type DfsAnswer =
-  | { ok: true; result: any; units: number; status: 200 }
+  | { ok: true; result: JsonRecord | null; units: number; status: 200 }
   | { ok: false; status: number; error: string; units: number };
 
 async function dfsCall(
@@ -1644,7 +1651,7 @@ export async function fetchDataforseoSummary(
 
 async function dataforseoBacklinkStats(
   creds: MetricsCreds, domain: string,
-): Promise<{ ok: true; raw: any; totals: BacklinkStatsTotals } | { ok: false; error: string }> {
+): Promise<{ ok: true; raw: JsonRecord; totals: BacklinkStatsTotals } | { ok: false; error: string }> {
   const s = await fetchDataforseoSummary(creds, domain);
   if (!s.ok) return { ok: false, error: s.error };
   return {
@@ -1692,7 +1699,7 @@ const DFS_MAX_PAGES = 2000;
 async function dataforseoProfile(
   creds: MetricsCreds,
   domain: string,
-  opts: { minDr?: number; stats?: any } = {},
+  opts: { minDr?: number; stats?: JsonRecord } = {},
 ): Promise<MetricsResult<BacklinkProfile> & { sawEnd?: boolean; unitsSpent?: number; shortfall?: RefdomainShortfall }> {
   let stats = opts.stats ?? null;
   if (!stats || stats.source !== "dataforseo") {
@@ -1731,7 +1738,7 @@ async function dataforseoProfile(
       partialError = r.error;
       break;
     }
-    const items: any[] = Array.isArray(r.result?.items) ? r.result.items : [];
+    const items: JsonRecord[] = Array.isArray(r.result?.items) ? r.result.items : [];
     if (total == null) total = num(r.result?.total_count);
     if (!items.length) { sawEnd = true; break; }
 
@@ -1887,7 +1894,7 @@ async function ahrefsCompetitors(
       creds.apiKey, creds.provider,
     );
     if (!res.ok) return { items: [], units: 0, error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
-    const rows: any[] = (await res.json())?.competitors ?? [];
+    const rows: JsonRecord[] = (await res.json())?.competitors ?? [];
     return {
       units: estimateCompetitorUnits(limit),
       items: rows.map(r => ({
@@ -1988,7 +1995,7 @@ async function ahrefsOrganicKeywords(
       creds.apiKey, creds.provider,
     );
     if (!res.ok) return { items: [], units: 0, error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
-    const rows: any[] = (await res.json())?.keywords ?? [];
+    const rows: JsonRecord[] = (await res.json())?.keywords ?? [];
     return {
       units: estimateOrganicKeywordUnits(limit, !!opts.withDifficulty),
       items: rows.map(r => ({
@@ -2118,7 +2125,7 @@ async function ahrefsIdeas(
     return { items: [], units: 0, error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
   }
 
-  const rows: any[] = (await res.json())?.keywords ?? [];
+  const rows: JsonRecord[] = (await res.json())?.keywords ?? [];
   // Billed on what came back, not on `limit`.
   //
   // `units` above is the ceiling the caller reserved against the cap — correct for that job, and
@@ -2242,7 +2249,7 @@ export async function fetchVolumeHistory(
     );
     if (!res.ok) return { items: [], units: 0, error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
     const d = await res.json();
-    const rows: any[] = d?.metrics ?? d?.volume_history ?? [];
+    const rows: JsonRecord[] = d?.metrics ?? d?.volume_history ?? [];
     return {
       units: AHREFS_UNIT_FLOOR,
       items: rows

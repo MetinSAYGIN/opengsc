@@ -14,6 +14,39 @@ import { getTaskCreds, getSerpCreds, getFirecrawlKey, getAutoFactcheck, getAutoI
 import { IMAGE_MODELS, imageModel, type ImageModelId } from "@/lib/seo/imageModels";
 import { META_LIMITS } from "@/lib/seo/metaLimits";
 
+/** The dictionary lookup this screen and its tabs receive as a prop (what useLanguage returns). */
+type TranslateFn = ReturnType<typeof useLanguage>["t"];
+
+// ─── Fact-check report shapes ───────────────────────────────────────────────────
+//
+// What /api/seo/factcheck-section answers with (the contract prompts.ts spells out: a status,
+// facts with claim/status/note and 1-based source numbers, sources as title/snippet/url/domain),
+// kept together in `meta.factcheck` between runs. Facts/sources are read defensively — the LLM
+// writes this JSON, not the route.
+
+interface FactcheckFact { claim: string; status: string; note?: string; sources?: number[] }
+interface FactcheckSource { title?: string; snippet?: string; url: string; domain?: string }
+interface FactcheckSection { heading?: string; status?: string; facts: FactcheckFact[]; sources: FactcheckSource[] }
+interface FactcheckReport {
+  overall_percent?: number;
+  summary?: { confirmed?: number; partial?: number; unconfirmed?: number };
+  total_facts?: number;
+  total_sources?: number;
+  sections?: FactcheckSection[];
+}
+
+/** One scraped page from /api/seo/scrape, as the shared-corpus mode reads it. */
+interface ScrapePage { url?: string; metaDescription?: string; textSample?: string }
+
+// ─── Image plan shapes ──────────────────────────────────────────────────────────
+//
+// What /api/seo/images answers with (prompts.ts: hero + per-section prompts with alt/title),
+// plus the locally-added `generatedUrl` once a kie.ai/Z.AI render finishes. `hero` may be a
+// bare prompt string in older records — the render below narrows it by typeof.
+
+interface ImagePromptInfo { heading?: string; prompt?: string; alt?: string; title?: string; generatedUrl?: string }
+interface ImagePromptPlan { hero?: string | ImagePromptInfo; sections?: ImagePromptInfo[] }
+
 /**
  * What the pipeline noticed and could not fix by itself.
  *
@@ -284,7 +317,7 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
   function copyForDocs() {
     const html = markdownToHtml(article);
     try {
-      (navigator.clipboard as any).write([new (window as any).ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([article], { type: "text/plain" }) })]).then(() => flash("docs"));
+      navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([article], { type: "text/plain" }) })]).then(() => flash("docs"));
     } catch { navigator.clipboard.writeText(article).then(() => flash("docs")); }
   }
   function download(kind: "docx" | "html" | "txt" | "md") {
@@ -375,7 +408,7 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
       <div className="panel">
         <div style={{ display: "flex", gap: "6px", marginBottom: "16px", background: "var(--color-bg)", padding: "4px", borderRadius: "10px", width: "fit-content" }}>
           {([["text", t("seoTabTextView"), FileText], ["fact", t("seoTabFactCheck"), Shield], ["img", t("seoTabImages"), ImageIcon]] as const).map(([k, label, Icon]) => (
-            <button key={k} onClick={() => setTab(k as any)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", borderRadius: "7px", fontSize: "13px", fontWeight: tab === k ? 700 : 500, cursor: "pointer", border: "none", background: tab === k ? "var(--color-card)" : "transparent", color: tab === k ? "var(--color-text-primary)" : "var(--color-text-secondary)", boxShadow: tab === k ? "0 1px 3px rgba(0,0,0,0.15)" : "none" }}><Icon size={15} /> {label}</button>
+            <button key={k} onClick={() => setTab(k)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", borderRadius: "7px", fontSize: "13px", fontWeight: tab === k ? 700 : 500, cursor: "pointer", border: "none", background: tab === k ? "var(--color-card)" : "transparent", color: tab === k ? "var(--color-text-primary)" : "var(--color-text-secondary)", boxShadow: tab === k ? "0 1px 3px rgba(0,0,0,0.15)" : "none" }}><Icon size={15} /> {label}</button>
           ))}
         </div>
 
@@ -463,25 +496,31 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
 }
 
 // ─── Fact-check tab (real per-section source verification) ───────────────────────
-function buildFcReport(results: any[]) {
+function buildFcReport(results: FactcheckSection[]) {
   let c = 0, p = 0, u = 0, src = 0;
-  results.forEach(sec => { (sec.facts || []).forEach((f: any) => { if (f.status === "confirmed") c++; else if (f.status === "unconfirmed") u++; else p++; }); src += (sec.sources || []).length; });
+  results.forEach(sec => { (sec.facts || []).forEach(f => { if (f.status === "confirmed") c++; else if (f.status === "unconfirmed") u++; else p++; }); src += (sec.sources || []).length; });
   const total = c + p + u || 1;
   return { overall_percent: Math.round((c + p * 0.5) / total * 100), summary: { confirmed: c, partial: p, unconfirmed: u }, total_facts: c + p + u, total_sources: src, sections: results };
 }
 
-function FactCheck({ item, setItem, article, t, autoStart }: any) {
+function FactCheck({ item, setItem, article, t, autoStart }: {
+  item: HistoryItem;
+  setItem: React.Dispatch<React.SetStateAction<HistoryItem>>;
+  article: string;
+  t: TranslateFn;
+  autoStart?: boolean;
+}) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [err, setErr] = useState("");
   const [fixing, setFixing] = useState(false);
   const [fixed, setFixed] = useState(false);
   const [allOpen, setAllOpen] = useState<boolean | null>(null);
-  const report = item.meta?.factcheck;
+  const report = item.meta?.factcheck as FactcheckReport | undefined;
   const hasSerp = typeof window !== "undefined" && !!getSerpCreds().apiKey;
   const badFacts: { claim: string; status: string; note: string }[] = (report?.sections || [])
-    .flatMap((sec: any) => (sec.facts || []).filter((f: any) => f.status !== "confirmed").map((f: any) => ({ claim: f.claim, status: f.status, note: f.note || "" })))
-    .filter((f: any) => f.claim);
+    .flatMap(sec => (sec.facts || []).filter(f => f.status !== "confirmed").map(f => ({ claim: f.claim, status: f.status, note: f.note || "" })))
+    .filter(f => f.claim);
 
   async function fixText() {
     const ai = getTaskCreds("text");
@@ -497,7 +536,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
         // Apply the fixed text AND drop the now-stale fact-check report so the user re-checks.
         updateHistory(item.id, data.text);
         patchHistory(item.id, { meta: { factcheck: undefined } });
-        setItem((prev: any) => ({ ...prev, data: data.text, meta: { ...prev.meta, factcheck: undefined } }));
+        setItem(prev => ({ ...prev, data: data.text, meta: { ...prev.meta, factcheck: undefined } }));
         setFixed(true);
       } else setErr(data.error || t("seoErrText"));
     } catch (e) { setErr(String((e as Error)?.message ?? e)); }
@@ -529,33 +568,33 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
 
     // Saver #1: build ONE shared competitor corpus and verify every section against it,
     // instead of a live SERP per section. Off by default; uses the same SERP+scrape path once.
-    let shared: any[] | null = null;
+    let shared: FactcheckSource[] | null = null;
     if (getFactReuseCorpus() && serp.apiKey) {
       try {
-        const sr = await fetch("/api/seo/serp", {
+        const sr: { results?: FactcheckSource[] } = await fetch("/api/seo/serp", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ keyword: item.keyword, provider: serp.provider, apiKey: serp.apiKey, baseUrl: serp.baseUrl, num: 10, engine: "google" }),
         }).then(r => r.json());
         const results0 = sr.results || [];
         const cnt = getFactSourceCount();
-        const top = results0.slice(0, cnt).map((r: any) => r.url);
-        let pages: any[] = [];
+        const top = results0.slice(0, cnt).map(r => r.url);
+        let pages: ScrapePage[] = [];
         if (cnt > 0 && top.length) {
           pages = (await fetch("/api/seo/scrape", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: top, firecrawlKey: getFirecrawlKey() || undefined }) }).then(r => r.json())).pages || [];
         }
-        shared = results0.map((r: any) => {
-          const p = pages.find((x: any) => x.url === r.url);
+        shared = results0.map(r => {
+          const p = pages.find(x => x.url === r.url);
           const ev = p ? `${p.metaDescription || ""} ${p.textSample || ""}`.trim().slice(0, 1100) : "";
           return { title: r.title, snippet: ev || r.snippet, url: r.url, domain: r.domain };
         });
       } catch { shared = null; }
     }
 
-    const results: any[] = [];
+    const results: FactcheckSection[] = [];
     for (let i = 0; i < sections.length; i++) {
       const s = sections[i];
       try {
-        const body: any = { heading: s.heading, text: s.text, keyword: item.keyword, aiProvider: ai.provider, aiApiKey: ai.apiKey, model: ai.model || undefined, aiBaseUrl: ai.baseUrl || undefined };
+        const body: Record<string, unknown> = { heading: s.heading, text: s.text, keyword: item.keyword, aiProvider: ai.provider, aiApiKey: ai.apiKey, model: ai.model || undefined, aiBaseUrl: ai.baseUrl || undefined };
         if (shared) { body.sources = shared; } // reuse-corpus mode → route skips its own SERP
         else { body.serpProvider = serp.provider; body.serpKey = serp.apiKey; body.serpBaseUrl = serp.baseUrl; body.firecrawlKey = getFirecrawlKey() || undefined; body.scrapeCount = getFactSourceCount(); body.engine = "google"; body.gl = gl; body.hl = hl; }
         const res = await fetch("/api/seo/factcheck-section", {
@@ -568,7 +607,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
       setProgress({ done: i + 1, total: sections.length });
       const partial = buildFcReport(results);
       patchHistory(item.id, { meta: { factcheck: partial } });
-      setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, factcheck: partial } }));
+      setItem(prev => ({ ...prev, meta: { ...prev.meta, factcheck: partial } }));
     }
     setRunning(false);
   }
@@ -586,7 +625,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
     </div>
   );
 
-  const s = report?.summary || {};
+  const s: { confirmed?: number; partial?: number; unconfirmed?: number } = report?.summary || {};
   const total = (s.confirmed || 0) + (s.partial || 0) + (s.unconfirmed || 0) || 1;
   return (
     <div>
@@ -638,7 +677,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
             <button onClick={() => setAllOpen(false)} style={{ background: "none", border: "none", color: "var(--color-accent-blue)", cursor: "pointer" }}>{t("seoCollapseAll")}</button>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {(report.sections || []).map((sec: any, i: number) => <FcSection key={i} sec={sec} t={t} forceOpen={allOpen} />)}
+            {(report.sections || []).map((sec, i: number) => <FcSection key={i} sec={sec} t={t} forceOpen={allOpen} />)}
           </div>
         </>
       )}
@@ -648,9 +687,9 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
 function Stat({ n, label, color }: { n: number; label: string; color: string }) {
   return <div style={{ padding: "14px", borderRadius: "10px", border: `1px solid ${color}33`, background: `${color}0d` }}><div style={{ fontSize: "24px", fontWeight: 700, color }}>{n}</div><div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{label}</div></div>;
 }
-function statusColor(st: string) { return st === "confirmed" ? "var(--color-accent-green)" : st === "unconfirmed" ? "var(--color-accent-red)" : "var(--color-accent-orange)"; }
-function statusLabel(st: string, t: any) { return st === "confirmed" ? t("seoFcConfirmed") : st === "unconfirmed" ? t("seoFcUnconfirmed") : t("seoFcPartial"); }
-function FcSection({ sec, t, forceOpen }: any) {
+function statusColor(st: string | undefined) { return st === "confirmed" ? "var(--color-accent-green)" : st === "unconfirmed" ? "var(--color-accent-red)" : "var(--color-accent-orange)"; }
+function statusLabel(st: string | undefined, t: TranslateFn) { return st === "confirmed" ? t("seoFcConfirmed") : st === "unconfirmed" ? t("seoFcUnconfirmed") : t("seoFcPartial"); }
+function FcSection({ sec, t, forceOpen }: { sec: FactcheckSection; t: TranslateFn; forceOpen: boolean | null }) {
   const [open, setOpen] = useState(false);
   const isOpen = forceOpen != null ? forceOpen : open;
   const c = statusColor(sec.status);
@@ -672,7 +711,7 @@ function FcSection({ sec, t, forceOpen }: any) {
             <>
               <div className="tool-section-label" style={{ paddingTop: "12px", marginBottom: "8px" }}>{t("seoFcCheckedFacts")}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
-                {sec.facts.map((f: any, j: number) => {
+                {sec.facts.map((f, j: number) => {
                   const fc = statusColor(f.status);
                   return (
                     <div key={j} style={{ fontSize: "13px", color: "var(--color-text-secondary)", lineHeight: 1.55, padding: "9px 11px", borderRadius: "8px", background: `${fc}0d`, border: `1px solid ${fc}22` }}>
@@ -689,7 +728,7 @@ function FcSection({ sec, t, forceOpen }: any) {
             <>
               <div className="tool-section-label" style={{ paddingTop: "14px", marginBottom: "8px" }}>{t("seoFcSourcesTitle")} ({sources.length})</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
-                {sources.map((src: any, k: number) => (
+                {sources.map((src, k: number) => (
                   <div key={k} style={{ fontSize: "12px", display: "flex", gap: "7px" }}>
                     <span style={{ color: "var(--color-text-tertiary)", flexShrink: 0 }}>[{k + 1}]</span>
                     <a href={src.url} target="_blank" rel="noreferrer" style={{ color: "var(--color-accent-blue)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{src.title || src.domain}</a>
@@ -708,11 +747,18 @@ function FcSection({ sec, t, forceOpen }: any) {
 // ─── Images tab ───────────────────────────────────────────────────────────────
 type GenStatus = { status: "generating" | "done" | "error"; url?: string; error?: string };
 
-function Images({ item, setItem, outline, article, t, autoStart }: any) {
+function Images({ item, setItem, outline, article, t, autoStart }: {
+  item: HistoryItem;
+  setItem: React.Dispatch<React.SetStateAction<HistoryItem>>;
+  outline: HistoryItem["data"];
+  article: string;
+  t: TranslateFn;
+  autoStart?: boolean;
+}) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState("");
-  const images = item.meta?.images;
+  const images = item.meta?.images as ImagePromptPlan | undefined;
 
   // Real image rendering (kie.ai) — separate from the prompt-generation step above.
   const [imgModel, setImgModel] = useState<ImageModelId>("gpt-image-2-text-to-image");
@@ -735,11 +781,13 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
       const data = await res.json();
       if (!res.ok) { setErr(data.error || "error"); setLoading(false); return; }
       patchHistory(item.id, { meta: { images: data.images } });
-      setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, images: data.images } }));
+      setItem(prev => ({ ...prev, meta: { ...prev.meta, images: data.images } }));
     } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading(false);
   }
-  const copy = (txt: string, k: string) => navigator.clipboard.writeText(txt).then(() => { setCopied(k); setTimeout(() => setCopied(""), 1500); });
+  // txt can be undefined when a (LLM-written) image plan lacks a prompt — String() keeps the
+  // same coercion writeText itself would apply, so the clipboard sees the identical text.
+  const copy = (txt: string | undefined, k: string) => navigator.clipboard.writeText(String(txt)).then(() => { setCopied(k); setTimeout(() => setCopied(""), 1500); });
 
   // Create a kie.ai render task for one prompt (hero, or section index `s${i}`), poll it to
   // completion, then persist the resulting URL into item.meta.images so it survives a reload.
@@ -747,18 +795,18 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
   // synchronous provider and the tail of the polling loop.
   function saveGeneratedUrl(key: string, url: string) {
     setGenState(s => ({ ...s, [key]: { status: "done", url } }));
-    const nextImages = { ...images };
+    const nextImages: ImagePromptPlan = { ...images };
     if (key === "hero") {
       nextImages.hero = typeof nextImages.hero === "string" ? { prompt: nextImages.hero, generatedUrl: url } : { ...nextImages.hero, generatedUrl: url };
     } else {
       const idx = Number(key.slice(1));
-      nextImages.sections = (nextImages.sections || []).map((sec: any, i: number) => i === idx ? { ...sec, generatedUrl: url } : sec);
+      nextImages.sections = (nextImages.sections || []).map((sec, i: number) => i === idx ? { ...sec, generatedUrl: url } : sec);
     }
     patchHistory(item.id, { meta: { images: nextImages } });
-    setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, images: nextImages } }));
+    setItem(prev => ({ ...prev, meta: { ...prev.meta, images: nextImages } }));
   }
 
-  async function generateImage(key: string, prompt: string) {
+  async function generateImage(key: string, prompt: string | undefined) {
     // Each model names the key it needs — kie.ai and Z.AI are billed separately, and picking a
     // Z.AI model with only a kie.ai key configured used to fail with kie.ai's error text.
     const def = imageModel(imgModel);
@@ -766,7 +814,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
     if (!apiKey) { setGenState(s => ({ ...s, [key]: { status: "error", error: t("seoImgNoKieKey") } })); return; }
     setGenState(s => ({ ...s, [key]: { status: "generating" } }));
     try {
-      const input: Record<string, any> = { prompt, aspect_ratio: imgAspect, resolution: imgResolution };
+      const input: Record<string, unknown> = { prompt, aspect_ratio: imgAspect, resolution: imgResolution };
       if (imgModel === "nano-banana-2") input.output_format = "jpg";
       const createRes = await fetch("/api/seo/image-gen", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -818,7 +866,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
         <select value={imgModel} onChange={e => setImgModel(e.target.value as ImageModelId)} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
           {IMAGE_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
-        <select value={imgResolution} onChange={e => setImgResolution(e.target.value as any)} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
+        <select value={imgResolution} onChange={e => setImgResolution(e.target.value as "1K" | "2K" | "4K")} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
           <option value="1K">1K</option>
           <option value="2K">2K</option>
           <option value="4K">4K</option>
@@ -850,7 +898,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
           </div>
         );
       })()}
-      {(images.sections || []).map((s: any, i: number) => (
+      {(images.sections || []).map((s, i: number) => (
         <div key={i} style={{ border: "1px solid var(--color-border)", borderRadius: "10px", padding: "14px 16px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "8px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
@@ -871,7 +919,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
 // One prompt's render state: idle → "Generate image" button; generating → spinner; done → <img>
 // + download link (kie.ai result URLs expire after ~24h, hence the download-now nudge).
 function GeneratedImageBlock({ genKey, prompt, generatedUrl, genState, onGenerate, t }: {
-  genKey: string; prompt: string; generatedUrl?: string; genState?: GenStatus; onGenerate: (key: string, prompt: string) => void; t: any;
+  genKey: string; prompt: string | undefined; generatedUrl?: string; genState?: GenStatus; onGenerate: (key: string, prompt: string | undefined) => void; t: TranslateFn;
 }) {
   const url = genState?.url || generatedUrl;
   const busy = genState?.status === "generating";
