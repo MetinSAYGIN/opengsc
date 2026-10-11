@@ -29,7 +29,7 @@ before(async () => {
     apiNofollow BOOLEAN NOT NULL DEFAULT 0, apiSponsored BOOLEAN NOT NULL DEFAULT 0, apiUgc BOOLEAN NOT NULL DEFAULT 0,
     apiContent BOOLEAN NOT NULL DEFAULT 1, apiImage BOOLEAN NOT NULL DEFAULT 0, apiJsCrawl BOOLEAN NOT NULL DEFAULT 0,
     apiDr REAL, apiHttpCode INTEGER, apiLinkType TEXT NOT NULL DEFAULT '', apiSnippet TEXT NOT NULL DEFAULT '',
-    apiFirstSeen TEXT NOT NULL DEFAULT '', apiLastSeen TEXT NOT NULL DEFAULT '', apiFetchedAt TIMESTAMP,
+    apiFirstSeen TEXT NOT NULL DEFAULT '', apiLastSeen TEXT NOT NULL DEFAULT '', apiSpamScore INTEGER, apiFetchedAt TIMESTAMP,
     checkStatus TEXT NOT NULL DEFAULT 'unchecked', checkAnchor TEXT NOT NULL DEFAULT '', checkRel TEXT NOT NULL DEFAULT '',
     checkNofollow BOOLEAN NOT NULL DEFAULT 0, checkSponsored BOOLEAN NOT NULL DEFAULT 0, checkUgc BOOLEAN NOT NULL DEFAULT 0,
     checkFoundUrl TEXT NOT NULL DEFAULT '', checkMatchedDomain TEXT NOT NULL DEFAULT '', checkTargetOk BOOLEAN,
