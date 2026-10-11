@@ -94,8 +94,8 @@ export default function AparserPage() {
       if (Array.isArray(d?.info?.availableParsers) && d.info.availableParsers.length) {
         try { localStorage.setItem("seoAparserParsers", JSON.stringify(d.info.availableParsers)); } catch {}
       }
-    } catch (e: any) {
-      setError(String(e?.message ?? e));
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
     }
     setLoading(false);
   }, [call]);
@@ -121,8 +121,8 @@ export default function AparserPage() {
       ]);
       setTestOut({ results: out.results ?? [], resultStringPreview: out.resultStringPreview ?? "" });
       if (pre?.preset) setPreset(pre.preset);
-    } catch (e: any) {
-      setTestErr(String(e?.message ?? e));
+    } catch (e) {
+      setTestErr(String((e as Error)?.message ?? e));
     }
     setTestBusy(false);
   }
@@ -132,7 +132,7 @@ export default function AparserPage() {
     try {
       const d = await call({ op: "proxies", detail: true });
       setProxyDetail(d.proxies ?? {});
-    } catch (e: any) { setError(String(e?.message ?? e)); }
+    } catch (e) { setError(String((e as Error)?.message ?? e)); }
   }
 
   async function queueBulk() {
@@ -156,8 +156,8 @@ export default function AparserPage() {
         } catch { setTimeout(() => void poll(), 8000); }
       };
       setTimeout(() => void poll(), 4000);
-    } catch (e: any) {
-      setBulkErr(String(e?.message ?? e));
+    } catch (e) {
+      setBulkErr(String((e as Error)?.message ?? e));
       setBulkTask(null);
     }
     setBulkBusy(false);
@@ -171,7 +171,7 @@ export default function AparserPage() {
       // The server downloads the file itself: A-Parser's link points at 127.0.0.1, which only
       // the server can open.
       setBulkResults(String(d.text ?? "") + (d.truncated ? "\n… (truncated — download the full file in A-Parser)" : ""));
-    } catch (e: any) { setBulkErr(String(e?.message ?? e)); }
+    } catch (e) { setBulkErr(String((e as Error)?.message ?? e)); }
     setBulkBusy(false);
   }
 

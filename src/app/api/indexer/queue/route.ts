@@ -28,7 +28,7 @@ export async function GET(req: Request) {
     ]);
 
     return NextResponse.json({ items, total, crawled, page, pageSize });
-  } catch (e: any) {
+  } catch (e) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -113,8 +113,8 @@ async function submitToIndexNow(
         } else {
           errors.push(`${host}: HTTP ${res.status}`);
         }
-      } catch (e: any) {
-        errors.push(`${host}: ${e?.message ?? "request failed"}`);
+      } catch (e) {
+        errors.push(`${host}: ${(e as Error)?.message ?? "request failed"}`);
       }
     }
   }
@@ -220,7 +220,7 @@ export async function POST(req: Request) {
       domainsUsed: targetDomains.length,
       indexNow,
     });
-  } catch (e: any) {
+  } catch (e) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -249,7 +249,7 @@ export async function DELETE(req: Request) {
     });
 
     return NextResponse.json({ success: true, deleted: result.count });
-  } catch (e: any) {
+  } catch (e) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

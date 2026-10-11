@@ -145,7 +145,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
         const last = Array.isArray(d.traffic) && d.traffic.length ? d.traffic[d.traffic.length - 1] : null;
         setBingStats({ clicks: last?.Clicks ?? null, impressions: last?.Impressions ?? null, queries: (d.queries ?? []).slice(0, 5) });
       }
-    } catch (e: any) { setBingMsg(String(e?.message ?? e)); }
+    } catch (e) { setBingMsg(String((e as Error)?.message ?? e)); }
     setBingBusy("");
   };
 
@@ -159,7 +159,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
       // No "(method)" suffix any more: there is one way in since the anonymous ping endpoint
       // was retired, so naming it only raised the question of what the other one was.
       setBingMsg(d.ok ? `✓ ${t("sePanelSitemapOk")}` : String(d.error ?? "error"));
-    } catch (e: any) { setBingMsg(String(e?.message ?? e)); }
+    } catch (e) { setBingMsg(String((e as Error)?.message ?? e)); }
     setBingBusy("");
   };
 
@@ -175,7 +175,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
       const d = await fetch(`/api/indexing/yandex?siteUrl=${encodeURIComponent(cleanDomain)}&token=${encodeURIComponent(yandexToken)}`).then(r => r.json());
       if (d.error) setYMsg(d.error === "host_not_found" ? t("seYandexHostNotFound") : d.error === "host_not_verified" ? t("seYandexHostNotVerified") : String(d.error));
       else setYStats(d);
-    } catch (e: any) { setYMsg(String(e?.message ?? e)); }
+    } catch (e) { setYMsg(String((e as Error)?.message ?? e)); }
     setYBusy("");
   };
 
@@ -193,7 +193,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
         setYMsg(d.results ? `✓ ${ok}/${d.results.length} ${t("seYandexRecrawlSent")}` : String(d.error ?? "error"));
         if (ok) setRecrawlText("");
       }
-    } catch (e: any) { setYMsg(String(e?.message ?? e)); }
+    } catch (e) { setYMsg(String((e as Error)?.message ?? e)); }
     setYBusy("");
   };
 
@@ -212,7 +212,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
       }).then(r => r.json());
       setInMsg(d.ok ? `✓ ${t("seIndexNowOk")} (${urls.length})` : String(d.error ?? "error"));
       if (d.ok) setInText("");
-    } catch (e: any) { setInMsg(String(e?.message ?? e)); }
+    } catch (e) { setInMsg(String((e as Error)?.message ?? e)); }
     setInBusy(false);
   };
 

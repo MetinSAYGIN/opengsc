@@ -370,7 +370,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
       const d = await res.json();
       if (!res.ok) setErr(d.error === "already_running" ? t("auditAlreadyRunning") : String(d.error ?? "error"));
       await loadList();
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setStarting(false);
   };
 
@@ -409,7 +409,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
       const host = (() => { try { return new URL(d.audit?.siteUrl || "").host; } catch { return "site"; } })();
       const day = new Date(d.audit?.finishedAt ?? Date.now()).toISOString().slice(0, 10);
       downloadFile(md, `audit-${host}-${day}.md`, "text/markdown;charset=utf-8");
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setExporting(false);
   };
 

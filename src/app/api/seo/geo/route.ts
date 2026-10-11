@@ -88,8 +88,8 @@ export async function POST(req: Request) {
   let rec: any;
   try {
     rec = await audits().create({ data: { userId, query, language, country, model, status: "processing" } });
-  } catch (e: any) {
-    return NextResponse.json({ error: `db: ${String(e?.message ?? e)} (run: npx prisma db push)` }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: `db: ${String((e as Error)?.message ?? e)} (run: npx prisma db push)` }, { status: 500 });
   }
 
   runAudit(rec.id, { query, language, country, model, apiKey, engine, baseUrl, analysisModel, analysis, aparserPreset, aparserConfig, pageUrl }); // fire-and-forget

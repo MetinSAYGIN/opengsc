@@ -326,7 +326,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
       if (!res.ok) { setErr(data.error || t("seoErrText")); setLoading(false); return; }
       const rec = addHistory({ type: "text", keyword: item.keyword, data: data.text, meta: { outlineId: item.id, tone: tone || policy?.voice?.toneOfVoice || "" } });
       onDone(rec);
-    } catch (e: any) { setErr(String(e?.message ?? e)); setLoading(false); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); setLoading(false); }
   }
 
   const label: React.CSSProperties = { fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", display: "block", marginBottom: "6px", marginTop: "14px" };

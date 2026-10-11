@@ -75,7 +75,7 @@ export async function POST(req: Request) {
       return await submitFieldLink(String(b?.taskId ?? ""), expectedMinor, context, fallbackSiteId, owned, userId);
     }
     return await submitMagic369(provider, b?.items, b?.context, expectedMinor, fallbackSiteId, owned, userId);
-  } catch (e: any) {
+  } catch (e) {
     if (e instanceof FieldLinkError || e instanceof Magic369Error) {
       if (e.code === "PRICE_CHANGED") {
         return NextResponse.json({ error: "price_changed", message: "The price changed while you were confirming. Quote again." }, { status: 409 });
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "provider_error", message: e.message, code: e.code }, { status: e.status >= 400 && e.status < 500 ? e.status : 502 });
     }
     console.error("[MagicLinks] submit failed", e);
-    return NextResponse.json({ error: "submit_failed", message: String(e?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ error: "submit_failed", message: String((e as Error)?.message ?? e) }, { status: 500 });
   }
 }
 

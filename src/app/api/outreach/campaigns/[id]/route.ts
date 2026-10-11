@@ -15,8 +15,8 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
   const body = await req.json().catch(() => ({}));
   try {
     return NextResponse.json({ campaign: await updateOutreachCampaign(userId, id, body) });
-  } catch (error: any) {
-    const message = String(error?.message ?? "outreach_error");
+  } catch (error) {
+    const message = String((error as Error)?.message ?? "outreach_error");
     return NextResponse.json({ error: message }, { status: message === "campaign_not_found" ? 404 : 400 });
   }
 }
@@ -28,7 +28,7 @@ export async function DELETE(_req: Request, context: { params: Promise<{ id: str
   try {
     await deleteOutreachCampaign(userId, id);
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: String(error?.message ?? "outreach_error") }, { status: 404 });
+  } catch (error) {
+    return NextResponse.json({ error: String((error as Error)?.message ?? "outreach_error") }, { status: 404 });
   }
 }

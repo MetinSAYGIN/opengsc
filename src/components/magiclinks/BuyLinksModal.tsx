@@ -150,7 +150,7 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
       const d = await res.json();
       if (!res.ok) throw new Error(d?.message || d?.error || t("mlQuoteFailed"));
       setQuote(d);
-    } catch (e: any) { setError(String(e?.message ?? e)); }
+    } catch (e) { setError(String((e as Error)?.message ?? e)); }
     setBusy(false);
   }
 
@@ -191,7 +191,7 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
       }
       setDone({ orderId: String(d.orderId ?? "") });
       onDone?.();
-    } catch (e: any) { setError(String(e?.message ?? e)); }
+    } catch (e) { setError(String((e as Error)?.message ?? e)); }
     setBusy(false);
   }
 

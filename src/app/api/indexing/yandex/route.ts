@@ -130,9 +130,9 @@ export async function GET(req: Request) {
       series,
       problems,
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[yandex GET]", e);
-    return NextResponse.json({ error: e?.message ?? "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: (e as Error)?.message ?? "Internal server error" }, { status: 500 });
   }
 }
 
@@ -172,8 +172,8 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ error: "unknown_action" }, { status: 400 });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[yandex POST]", e);
-    return NextResponse.json({ error: e?.message ?? "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: (e as Error)?.message ?? "Internal server error" }, { status: 500 });
   }
 }

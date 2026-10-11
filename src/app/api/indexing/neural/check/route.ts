@@ -90,7 +90,7 @@ export async function POST(req: Request) {
       urlCount: urls.length,
       estimatedMinutes: schedData?.estimated_wait_minutes ?? 2,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Request failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message ?? 'Request failed' }, { status: 500 });
   }
 }

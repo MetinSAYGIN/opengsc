@@ -178,8 +178,8 @@ function AparserCard() {
       if (parsers.length) localStorage.setItem("seoAparserParsers", JSON.stringify(parsers));
       const v = d?.info?.version ? `v${d.info.version}` : "";
       setStatus({ ok: true, text: `${t("aparserTestOk")} · ${d?.host || ""} ${v} · ${parsers.length} ${t("aparserParsersWord")}`.trim() });
-    } catch (e: any) {
-      setStatus({ ok: false, text: String(e?.message ?? e) });
+    } catch (e) {
+      setStatus({ ok: false, text: String((e as Error)?.message ?? e) });
     }
     setBusy(false);
   }
@@ -275,8 +275,8 @@ function MagicLinksCard() {
       if (d?.fieldlink?.tested) parts.push(`FieldLink: ${d.fieldlink.ok ? `✓ ${money(d.fieldlink.balanceMinor)}` : `✕ ${d.fieldlink.message ?? ""}`}`);
       if (d?.magic369?.tested) parts.push(`369Team: ${d.magic369.ok ? `✓ ${money(d.magic369.balanceMinor)}` : `✕ ${d.magic369.message ?? ""}`}`);
       setStatus({ ok: parts.every(p => p.includes("✓")), text: parts.join(" · ") || t("mlNothingToTest") });
-    } catch (e: any) {
-      setStatus({ ok: false, text: String(e?.message ?? e) });
+    } catch (e) {
+      setStatus({ ok: false, text: String((e as Error)?.message ?? e) });
     }
     setBusy(false);
   }

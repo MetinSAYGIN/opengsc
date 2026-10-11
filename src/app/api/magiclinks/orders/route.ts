@@ -55,8 +55,8 @@ export async function GET() {
           hosts: ctx?.hosts ?? [], quantity: ctx?.quantity ?? 0, queries: ctx?.queries ?? [],
         });
       }
-    } catch (e: any) {
-      errors.fieldlink = String(e?.message ?? e);
+    } catch (e) {
+      errors.fieldlink = String((e as Error)?.message ?? e);
     }
   }
 

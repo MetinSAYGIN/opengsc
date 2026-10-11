@@ -34,8 +34,8 @@ export async function POST(req: Request) {
       const balance = data?.balance ?? data?.balance_usd ?? null;
       if (data?.error) return NextResponse.json({ ok: false, error: data.error });
       return NextResponse.json({ ok: true, balance });
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 
@@ -60,8 +60,8 @@ export async function POST(req: Request) {
       }
       call.finish({ responseBody: data });
       return NextResponse.json({ ok: true });
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 
@@ -82,8 +82,8 @@ export async function POST(req: Request) {
       if (!res.ok) return NextResponse.json({ ok: false, error: `HTTP ${res.status}` });
       const data = await res.json().catch(() => ({}));
       return NextResponse.json({ ok: true, balance: data?.balance ?? null });
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 

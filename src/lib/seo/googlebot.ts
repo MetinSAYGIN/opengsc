@@ -357,8 +357,8 @@ export async function followChain(startUrl: string, ua: UaKey, opts?: { referer?
 
     // Ran out of hops
     return blankView(ua, current, lastRes?.status ?? 0, hops, "too_many_redirects");
-  } catch (e: any) {
-    return blankView(ua, current, 0, hops, e?.name === "TimeoutError" ? "timeout" : String(e?.message ?? e));
+  } catch (e) {
+    return blankView(ua, current, 0, hops, (e as Error)?.name === "TimeoutError" ? "timeout" : String((e as Error)?.message ?? e));
   }
 }
 
@@ -539,9 +539,9 @@ export async function renderWithFirecrawl(
       htmlRaw: html.slice(0, MAX_HTML_RETURN),
       screenshot,
     };
-  } catch (e: any) {
-    call?.finish({ error: e?.message ?? "render_failed" });
-    const v = blankView(label, url, 0, [], e?.message ?? "render_failed");
+  } catch (e) {
+    call?.finish({ error: (e as Error)?.message ?? "render_failed" });
+    const v = blankView(label, url, 0, [], (e as Error)?.message ?? "render_failed");
     v.rendered = true;
     return v;
   }

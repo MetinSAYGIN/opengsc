@@ -97,8 +97,8 @@ export async function GET(req: Request) {
         events: mapRows(val(events)),
         realtime: { activeUsers: rtTotal, byCountry: rtRows },
       });
-    } catch (err: any) {
-      lastError = err?.message ?? 'error';
+    } catch (err) {
+      lastError = (err as Error)?.message ?? 'error';
       continue;
     }
   }

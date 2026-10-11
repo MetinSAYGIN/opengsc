@@ -103,7 +103,7 @@ export async function POST() {
     );
     child.unref();
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: "spawn_failed", message: String(e?.message ?? e) }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: "spawn_failed", message: String((e as Error)?.message ?? e) }, { status: 500 });
   }
 }

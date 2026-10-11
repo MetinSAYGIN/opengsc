@@ -36,7 +36,7 @@ export async function startJob(type: HistoryType | "outline_auto", payload: any,
     const d = await res.json();
     if (!res.ok) return { error: d.error || "job_failed" };
     return { jobId: d.jobId };
-  } catch (e: any) { return { error: String(e?.message ?? e) }; }
+  } catch (e) { return { error: String((e as Error)?.message ?? e) }; }
 }
 
 export async function getJob(id: string): Promise<SeoJobRec | null> {

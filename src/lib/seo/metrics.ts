@@ -164,8 +164,8 @@ export async function fetchSubscriptionInfo(creds: MetricsCreds): Promise<Subscr
       { headers: { Authorization: `Bearer ${creds.apiKey}`, Accept: "application/json" } },
       creds.apiKey, creds.provider,
     );
-  } catch (e: any) {
-    return { info: null, status: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { info: null, status: 0, error: String((e as Error)?.message ?? e) };
   }
   if (!res.ok) {
     return { info: null, status: res.status, error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
@@ -681,8 +681,8 @@ export async function fetchBacklinkProfile(
       : creds.provider === "semrush"
         ? await semrushProfile(creds, domain, opts)
         : await ahrefsProfile(creds, domain, opts);
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -900,8 +900,8 @@ async function majesticCall(
     const d = await res.json().catch(() => null);
     const err = mjError(d);
     return err ? { ok: false, error: err } : { ok: true, data: d };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -1140,9 +1140,9 @@ async function keyssoGet(creds: MetricsCreds, path: string, params: Record<strin
       ({ res, call } = await withSlot(`keysso:${creds.apiKey}`, () =>
         loggedFetch(url, { headers, signal: AbortSignal.timeout(45_000) }, { provider: "keysso", attempt }),
       KEYSSO_MAX_IN_FLIGHT));
-    } catch (e: any) {
+    } catch (e) {
       const step = keyssoNextStep(599, pending, failures);
-      if (step.action !== "wait") return { ok: false, status: 0, error: String(e?.message ?? e) };
+      if (step.action !== "wait") return { ok: false, status: 0, error: String((e as Error)?.message ?? e) };
       failures++;
       await sleep(step.ms);
       continue;
@@ -1593,8 +1593,8 @@ async function dfsCall(
       ({ res, call } = await withSlot(`dataforseo:${creds.apiKey}`, () =>
         loggedFetch(url, { ...init, signal: AbortSignal.timeout(DFS_TIMEOUT_MS) }, { provider: "dataforseo", attempt }),
       DFS_MAX_IN_FLIGHT));
-    } catch (e: any) {
-      last = { ok: false, status: 0, error: `dataforseo 0: ${String(e?.cause?.code || e?.message || e)}`, units };
+    } catch (e) {
+      last = { ok: false, status: 0, error: `dataforseo 0: ${String((e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || e)}`, units };
       if (attempt < 3) { await sleep(800 * 2 ** (attempt - 1) + Math.random() * 400); continue; }
       return last;
     }
@@ -1907,8 +1907,8 @@ async function ahrefsCompetitors(
         traffic: null,
       })).filter(c => c.domain.includes(".")),
     };
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -1951,8 +1951,8 @@ async function semrushCompetitors(
         traffic: num(r["Organic Traffic"]),
       })).filter(c => c.domain.includes(".")),
     };
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -2010,8 +2010,8 @@ async function ahrefsOrganicKeywords(
         url: String(r.best_position_url ?? ""),
       })).filter(k => k.keyword),
     };
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -2061,8 +2061,8 @@ async function semrushOrganicKeywords(
       units: SEMRUSH_ORGANIC_KEYWORD_UNITS_PER_ROW * rows.length,
       items: capped,
     };
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -2217,8 +2217,8 @@ export async function fetchKeywordIdeas(
     return creds.provider === "semrush"
       ? await semrushIdeas(creds, s, opts)
       : await ahrefsIdeas(creds, s, opts);
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -2261,8 +2261,8 @@ export async function fetchVolumeHistory(
         .map(r => ({ date: String(r.date ?? "").slice(0, 10), volume: Number(r.volume ?? 0) }))
         .filter(p => p.date && Number.isFinite(p.volume)),
     };
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -2368,8 +2368,8 @@ export async function fetchKeywordMetrics(
     return creds.provider === "semrush"
       ? await semrushKeywords(creds, keywords, opts)
       : await ahrefsKeywords(creds, keywords, opts);
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -2388,7 +2388,7 @@ export async function fetchDomainMetrics(
           : creds.provider === "dataforseo"
             ? await dataforseoDomain(creds, domain)
             : await ahrefsDomain(creds, domain);
-  } catch (e: any) {
-    return { items: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { items: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }

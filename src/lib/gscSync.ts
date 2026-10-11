@@ -213,15 +213,15 @@ export async function runGscSync() {
         const live = liveSiteIdsByUser.get(userId) ?? new Set<string>();
         for (const entry of siteList) if (entry.siteUrl) live.add(entry.siteUrl);
         liveSiteIdsByUser.set(userId, live);
-      } catch (err: any) {
-        console.error(`[GSC Sync]   Failed to list sites: ${err.message}`);
+      } catch (err) {
+        console.error(`[GSC Sync]   Failed to list sites: ${(err as Error).message}`);
         // Scope errors ("Request had insufficient authentication scopes.", "Insufficient
         // Permission") never recover on retry — the token itself is valid but too narrow,
         // so the only way out is the user reconnecting the account.
-        const needsReauth = /invalid_grant|token.*expired|unauthorized|invalid.*token|insufficient.*(permission|scope)/i.test(err.message);
+        const needsReauth = /invalid_grant|token.*expired|unauthorized|invalid.*token|insufficient.*(permission|scope)/i.test((err as Error).message);
         result.accountErrors.push({
           accountId: account.providerAccountId,
-          error: err.message,
+          error: (err as Error).message,
           needsReauth,
         });
         // Marks the whole user, not just this account: with an incomplete picture of what they
@@ -269,13 +269,13 @@ export async function runGscSync() {
                 tags:   '',
               },
             });
-          } catch (err: any) {
+          } catch (err) {
             // May fail on duplicate userId+siteId — try to fetch instead
             dbSite = await prisma.site.findFirst({
               where: { userId, siteId: gscUrl },
             });
             if (!dbSite) {
-              console.error(`[GSC Sync]   Could not create site: ${err.message}`);
+              console.error(`[GSC Sync]   Could not create site: ${(err as Error).message}`);
               return;
             }
           }
@@ -357,10 +357,10 @@ export async function runGscSync() {
               });
               if (searchType === 'web') result.sitesSynced++;
             }
-          } catch (err: any) {
-            console.error(`[GSC Sync]     Error syncing ${hostname} (${searchType}): ${err.message}`);
+          } catch (err) {
+            console.error(`[GSC Sync]     Error syncing ${hostname} (${searchType}): ${(err as Error).message}`);
             if (searchType === 'web') {
-              result.siteErrors.push({ site: hostname, error: err.message });
+              result.siteErrors.push({ site: hostname, error: (err as Error).message });
             }
           }
         }
@@ -436,8 +436,8 @@ export async function runGscSync() {
                 })),
             });
           }
-        } catch (err: any) {
-          console.error(`[GSC Sync]     Error syncing URL data for ${hostname}: ${err.message}`);
+        } catch (err) {
+          console.error(`[GSC Sync]     Error syncing URL data for ${hostname}: ${(err as Error).message}`);
         }
 
         // ── Step 4: sync per-query+page data (Cannibalization/Striking/CTR) ──
@@ -496,8 +496,8 @@ export async function runGscSync() {
                 })),
             });
           }
-        } catch (err: any) {
-          console.error(`[GSC Sync]     Error syncing query+page data for ${hostname}: ${err.message}`);
+        } catch (err) {
+          console.error(`[GSC Sync]     Error syncing query+page data for ${hostname}: ${(err as Error).message}`);
         }
 
         // ── Step 5: per-day query+page rows (Related intent "winner changes") ──
@@ -547,8 +547,8 @@ export async function runGscSync() {
                 })),
             });
           }
-        } catch (err: any) {
-          console.error(`[GSC Sync]     Per-day query+page rows skipped for ${hostname}: ${err.message}`);
+        } catch (err) {
+          console.error(`[GSC Sync]     Per-day query+page rows skipped for ${hostname}: ${(err as Error).message}`);
         }
 
         // Reports computed from these rows (cannibalization, …) are cached per site; this

@@ -305,8 +305,8 @@ async function callOpenAi(apiKey: string, question: string, o: AeoRunOptions): P
       call.finish({ error: lastErr });
       // 401/429 are about the key or the budget — retrying with a smaller feature set is noise.
       if (res.status === 401 || res.status === 403 || res.status === 429) return { error: lastErr };
-    } catch (e: any) {
-      return { error: e?.name === "TimeoutError" || e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+    } catch (e) {
+      return { error: (e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError" ? "timeout" : String((e as Error)?.message ?? e) };
     }
   }
   return { error: lastErr || "chatgpt: unknown error" };
@@ -392,8 +392,8 @@ export async function checkPerplexity(apiKey: string, question: string, domain: 
       for (const u of data.citations) if (typeof u === "string") citations.push({ url: u, domain: domainOf(u), title: "" });
     }
     return verdict(hostOf(domain), brandTerms, { text, citations, scanned: citations.map(c => c.domain), searched: true, model });
-  } catch (e: any) {
-    return failed(e?.name === "TimeoutError" || e?.name === "AbortError" ? "timeout" : `perplexity: ${e?.message ?? e}`, model);
+  } catch (e) {
+    return failed((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError" ? "timeout" : `perplexity: ${(e as Error)?.message ?? e}`, model);
   }
 }
 
@@ -480,8 +480,8 @@ export async function checkClaude(apiKey: string, question: string, domain: stri
       }
     }
     return verdict(hostOf(domain), brandTerms, { text: text.trim(), citations, scanned, searched, model });
-  } catch (e: any) {
-    const error = e?.name === "TimeoutError" || e?.name === "AbortError" ? "timeout" : `claude: ${e?.message ?? e}`;
+  } catch (e) {
+    const error = (e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError" ? "timeout" : `claude: ${(e as Error)?.message ?? e}`;
     logged?.finish({ error });
     return failed(error, model);
   }
@@ -536,8 +536,8 @@ export async function checkGrok(apiKey: string, question: string, domain: string
       .filter(Boolean)
       .map((u: string) => ({ url: u, domain: domainOf(u), title: "" }));
     return verdict(hostOf(domain), brandTerms, { text, citations, scanned: citations.map(c => c.domain), searched: true, model });
-  } catch (e: any) {
-    return failed(e?.name === "TimeoutError" || e?.name === "AbortError" ? "timeout" : `grok: ${e?.message ?? e}`, model);
+  } catch (e) {
+    return failed((e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError" ? "timeout" : `grok: ${(e as Error)?.message ?? e}`, model);
   }
 }
 

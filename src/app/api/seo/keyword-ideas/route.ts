@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     res = await expandKeywords({ source, apiKey, baseUrl }, seed, {
       country, language, limit, withDifficulty, mode, fetch: true,
     });
-  } catch (e: any) {
+  } catch (e) {
     // A thrown error is a bug, not a provider refusal — but the reservation was already taken,
     // and a throw is exactly the case where nothing was billed. Hand it back before answering
     // or every internal error quietly eats `limit` rows' worth of the monthly cap.
@@ -82,7 +82,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       items: [], source, units: 0, usd: 0,
       usage: provider ? await readUsage(userId, provider) : null,
-      error: `internal: ${String(e?.message ?? e).slice(0, 300)}`,
+      error: `internal: ${String((e as Error)?.message ?? e).slice(0, 300)}`,
     }, { status: 500 });
   }
 

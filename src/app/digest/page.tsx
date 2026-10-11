@@ -98,7 +98,7 @@ export default function DigestPage() {
         setMsg(d.sent ? t("digestSentOk") : t("digestSentFail"));
         reload();
       }
-    } catch (e: any) { setMsg(String(e?.message ?? e)); }
+    } catch (e) { setMsg(String((e as Error)?.message ?? e)); }
     setBusy("");
   };
 

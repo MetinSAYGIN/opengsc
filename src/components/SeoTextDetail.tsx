@@ -499,7 +499,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
         setItem((prev: any) => ({ ...prev, data: data.text, meta: { ...prev.meta, factcheck: undefined } }));
         setFixed(true);
       } else setErr(data.error || t("seoErrText"));
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setFixing(false);
   }
 
@@ -735,7 +735,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
       if (!res.ok) { setErr(data.error || "error"); setLoading(false); return; }
       patchHistory(item.id, { meta: { images: data.images } });
       setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, images: data.images } }));
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading(false);
   }
   const copy = (txt: string, k: string) => navigator.clipboard.writeText(txt).then(() => { setCopied(k); setTimeout(() => setCopied(""), 1500); });
@@ -799,7 +799,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
         // waiting / queuing / generating → keep polling
       }
       setGenState(s => ({ ...s, [key]: { status: "error", error: "timeout" } }));
-    } catch (e: any) { setGenState(s => ({ ...s, [key]: { status: "error", error: String(e?.message ?? e) } })); }
+    } catch (e) { setGenState(s => ({ ...s, [key]: { status: "error", error: String((e as Error)?.message ?? e) } })); }
   }
 
   if (!images) return (

@@ -252,7 +252,7 @@ export default function RewritePage() {
         setSource(d.source || "");
         setEditing(null);
       }
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading(false);
   }
 

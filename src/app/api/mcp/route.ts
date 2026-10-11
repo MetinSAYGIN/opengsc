@@ -151,9 +151,9 @@ async function handleMessage(msg: RpcMsg, userId: string, role: WorkspaceRole): 
       try {
         const result = await tool.handler(userId, params?.arguments ?? {});
         return rpcResult(id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: false });
-      } catch (e: any) {
+      } catch (e) {
         // Tool-level errors go back as tool results (isError) so the agent can read and react.
-        return rpcResult(id, { content: [{ type: "text", text: String(e?.message ?? e) }], isError: true });
+        return rpcResult(id, { content: [{ type: "text", text: String((e as Error)?.message ?? e) }], isError: true });
       }
     }
 

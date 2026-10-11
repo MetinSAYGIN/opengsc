@@ -137,7 +137,7 @@ export async function startGeoAudit(payload: {
     const d = await res.json();
     if (!res.ok) return { error: d.error || "audit_failed" };
     return { id: d.id };
-  } catch (e: any) { return { error: String(e?.message ?? e) }; }
+  } catch (e) { return { error: String((e as Error)?.message ?? e) }; }
 }
 
 export async function getGeoAudit(id: string): Promise<GeoAuditRec | null> {

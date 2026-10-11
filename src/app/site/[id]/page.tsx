@@ -1080,7 +1080,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
       setGroups((data.groups ?? []).map((g: any) => ({ ...g, selected: true })));
       setAiUsed(data.clusters?.[0]?.aiGenerated ?? false);
       setStep(3);
-    } catch (e: any) { setError(e.message); setStep(1); }
+    } catch (e) { setError((e as Error).message); setStep(1); }
     finally { setLoading(false); }
   };
 
@@ -1092,7 +1092,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
         fetch('/api/gsc/groups',   { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteId: siteDbId, groups: groups.filter(g => g.selected) }) }),
       ]);
       onApplied();
-    } catch (e: any) { setError(e.message); }
+    } catch (e) { setError((e as Error).message); }
     finally { setSaving(false); }
   };
 
@@ -2408,7 +2408,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
       }
       setVerify({ progress: 0, stage: "pull", rowsSeen: 0 });
       startVerifyPolling();
-    } catch (e: any) { setActionMsg(`✗ ${e.message}`); }
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
   };
 
   // ── favourites (DB column, not localStorage: survives a browser change, visible to the
@@ -2462,7 +2462,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
       });
       const d = await res.json();
       setActionMsg(`✓ ${t("idxChecked")} ${d.checked}: ${t("blAlive")} ${d.alive}, ${t("blDead")} ${d.dead}${d.blocked ? `, ${t("blBlocked")} ${d.blocked}` : ""}`);
-    } catch (e: any) { setActionMsg(`✗ ${e.message}`); }
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
     setChecking404(false);
   };
 
@@ -2476,7 +2476,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
       });
       const d = await res.json();
       setActionMsg(`✓ XML River: ${t("idxChecked")} ${d.checked}`);
-    } catch (e: any) { setActionMsg(`✗ ${e.message}`); }
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
     setCheckingXr(false);
   };
 
@@ -2515,7 +2515,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
       a.href = URL.createObjectURL(blob);
       a.download = `backlinks-${siteDbId}.csv`;
       a.click();
-    } catch (e: any) { setActionMsg(`✗ ${e.message}`); }
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
   };
 
   const [ops, setOps] = useState<any[]>([]);
@@ -3090,7 +3090,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       if (!res.ok) throw new Error(d.error ?? t("errSyncFailed"));
       setSyncNotice(d.partial ? t("idxPartialSync") : t("idxSyncComplete"));
       await loadUrls(1, statusFilter, search);
-    } catch (e: any) { setSyncError(e.message); }
+    } catch (e) { setSyncError((e as Error).message); }
     setSyncing(false);
   };
 
@@ -3106,8 +3106,8 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       if (!res.ok) throw new Error(d.error ?? t("errSyncFailed"));
       setMetadataMsg(t("idxMetadataVerified").replace("{n}", String(d.checked ?? 0)) + (d.errors ? ` · ${d.errors} ${t("idxErrors")}` : ""));
       await loadUrls(page, statusFilter, search);
-    } catch (error: any) {
-      setMetadataMsg(`✗ ${error.message}`);
+    } catch (error) {
+      setMetadataMsg(`✗ ${(error as Error).message}`);
     }
     setMetadataChecking(false);
   };
@@ -3124,8 +3124,8 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       if (res.status === 409 && d.error === "already_running") setAuditSeedMsg(t("idxAuditAlreadyRunning"));
       else if (!res.ok) throw new Error(d.error ?? t("errSyncFailed"));
       else setAuditSeedMsg(t("idxAuditStarted"));
-    } catch (error: any) {
-      setAuditSeedMsg(`✗ ${error.message}`);
+    } catch (error) {
+      setAuditSeedMsg(`✗ ${(error as Error).message}`);
     }
     setAuditStarting(false);
   };
@@ -3157,7 +3157,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
         setCheckMsg(`✓ ${t("idxChecked")} ${d.checked ?? 0} URLs${d.errors ? ` · ${d.errors} ${t("idxErrors")}` : ""}`);
         await loadUrls(page, statusFilter, search);
       }
-    } catch (e: any) { setCheckMsg(`✗ ${e.message}`); }
+    } catch (e) { setCheckMsg(`✗ ${(e as Error).message}`); }
     setChecking(false);
   };
 
@@ -3216,8 +3216,8 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       } else {
         setFarmSubmitResult(`✗ ${d.error || t("farmFailedToSubmit")}`);
       }
-    } catch (e: any) {
-      setFarmSubmitResult(`✗ ${e.message}`);
+    } catch (e) {
+      setFarmSubmitResult(`✗ ${(e as Error).message}`);
     } finally {
       setSubmittingToFarm(false);
     }
@@ -3283,7 +3283,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
           setXrCheckMsg(pct > 0 ? `${prog} (${pct}%)` : prog);
         } catch { /* network error, retry */ }
       }
-    } catch (e: any) { setXrCheckMsg(`✗ ${(e as any).message}`); }
+    } catch (e) { setXrCheckMsg(`✗ ${(e as any).message}`); }
     setXrChecking(false);
   };
 

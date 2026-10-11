@@ -157,8 +157,8 @@ async function serperFetchPage(
     const data = await res.json();
     call.finish({ responseBody: data });
     return { ok: true, data };
-  } catch (e: any) {
-    return { ok: false, error: `сеть Serper: ${e?.cause?.code || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { ok: false, error: `сеть Serper: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
 }
 
@@ -288,8 +288,8 @@ async function dataForSeoSearch(
       body: JSON.stringify([task]),
       signal: AbortSignal.timeout(45000),
     }, { provider: "dataforseo" }));
-  } catch (e: any) {
-    return { engine, provider: "dataforseo", keyword, results: [], error: `сеть DataForSEO: ${e?.cause?.code || e?.cause?.message || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { engine, provider: "dataforseo", keyword, results: [], error: `сеть DataForSEO: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as { cause?: { code?: string; message?: string } })?.cause?.message || (e as Error)?.message || "fetch failed"}` };
   }
   if (!res.ok) {
     const error = `dataforseo ${res.status}: ${(await res.text()).slice(0, 200)}`;
@@ -411,8 +411,8 @@ async function scrapingRobotModulePage(
       }),
       signal: AbortSignal.timeout(120000), // SR recommends a 2-minute timeout (it retries internally)
     }, { provider: "scrapingrobot" }));
-  } catch (e: any) {
-    return { ok: false, error: `сеть ScrapingRobot: ${e?.cause?.code || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { ok: false, error: `сеть ScrapingRobot: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
   let data: any;
   try { data = await res.json(); } catch {
@@ -448,8 +448,8 @@ async function scrapingRobotHtmlPage(
       }),
       signal: AbortSignal.timeout(120000),
     }, { provider: "scrapingrobot" }));
-  } catch (e: any) {
-    return { ok: false, error: `сеть ScrapingRobot: ${e?.cause?.code || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { ok: false, error: `сеть ScrapingRobot: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
   let data: any;
   try { data = await res.json(); } catch {
@@ -716,8 +716,8 @@ export async function runSerp(
     // provider's answer. The guard stays even though every configured id now has a branch:
     // the fallback is exactly how a typo'd provider id turns into silently wrong results.
     return { engine, provider, keyword, results: [], error: `unknown SERP provider "${provider}"` };
-  } catch (e: any) {
-    return { engine, provider, keyword, results: [], error: String(e?.message ?? e) };
+  } catch (e) {
+    return { engine, provider, keyword, results: [], error: String((e as Error)?.message ?? e) };
   }
 }
 

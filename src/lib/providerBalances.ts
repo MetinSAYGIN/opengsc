@@ -128,8 +128,8 @@ export async function refreshProviderBalances(userId: string): Promise<BalanceFe
     let result: BalanceFetch;
     try {
       result = await FETCHERS[provider](key);
-    } catch (e: any) {
-      result = { provider, unit: "", left: null, limit: null, resetAt: null, ok: false, error: String(e?.message ?? e) };
+    } catch (e) {
+      result = { provider, unit: "", left: null, limit: null, resetAt: null, ok: false, error: String((e as Error)?.message ?? e) };
     }
     try {
       await balances().upsert({

@@ -65,8 +65,8 @@ export async function GET() {
               : account.expires_at,
           },
         });
-      } catch (e: any) {
-        info.steps.push({ step: 'token_refresh', status: 'failed', error: e.message });
+      } catch (e) {
+        info.steps.push({ step: 'token_refresh', status: 'failed', error: (e as Error).message });
       }
 
       // Step 2: get account email
@@ -76,8 +76,8 @@ export async function GET() {
         info.googleEmail   = me.data.email;
         info.googleName    = me.data.name;
         info.steps.push({ step: 'userinfo', status: 'ok', email: me.data.email });
-      } catch (e: any) {
-        info.steps.push({ step: 'userinfo', status: 'failed', error: e.message });
+      } catch (e) {
+        info.steps.push({ step: 'userinfo', status: 'failed', error: (e as Error).message });
       }
 
       // Step 3: list GSC sites
@@ -136,19 +136,19 @@ export async function GET() {
               rowCount: rows.length,
               sample:   rows.slice(0, 2),
             });
-          } catch (e: any) {
-            info.steps.push({ step: 'sample_query', status: 'failed', site: testSite, error: e.message });
+          } catch (e) {
+            info.steps.push({ step: 'sample_query', status: 'failed', site: testSite, error: (e as Error).message });
           }
         }
 
-      } catch (e: any) {
+      } catch (e) {
         info.gscSiteCount = 0;
         info.gscSites = [];
-        info.steps.push({ step: 'list_gsc_sites', status: 'failed', error: e.message });
+        info.steps.push({ step: 'list_gsc_sites', status: 'failed', error: (e as Error).message });
       }
 
-    } catch (e: any) {
-      info.steps.push({ step: 'oauth2_init', status: 'failed', error: e.message });
+    } catch (e) {
+      info.steps.push({ step: 'oauth2_init', status: 'failed', error: (e as Error).message });
     }
 
     results.push(info);

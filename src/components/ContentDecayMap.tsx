@@ -111,7 +111,7 @@ function Heatmap({
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed");
       setData(json);
-    } catch (e: any) { setError(e.message); }
+    } catch (e) { setError((e as Error).message); }
     setLoading(false);
   }, [siteDbId, sitesKey]);
 

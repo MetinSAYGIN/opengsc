@@ -33,7 +33,7 @@ export default function CitationsPage() {
       const d = await res.json();
       if (!res.ok) { setErr(d.error || "error"); setLoading(false); return; }
       setData({ total: d.total ?? (d.items?.length || 0), items: d.items || [] });
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading(false);
   }
 

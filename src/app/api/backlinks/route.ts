@@ -163,9 +163,9 @@ export async function POST(req: Request) {
         : []),
       ...plan.updates.map((u: any) => store().update({ where: { id: u.id }, data: u })),
     ], { timeout: 60000 });
-  } catch (e: any) {
+  } catch (e) {
     // P2002 = a concurrent import created the same row between our snapshot and the write.
-    if (e?.code === 'P2002') return NextResponse.json({ error: 'duplicate_import_race' }, { status: 409 });
+    if ((e as { code?: string })?.code === 'P2002') return NextResponse.json({ error: 'duplicate_import_race' }, { status: 409 });
     throw e;
   }
 

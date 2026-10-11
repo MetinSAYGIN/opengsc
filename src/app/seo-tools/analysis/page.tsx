@@ -104,7 +104,7 @@ export default function AnalysisPage() {
       items.forEach((r: any) => { sel[r.url] = true; });
       setSelected(sel);
       setStep(2);
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setBusy(false); setStage("");
   }
 
@@ -150,7 +150,7 @@ export default function AnalysisPage() {
       setAnJobId(jid); // background job — live progress takes over; user can leave
       if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
       return;
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     stopTimer(); setBusy(false); setStage("");
   }
 

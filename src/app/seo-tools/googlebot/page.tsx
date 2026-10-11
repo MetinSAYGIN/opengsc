@@ -123,7 +123,7 @@ export default function GooglebotViewPage() {
           data: historyData,
         });
       }
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setRunning(false);
   }
 

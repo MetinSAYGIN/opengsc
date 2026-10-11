@@ -188,9 +188,9 @@ export async function runRewriteBatch(
           finishedAt: new Date().toISOString(),
         });
       }
-    } catch (e: any) {
+    } catch (e) {
       state.failed++;
-      state.pages.push({ url: label, status: "error", error: String(e?.message ?? e), finishedAt: new Date().toISOString() });
+      state.pages.push({ url: label, status: "error", error: String((e as Error)?.message ?? e), finishedAt: new Date().toISOString() });
     }
 
     state.inProgress = null;

@@ -393,8 +393,8 @@ export async function probePagination(
     const mode = decidePaginationMode(page1, page2);
     probeCache.set(base, { mode, at: Date.now() });
     return { mode, units };
-  } catch (e: any) {
-    return { mode: null, units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { mode: null, units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -423,8 +423,8 @@ export async function fetchBacklinksPage(creds: MetricsCreds, q: PageQuery): Pro
     // Billed on rows returned, same reconciliation rule as the ideas fetch in metrics.ts: the
     // ceiling was reserved before the call, the outcome is what actually got charged.
     return { rows, units: estimateExportUnits(rows.length) };
-  } catch (e: any) {
-    return { rows: [], units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { rows: [], units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -443,8 +443,8 @@ export async function fetchBacklinksStats(
     }
     const stats = (await res.json())?.metrics ?? {};
     return { live: numOrNull(stats?.live), units: AHREFS_UNIT_FLOOR };
-  } catch (e: any) {
-    return { live: null, units: 0, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { live: null, units: 0, error: String((e as Error)?.message ?? e) };
   }
 }
 

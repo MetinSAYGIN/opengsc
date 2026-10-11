@@ -120,7 +120,7 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
         }
         c.outline_done = true;
         persistData({ ...data, clusters });
-      } catch (e: any) { setErr(`${c.name}: ${String(e?.message ?? e)}`); }
+      } catch (e) { setErr(`${c.name}: ${String((e as Error)?.message ?? e)}`); }
     }
     setBatch({ done: picked.length, total: picked.length, current: "" });
     setTimeout(() => setBatch(null), 3000);

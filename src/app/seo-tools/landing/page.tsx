@@ -169,7 +169,7 @@ export default function LandingPage() {
       setSelected(new Set((data.results || []).map((r: SerpItem) => r.url)));
       // Opt-in only: scraping a SERP must not spend keyword credits as a side effect.
       if (getKwAuto()) fetchKeywords();
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 
@@ -185,7 +185,7 @@ export default function LandingPage() {
       const cache = await ensureScraped(urls);
       const counts = urls.map(u => cache[u]?.wordCount || 0).filter(Boolean);
       if (counts.length) setTargetWords(String(Math.round(counts.reduce((a, b) => a + b, 0) / counts.length)));
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 
@@ -223,7 +223,7 @@ export default function LandingPage() {
       if (!res.ok) { setErr(data.error || t("seoLpStructErr")); setMyStructureLoading(""); return; }
       setMyStructureText(nodesToText(data.nodes || []));
       setMyStructureMeta(`${(data.nodes || []).length} ${t("seoLpHeadingsWord")} · ${data.title || ""}`);
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setMyStructureLoading("");
   }
 
@@ -254,7 +254,7 @@ export default function LandingPage() {
       if (!res.ok) { setErr(data.error === "parse_failed" ? t("seoErrParseJsonShort") : (data.error || t("seoLpStructErr"))); setMyStructureLoading(""); return; }
       setMyStructureText(nodesToText(data.nodes || []));
       setMyStructureMeta(`${(data.nodes || []).length} ${t("seoLpHeadingsWord")} · ${data.title || ""} · ${t("seoLpFromScreenshot")}`);
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setMyStructureLoading("");
   }
 
@@ -299,7 +299,7 @@ export default function LandingPage() {
       if (error || !jid) { setErr(error === "parse_failed" ? t("seoErrParseJson") : (error || t("seoErrGen"))); setLoading(""); return; }
       setJobId(jid);
       if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 

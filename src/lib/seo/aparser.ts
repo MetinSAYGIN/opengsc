@@ -149,8 +149,8 @@ export async function aparserCall<T = any>(
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch (e: any) {
-    const code = e?.name === "TimeoutError" ? "timeout" : (e?.cause?.code || e?.message || "fetch failed");
+  } catch (e) {
+    const code = (e as Error)?.name === "TimeoutError" ? "timeout" : ((e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed");
     // The request body carries the password; nothing derived from it may reach this string.
     return fail<T>(`сеть A-Parser (${host}): ${code}`);
   }

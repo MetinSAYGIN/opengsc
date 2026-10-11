@@ -62,8 +62,8 @@ export default function IndexerDictionaryPage() {
       } else {
         setMsg({ type: "error", text: d.error || t("dictAddError") });
       }
-    } catch (err: any) {
-      setMsg({ type: "error", text: err.message });
+    } catch (err) {
+      setMsg({ type: "error", text: (err as Error).message });
     } finally {
       setSubmitting(false);
     }
@@ -96,8 +96,8 @@ export default function IndexerDictionaryPage() {
       } else {
         setMsg({ type: "error", text: d.error || t("dictAiError") });
       }
-    } catch (err: any) {
-      setMsg({ type: "error", text: err.message });
+    } catch (err) {
+      setMsg({ type: "error", text: (err as Error).message });
     } finally {
       setGenerating(false);
     }
@@ -111,8 +111,8 @@ export default function IndexerDictionaryPage() {
         setMsg({ type: "success", text: t("dictClearSuccess") });
         fetchDictionary();
       }
-    } catch (e: any) {
-      setMsg({ type: "error", text: e.message });
+    } catch (e) {
+      setMsg({ type: "error", text: (e as Error).message });
     }
   };
 

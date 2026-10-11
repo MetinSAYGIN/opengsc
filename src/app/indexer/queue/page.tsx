@@ -136,8 +136,8 @@ export default function IndexerQueuePage() {
       } else {
         setStatusMsg({ type: "error", text: data.error || "Failed to add URLs." });
       }
-    } catch (err: any) {
-      setStatusMsg({ type: "error", text: err.message });
+    } catch (err) {
+      setStatusMsg({ type: "error", text: (err as Error).message });
     } finally {
       setSubmitting(false);
     }
@@ -151,8 +151,8 @@ export default function IndexerQueuePage() {
         setStatusMsg({ type: "success", text: "Очередь очищена." });
         setPage(1); fetchQueue(1);
       }
-    } catch (e: any) {
-      setStatusMsg({ type: "error", text: e.message });
+    } catch (e) {
+      setStatusMsg({ type: "error", text: (e as Error).message });
     }
   };
 
@@ -168,8 +168,8 @@ export default function IndexerQueuePage() {
       } else {
         setStatusMsg({ type: "error", text: d.error || "Не удалось удалить." });
       }
-    } catch (e: any) {
-      setStatusMsg({ type: "error", text: e.message });
+    } catch (e) {
+      setStatusMsg({ type: "error", text: (e as Error).message });
     }
   };
 

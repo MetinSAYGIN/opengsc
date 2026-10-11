@@ -98,8 +98,8 @@ export async function POST(req: Request) {
       balance: data.balance_usd ?? null,
       wasCached: data.was_cached ?? false,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Request failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message ?? 'Request failed' }, { status: 500 });
   }
 }
 
@@ -129,7 +129,7 @@ export async function GET() {
       pricePerLink: data?.price_per_link ?? null,
       availableLinks: data?.available_links ?? null,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Request failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message ?? 'Request failed' }, { status: 500 });
   }
 }

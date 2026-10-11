@@ -86,8 +86,8 @@ export async function GET(req: Request) {
       pages: pageData,
       crawl: crawlData,
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to query Bing Webmaster API" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message || "Failed to query Bing Webmaster API" }, { status: 500 });
   }
 }
 
@@ -121,7 +121,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: await bingErrorFrom(response, siteUrl) }, { status: 400 });
     }
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Unknown error" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message || "Unknown error" }, { status: 500 });
   }
 }

@@ -285,7 +285,7 @@ export default function OutlinePage() {
       // Kick off background scraping of ALL results so per-row word counts appear
       // immediately (competitor-style "Парсинг…" → count). Best-effort, non-blocking.
       ensureScraped((data.results || []).map((r: SerpItem) => r.url), {}).catch(() => {});
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 
@@ -301,7 +301,7 @@ export default function OutlinePage() {
       const cache = await ensureScraped(urls);
       const counts = urls.map(u => cache[u]?.wordCount || 0).filter(Boolean);
       if (counts.length) setTargetWords(String(Math.round(counts.reduce((a, b) => a + b, 0) / counts.length)));
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 
@@ -368,7 +368,7 @@ export default function OutlinePage() {
       if (error || !jid) { setErr(error === "parse_failed" ? t("seoErrParseJson") : (error || t("seoErrGen"))); setLoading(""); return; }
       setJobId(jid); // background job started — render live progress; user can leave
       if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 
@@ -387,7 +387,7 @@ export default function OutlinePage() {
       setArticle(data.text);
       const rec = addHistory({ type: "text", keyword: outline?.meta?.keyword || keyword, data: data.text });
       router.push(`/seo-tools/history/${rec.id}`); // open the rich rendered-HTML text page (no raw markdown markers)
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading("");
   }
 

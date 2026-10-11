@@ -96,8 +96,8 @@ export async function createOutreachCampaign(userId: string, input: Record<strin
     return await prisma.outreachCampaign.create({
       data: { userId, name, targetAsset: text(input.targetAsset, 1000), notes: text(input.notes, 5000) },
     });
-  } catch (error: any) {
-    if (error?.code === "P2002") throw new Error("campaign_name_exists");
+  } catch (error) {
+    if ((error as { code?: string })?.code === "P2002") throw new Error("campaign_name_exists");
     throw error;
   }
 }
@@ -119,8 +119,8 @@ export async function updateOutreachCampaign(userId: string, id: string, input: 
         ...(status === undefined ? {} : { status }),
       },
     });
-  } catch (error: any) {
-    if (error?.code === "P2002") throw new Error("campaign_name_exists");
+  } catch (error) {
+    if ((error as { code?: string })?.code === "P2002") throw new Error("campaign_name_exists");
     throw error;
   }
 }
@@ -172,10 +172,10 @@ export async function createOutreachProspect(userId: string, input: Record<strin
       return created;
     });
     return { prospect, created: true };
-  } catch (error: any) {
+  } catch (error) {
     // Two tabs can save the same domain at the same time. The unique key is the final
     // arbiter; return the already-created row instead of surfacing an avoidable 500.
-    if (error?.code === "P2002") {
+    if ((error as { code?: string })?.code === "P2002") {
       const raced = await prisma.outreachProspect.findUnique({ where: { userId_domain: { userId, domain } } });
       if (raced) return { prospect: raced, created: false };
     }

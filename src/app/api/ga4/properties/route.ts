@@ -70,8 +70,8 @@ export async function GET() {
           pageToken = res.data.nextPageToken ?? undefined;
         } while (pageToken);
         accountsInfo.push({ email, count });
-      } catch (err: any) {
-        accountsInfo.push({ email, count: 0, error: err?.message ?? 'error' });
+      } catch (err) {
+        accountsInfo.push({ email, count: 0, error: (err as Error)?.message ?? 'error' });
       }
     })
   );

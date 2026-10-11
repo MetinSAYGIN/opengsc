@@ -56,11 +56,11 @@ export async function runJob(userId: string, job: any, payload: any): Promise<vo
       // File the finished result into SeoHistory server-side: the record must exist even if
       // no browser tab ever imports the job row (id = job id, so a later import converges).
       if (r.ok) await saveJobToHistory(userId, job, r.data);
-    } catch (e: any) {
+    } catch (e) {
       try {
         await jobs().update({
           where: { id: job.id },
-          data: { status: "error", stage: "error", heartbeatAt: new Date(), error: String(e?.message ?? e) },
+          data: { status: "error", stage: "error", heartbeatAt: new Date(), error: String((e as Error)?.message ?? e) },
         });
       } catch { /* row removed */ }
     }
@@ -87,8 +87,8 @@ export async function POST(req: Request) {
         meta: b.meta ? JSON.stringify(b.meta) : null,
       },
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: `db: ${String(e?.message ?? e)} (run: npx prisma db push)` }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: `db: ${String((e as Error)?.message ?? e)} (run: npx prisma db push)` }, { status: 500 });
   }
 
   // Standby providers for the outline step, resolved SERVER-side from the user's stored keys.

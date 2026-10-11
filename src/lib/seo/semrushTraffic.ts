@@ -129,8 +129,8 @@ async function taCall(
       { headers: { Accept: "text/plain, application/json" }, signal: AbortSignal.timeout(45_000) },
       { provider: "semrush", attempt: 1 },
     ));
-  } catch (e: any) {
-    return { rows: [], error: `semrush network: ${e?.cause?.code || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { rows: [], error: `semrush network: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
   const text = (await res.text().catch(() => "")).trim();
   if (!res.ok) {

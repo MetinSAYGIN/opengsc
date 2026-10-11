@@ -116,8 +116,8 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
       setData(json.keywords ?? []);
-    } catch (e: any) {
-      setError(e.message ?? 'Error');
+    } catch (e) {
+      setError((e as Error).message ?? 'Error');
     } finally {
       setLoading(false);
     }

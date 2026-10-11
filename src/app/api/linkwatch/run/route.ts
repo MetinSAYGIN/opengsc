@@ -57,8 +57,8 @@ async function fetchBrandLinks(ahrefsKey: string, baseUrl: string, brand: string
     const d = await res.json();
     call.finish();
     return { rows: Array.isArray(d?.backlinks) ? d.backlinks : [] };
-  } catch (e: any) {
-    return { error: String(e?.message ?? e) };
+  } catch (e) {
+    return { error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -99,7 +99,7 @@ export async function POST(req: Request) {
           row.is_dofollow === false ? 0 : 1, new Date().toISOString());
         saved++;
       }
-    } catch (e: any) { errors[brand] = String(e?.message ?? e); }
+    } catch (e) { errors[brand] = String((e as Error)?.message ?? e); }
   }
   return NextResponse.json({ ok: true, saved, brandsChecked: brands.length, errors });
 }

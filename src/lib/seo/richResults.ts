@@ -122,9 +122,9 @@ export async function fetchAsGooglebotBrowser(
       return { ok: false, error: "cloudflare_block" };
     }
     return { ok: true, html: finalHtml };
-  } catch (e: any) {
+  } catch (e) {
     try { await browser?.close(); } catch {}
-    return { ok: false, error: String(e?.message ?? e) };
+    return { ok: false, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -226,8 +226,8 @@ export async function fetchRichResultsHtml(url: string, opts?: { storageState?: 
 
     if (html && looksLikeHtml(html)) return { ok: true, html, screenshot };
     return { ok: false, error: "html_not_found", screenshot };
-  } catch (e: any) {
+  } catch (e) {
     try { await browser?.close(); } catch {}
-    return { ok: false, error: String(e?.message ?? e) };
+    return { ok: false, error: String((e as Error)?.message ?? e) };
   }
 }

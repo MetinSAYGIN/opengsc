@@ -61,7 +61,7 @@ export default function UpdateBanner() {
       const res = await fetch("/api/system/update", { method: "POST" });
       const d = await res.json();
       if (!res.ok) { setPhase("failed"); setLog(d.message || d.error || "error"); return; }
-    } catch (e: any) { setPhase("failed"); setLog(String(e?.message ?? e)); return; }
+    } catch (e) { setPhase("failed"); setLog(String((e as Error)?.message ?? e)); return; }
     // Poll the log. pm2 restart mid-way makes the API blink — tolerate fetch errors.
     pollRef.current = setInterval(async () => {
       setNow(Date.now());

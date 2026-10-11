@@ -34,7 +34,7 @@ export async function POST(req: Request) {
       const text = await response.text();
       return NextResponse.json({ error: `IndexNow responded with status ${response.status}: ${text}` }, { status: 400 });
     }
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Unknown error" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message || "Unknown error" }, { status: 500 });
   }
 }

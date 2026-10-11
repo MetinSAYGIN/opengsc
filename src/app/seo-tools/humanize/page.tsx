@@ -365,7 +365,7 @@ function CorpusTab({ models, activeName, onChange }: { models: StoredModel[]; ac
         const seen = new Set(prev.map(p => p.url));
         return [...prev, ...(d.docs || []).filter((x: any) => !seen.has(x.url))];
       });
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setBusy(null);
   }
 
@@ -534,7 +534,7 @@ function BenchTab({ active }: { active: StoredModel | null }) {
           const rep = scoreText(d.text, active.model);
           out.push({ ...row, score: rep.avgScore, words: rep.words, ms: d.ms, tempIgnored: !!d.temperatureIgnored, text: d.text });
         }
-      } catch (e: any) { out.push({ ...row, error: String(e?.message ?? e) }); }
+      } catch (e) { out.push({ ...row, error: String((e as Error)?.message ?? e) }); }
       setResults([...out]);
     }
     setBusy(false);

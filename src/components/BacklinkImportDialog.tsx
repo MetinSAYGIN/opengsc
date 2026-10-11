@@ -58,8 +58,8 @@ export default function BacklinkImportDialog({
       if (!res.ok) throw new Error(d.error ?? "import failed");
       onImported({ added: d.added ?? 0, updated: d.updated ?? 0 });
       onClose();
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError((e as Error).message);
     }
     setSubmitting(false);
   };

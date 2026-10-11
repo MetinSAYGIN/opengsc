@@ -87,7 +87,7 @@ export default function LinkWatchPage() {
       setOutreachInfo(t(d.created ? "outreachProspectAdded" : "outreachProspectExists"));
       await reloadOutreachDomains();
       setOutreachRefresh(value => value + 1);
-    } catch (e: any) { setErr(t(outreachErrorKey(e?.message ?? e))); }
+    } catch (e) { setErr(t(outreachErrorKey((e as Error)?.message ?? e))); }
   }
 
   function toggleFav(domain: string) {
@@ -130,7 +130,7 @@ export default function LinkWatchPage() {
         if (errCount) setErr(Object.entries(d.errors).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(" · "));
         reload();
       }
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setRunning(false);
   }
 
@@ -145,7 +145,7 @@ export default function LinkWatchPage() {
       });
       const d = await res.json();
       if (!res.ok) setErr(d.error || "error"); else setInsights(d.insights || "");
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setInsLoading(false);
   }
 

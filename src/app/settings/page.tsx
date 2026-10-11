@@ -948,7 +948,7 @@ function NotificationsSection() {
       else if (action === "detect") setTgMsg(`${t("tgDetected")} ${d.username || d.chatId}`);
       else if (action === "test") setTgMsg(t("tgTestOk"));
       reloadTg();
-    } catch (e: any) { setTgMsg(String(e?.message ?? e)); }
+    } catch (e) { setTgMsg(String((e as Error)?.message ?? e)); }
     setTgBusy("");
   };
 
@@ -964,7 +964,7 @@ function NotificationsSection() {
       else if (action === "save") setSlackMsg(t("slackSaved") || "Slack Webhook saved successfully.");
       else if (action === "test") setSlackMsg(t("slackTestOk") || "Test message sent to Slack channel.");
       reloadSlack();
-    } catch (e: any) { setSlackMsg(String(e?.message ?? e)); }
+    } catch (e) { setSlackMsg(String((e as Error)?.message ?? e)); }
     setSlackBusy("");
   };
 

@@ -20,8 +20,8 @@ export async function POST(req: Request) {
   try {
     const models = await listModels(provider, apiKey, String(b.baseUrl ?? "").trim() || undefined);
     return NextResponse.json({ models });
-  } catch (e: any) {
-    return NextResponse.json({ error: String(e?.message ?? e), models: [] }, { status: 502 });
+  } catch (e) {
+    return NextResponse.json({ error: String((e as Error)?.message ?? e), models: [] }, { status: 502 });
   }
 }
 

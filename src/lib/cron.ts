@@ -58,8 +58,8 @@ export function validateCron(expr: string): string | null {
   try {
     fields.forEach((f, i) => parseField(f, i));
     return null;
-  } catch (e: any) {
-    return String(e?.message ?? e);
+  } catch (e) {
+    return String((e as Error)?.message ?? e);
   }
 }
 

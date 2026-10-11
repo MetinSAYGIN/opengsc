@@ -86,7 +86,7 @@ export async function GET() {
       updateAvailable: behind > 0,
       changelog,
     });
-  } catch (e: any) {
-    return NextResponse.json({ isGit: true, local: local.slice(0, 7), updateAvailable: false, error: String(e?.message ?? e) });
+  } catch (e) {
+    return NextResponse.json({ isGit: true, local: local.slice(0, 7), updateAvailable: false, error: String((e as Error)?.message ?? e) });
   }
 }

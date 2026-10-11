@@ -78,8 +78,8 @@ export async function GET() {
         entries.forEach((e) => {
           if (e.siteUrl) allSiteEntries.push({ siteUrl: e.siteUrl, accountId: account.id });
         });
-      } catch (err: any) {
-        errors.push(`Account ${account.id}: ${err.message}`);
+      } catch (err) {
+        errors.push(`Account ${account.id}: ${(err as Error).message}`);
       }
     })
   );

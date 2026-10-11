@@ -322,8 +322,8 @@ export const DATA_TOOLS: McpTool[] = [
           generations: rows.map(r => ({ id: r.id, type: r.type, keyword: r.keyword, status: r.status, createdAt: r.createdAt, chars: Number(r.size ?? 0) })),
           note: rows.length ? "Pass an id to read the full outline/article." : "No generations recorded on the server yet.",
         };
-      } catch (e: any) {
-        if (String(e?.message ?? "").startsWith("Generation not found")) throw e;
+      } catch (e) {
+        if (String((e as Error)?.message ?? "").startsWith("Generation not found")) throw e;
         return { count: 0, generations: [], note: "SeoHistory table not available on this instance (run: npx prisma db push)." };
       }
     },
@@ -426,8 +426,8 @@ export const DATA_TOOLS: McpTool[] = [
               revenue: delta(current.revenue, previous.revenue),
             },
           };
-        } catch (e: any) {
-          lastError = String(e?.message ?? e); // try the next linked account
+        } catch (e) {
+          lastError = String((e as Error)?.message ?? e); // try the next linked account
         }
       }
       throw new Error(`No linked Google account can read GA4 property ${propertyId}. Last error: ${lastError}`);
@@ -555,8 +555,8 @@ export const DATA_TOOLS: McpTool[] = [
           digests: rows.map(r => ({ id: r.id, tag: r.tag || "(all sites)", days: r.days, deliveredTo: r.sentTo ?? "on-screen only", createdAt: r.createdAt, chars: Number(r.size ?? 0) })),
           note: rows.length ? "Pass an id to read the full digest Markdown." : "No digests generated yet.",
         };
-      } catch (e: any) {
-        if (String(e?.message ?? "").startsWith("Digest not found")) throw e;
+      } catch (e) {
+        if (String((e as Error)?.message ?? "").startsWith("Digest not found")) throw e;
         return { count: 0, digests: [], note: "Digest table not available on this instance (run: npx prisma db push)." };
       }
     },

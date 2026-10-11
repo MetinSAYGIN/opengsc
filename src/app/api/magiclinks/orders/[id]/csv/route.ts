@@ -47,9 +47,9 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
       rows = [["url", "anchor", "published_url", "published_at"],
         ...articles.map(a => [a.url, a.anchor, a.publishedUrl, a.publishedAt ?? ""])];
     }
-  } catch (e: any) {
+  } catch (e) {
     console.error("[MagicLinks] csv failed", e);
-    return NextResponse.json({ error: "csv_failed", message: String(e?.message ?? e) }, { status: 502 });
+    return NextResponse.json({ error: "csv_failed", message: String((e as Error)?.message ?? e) }, { status: 502 });
   }
 
   return new NextResponse(csv(rows), {

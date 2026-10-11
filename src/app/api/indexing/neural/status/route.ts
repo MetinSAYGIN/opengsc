@@ -120,7 +120,7 @@ export async function GET(req: Request) {
       notIndexed: raw.filter(r => !r.is_indexed).length,
       charged: pollData?.check?.charged_usd ?? null,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message ?? 'Failed' }, { status: 500 });
   }
 }

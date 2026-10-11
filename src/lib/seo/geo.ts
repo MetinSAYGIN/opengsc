@@ -207,8 +207,8 @@ async function runGeminiGroundedSearch(
       answerText: answerText.trim(),
       citations: sources,
     };
-  } catch (e: any) {
-    return { error: e?.name === "AbortError" ? `timeout_after_${Math.round(SEARCH_TIMEOUT_MS / 60_000)}m` : String(e?.message ?? e) };
+  } catch (e) {
+    return { error: (e as Error)?.name === "AbortError" ? `timeout_after_${Math.round(SEARCH_TIMEOUT_MS / 60_000)}m` : String((e as Error)?.message ?? e) };
   } finally {
     clearTimeout(timer);
   }
@@ -388,8 +388,8 @@ async function runWebSearch(query: string, language: string, country: string, mo
     const data = await res.json();
     logged?.finish({ ...usageFrom("kie", data), responseBody: data });
     return parseResponses(data);
-  } catch (e: any) {
-    const error = e?.name === "AbortError" ? `timeout_after_${Math.round(SEARCH_TIMEOUT_MS / 60_000)}m` : String(e?.message ?? e);
+  } catch (e) {
+    const error = (e as Error)?.name === "AbortError" ? `timeout_after_${Math.round(SEARCH_TIMEOUT_MS / 60_000)}m` : String((e as Error)?.message ?? e);
     logged?.finish({ error });
     return { error };
   } finally {

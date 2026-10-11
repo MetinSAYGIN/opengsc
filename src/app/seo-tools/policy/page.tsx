@@ -180,7 +180,7 @@ export default function PolicyPage() {
       const p = normalizePolicy({ ...data.policy, name: data.policy?.name || form.brandName.slice(0, 40), createdAt: Date.now() });
       setGenLoading(false); setGenOpen(false);
       openEditor(p);
-    } catch (e: any) { setGenErr(String(e?.message ?? e)); setGenLoading(false); }
+    } catch (e) { setGenErr(String((e as Error)?.message ?? e)); setGenLoading(false); }
   }
 
   const up = (fn: (d: EditorialPolicy) => void) => setDraft(d => { const n = structuredClone(d); fn(n); return n; });

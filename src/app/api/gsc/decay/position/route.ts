@@ -134,7 +134,7 @@ export async function GET(req: Request) {
     };
     cache.set(cacheKey, { at: Date.now(), payload });
     return NextResponse.json(payload);
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || 'GSC query failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message || 'GSC query failed' }, { status: 500 });
   }
 }

@@ -67,7 +67,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
         const fresh = (next.prospects || []).find((prospect: any) => prospect.id === selected.id);
         if (fresh) setSelected({ ...fresh, nextFollowUpAt: localDateInput(fresh.nextFollowUpAt), lastContactAt: localDateInput(fresh.lastContactAt) });
       }
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
     setLoading(false);
   }
 
@@ -100,7 +100,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       if (!response.ok) throw new Error(result.error || "outreach_error");
       setManualDomain(""); setManualUrl("");
       await reload();
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
     setSaving(false);
   }
 
@@ -116,7 +116,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       if (!response.ok) throw new Error(result.error || "outreach_error");
       setCampaignName(""); setCampaignAsset(""); setCampaignNotes("");
       await reload();
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
     setSaving(false);
   }
 
@@ -130,7 +130,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       if (!response.ok) throw new Error(result.error || "outreach_error");
       if (!keepEditor) setSelected(null);
       await reload();
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
     setSaving(false);
   }
 
@@ -161,7 +161,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       if (!response.ok) throw new Error((await response.json()).error || "outreach_error");
       setSelected(null);
       await reload();
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
     setSaving(false);
   }
 
@@ -173,7 +173,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       });
       if (!response.ok) throw new Error((await response.json()).error || "outreach_error");
       await reload();
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
   }
 
   async function copyPitch() {
@@ -194,7 +194,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       });
       if (!response.ok) throw new Error((await response.json()).error || "outreach_error");
       await reload();
-    } catch (error: any) { fail(error?.message); }
+    } catch (error) { fail((error as Error)?.message); }
     setSaving(false);
   }
 

@@ -169,7 +169,7 @@ export async function GET(req: Request) {
     };
     cache.set(userId, { at: Date.now(), payload });
     return NextResponse.json(payload);
-  } catch (e: any) {
+  } catch (e) {
     console.error("[Indexer Stats Error]", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

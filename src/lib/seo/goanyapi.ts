@@ -86,8 +86,8 @@ async function get<T>(
       headers: { Authorization: `Bearer ${apiKey.trim()}`, Accept: "application/json" },
       signal: AbortSignal.timeout(30_000),
     }, { provider: "goanyapi", attempt: attempt + 1 }));
-  } catch (e: any) {
-    return fail<T>(`goanyapi network: ${e?.cause?.code || e?.message || "fetch failed"}`);
+  } catch (e) {
+    return fail<T>(`goanyapi network: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}`);
   }
 
   if (res.status === 429 && attempt === 0) {

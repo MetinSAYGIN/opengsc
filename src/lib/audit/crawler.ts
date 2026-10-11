@@ -77,8 +77,8 @@ async function fetchPage(url: string): Promise<PageResult> {
     const isHtml = contentType.includes("html") || contentType === "";
     const html = res.ok && isHtml ? await res.text() : null;
     return { url, httpStatus: res.status, redirectTo: null, contentType, loadMs, html, htmlBytes: html ? Buffer.byteLength(html) : 0, responseHeaders };
-  } catch (e: any) {
-    return { url, httpStatus: 0, redirectTo: null, contentType: "", loadMs: Date.now() - started, html: null, htmlBytes: 0, responseHeaders: {}, fetchError: String(e?.message ?? e).slice(0, 120) };
+  } catch (e) {
+    return { url, httpStatus: 0, redirectTo: null, contentType: "", loadMs: Date.now() - started, html: null, htmlBytes: 0, responseHeaders: {}, fetchError: String((e as Error)?.message ?? e).slice(0, 120) };
   }
 }
 
@@ -694,10 +694,10 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         verification: verification ? JSON.stringify(verification) : null,
       },
     });
-  } catch (e: any) {
+  } catch (e) {
     await prisma.siteAudit.update({
       where: { id: auditId },
-      data: { status: "error", stage: "error", heartbeatAt: new Date(), finishedAt: new Date(), error: String(e?.message ?? e).slice(0, 500) },
+      data: { status: "error", stage: "error", heartbeatAt: new Date(), finishedAt: new Date(), error: String((e as Error)?.message ?? e).slice(0, 500) },
     }).catch(() => {});
   } finally {
     activeAudits.delete(auditId);

@@ -208,8 +208,8 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
                 boilerplateOnly: page.boilerplateOnly, markdown: page.contentMarkdown,
               }
             : { error: page.error ?? "fetch failed", note: "The live page could not be fetched — work from the audit fields and query data instead." };
-        } catch (e: any) {
-          content = { error: String(e?.message ?? e) };
+        } catch (e) {
+          content = { error: String((e as Error)?.message ?? e) };
         }
       }
 
@@ -366,8 +366,8 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
         if (running) {
           throw new Error(`A rewrite job is already running (jobId ${running.id}). Poll it with get_generation_job; start another only once it is finished.`);
         }
-      } catch (e: any) {
-        if (String(e?.message ?? "").startsWith("A rewrite job is already running")) throw e;
+      } catch (e) {
+        if (String((e as Error)?.message ?? "").startsWith("A rewrite job is already running")) throw e;
         // Table not migrated — fall through and let the create below report it properly.
       }
 
@@ -391,8 +391,8 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
             meta: JSON.stringify({ urls, snippet: args.snippet === true, language: args.language ?? null }),
           },
         });
-      } catch (e: any) {
-        throw new Error(`Could not create the job row: ${String(e?.message ?? e)} (run: npx prisma db push)`);
+      } catch (e) {
+        throw new Error(`Could not create the job row: ${String((e as Error)?.message ?? e)} (run: npx prisma db push)`);
       }
 
       // Fire-and-forget. The promise outlives this response and writes its own progress;
@@ -554,9 +554,9 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
           res = await expandKeywords({ source: kw.source, apiKey: kw.apiKey, baseUrl: kw.baseUrl }, seed, {
             country, language: String(payload.language || defaultLanguageFor(country)), limit, withDifficulty, mode, fetch: true,
           });
-        } catch (e: any) {
+        } catch (e) {
           if (price.units) await releaseUnusedUnits(userId, kw.source, price.units, 0);
-          throw new Error(`Keyword ideas fetch failed: ${String(e?.message ?? e).slice(0, 300)}`);
+          throw new Error(`Keyword ideas fetch failed: ${String((e as Error)?.message ?? e).slice(0, 300)}`);
         }
         // Ahrefs bills the rows returned, not the limit asked for — give the difference back,
         // exactly as /api/seo/keyword-ideas does.
@@ -599,8 +599,8 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
             heartbeatAt: new Date(), resumable: false,
           },
         });
-      } catch (e: any) {
-        throw new Error(`Could not create the job row: ${String(e?.message ?? e)} (run: npx prisma db push)`);
+      } catch (e) {
+        throw new Error(`Could not create the job row: ${String((e as Error)?.message ?? e)} (run: npx prisma db push)`);
       }
 
       // Fire-and-forget, matching /api/seo/jobs — the promise outlives the response and
@@ -760,8 +760,8 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
             autoFixed: autoFixed.map((m: any) => ({ code: m.code, detail: m.detail })),
           } : {}),
         };
-      } catch (e: any) {
-        if (String(e?.message ?? "").startsWith("Job not found")) throw e;
+      } catch (e) {
+        if (String((e as Error)?.message ?? "").startsWith("Job not found")) throw e;
         return { count: 0, jobs: [], note: "SeoJob table not available on this instance (run: npx prisma db push)." };
       }
     },

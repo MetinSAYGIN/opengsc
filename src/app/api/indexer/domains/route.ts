@@ -15,7 +15,7 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json(domains);
-  } catch (e: any) {
+  } catch (e) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -49,8 +49,8 @@ export async function POST(req: Request) {
     });
 
     return NextResponse.json(newDomain);
-  } catch (e: any) {
-    if (e.code === "P2002") {
+  } catch (e) {
+    if ((e as { code?: string }).code === "P2002") {
       return NextResponse.json({ error: "Domain already exists in your farm" }, { status: 400 });
     }
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -83,7 +83,7 @@ export async function DELETE(req: Request) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (e: any) {
+  } catch (e) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

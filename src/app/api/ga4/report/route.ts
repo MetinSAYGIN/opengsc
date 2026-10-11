@@ -125,8 +125,8 @@ export async function GET(req: Request) {
         },
         series,
       });
-    } catch (err: any) {
-      lastError = err?.message ?? 'error';
+    } catch (err) {
+      lastError = (err as Error)?.message ?? 'error';
       continue;
     }
   }

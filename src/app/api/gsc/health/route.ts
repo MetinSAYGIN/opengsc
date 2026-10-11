@@ -14,8 +14,8 @@ async function checkSSL(hostname: string): Promise<{
   try {
     const target = await assertSafeTarget(`https://${hostname}`);
     address = target.addresses[0];
-  } catch (error: any) {
-    return { valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: error?.code || "unsafe_target" };
+  } catch (error) {
+    return { valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: (error as { code?: string })?.code || "unsafe_target" };
   }
 
   return new Promise(resolve => {
@@ -63,8 +63,8 @@ async function checkSSL(hostname: string): Promise<{
       connectedSocket.on("error", (err) => {
         finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: err.message });
       });
-    } catch (err: any) {
-      finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: err.message });
+    } catch (err) {
+      finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: (err as Error).message });
     }
   });
 }
@@ -92,8 +92,8 @@ async function checkSafeBrowsing(domain: string, apiKey: string): Promise<{
     if (data.error) return { safe: true, threats: [], error: data.error.message };
     const threats = (data.matches ?? []).map((m: any) => m.threatType as string);
     return { safe: threats.length === 0, threats };
-  } catch (err: any) {
-    return { safe: true, threats: [], error: err.message };
+  } catch (err) {
+    return { safe: true, threats: [], error: (err as Error).message };
   }
 }
 
@@ -114,8 +114,8 @@ async function checkVitals(domain: string, apiKey: string): Promise<{
     let res: Response;
     try {
       res = await fetch(url, { signal: AbortSignal.timeout(45000) });
-    } catch (err: any) {
-      if (err?.name === "TimeoutError") {
+    } catch (err) {
+      if ((err as Error)?.name === "TimeoutError") {
         return { ...empty, error: "PageSpeed timed out after 45 s — Lighthouse could not finish on this site" };
       }
       throw err;
@@ -136,8 +136,8 @@ async function checkVitals(domain: string, apiKey: string): Promise<{
 
     const category = score == null ? "unknown" : score >= 90 ? "good" : score >= 50 ? "needs_improvement" : "poor";
     return { lcp: lcp ? Math.round(lcp) : null, inp: inp ? Math.round(inp) : null, cls: cls ? parseFloat(cls.toFixed(3)) : null, ttfb: ttfb ? Math.round(ttfb) : null, score, category };
-  } catch (err: any) {
-    return { ...empty, error: err.message };
+  } catch (err) {
+    return { ...empty, error: (err as Error).message };
   }
 }
 
@@ -162,8 +162,8 @@ async function checkVirusTotal(domain: string, apiKey: string): Promise<{
     const harmless    = stats.harmless ?? 0;
     const total       = malicious + suspicious + undetected + harmless;
     return { clean: malicious === 0 && suspicious === 0, malicious, suspicious, undetected, total };
-  } catch (err: any) {
-    return { ...empty, error: err.message };
+  } catch (err) {
+    return { ...empty, error: (err as Error).message };
   }
 }
 

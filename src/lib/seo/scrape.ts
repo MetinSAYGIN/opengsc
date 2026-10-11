@@ -178,7 +178,7 @@ export async function scrapeStructure(url: string, firecrawlKey?: string): Promi
     const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     const title = titleMatch ? decodeEntities(stripTags(titleMatch[1])) : "";
     return { url, ok: true, via: "fetch", title, nodes, totalWords: nodes.reduce((s, n) => s + n.words, 0) };
-  } catch (e: any) {
+  } catch (e) {
     if (firecrawlKey) {
       let call: CallHandle | undefined;
       try {
@@ -199,12 +199,12 @@ export async function scrapeStructure(url: string, firecrawlKey?: string): Promi
         if (!nodes.length) throw new Error("no_headings");
         call.finish();
         return { url, ok: true, via: "firecrawl", title: meta.title || "", nodes, totalWords: nodes.reduce((s, n) => s + n.words, 0) };
-      } catch (e2: any) {
-        call?.finish({ error: e2?.message ?? "firecrawl_failed" });
-        return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: `fetch:${e?.message}; firecrawl:${e2?.message}` };
+      } catch (e2) {
+        call?.finish({ error: (e2 as Error)?.message ?? "firecrawl_failed" });
+        return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: `fetch:${(e as Error)?.message}; firecrawl:${(e2 as Error)?.message}` };
       }
     }
-    return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: e?.message ?? "fetch_failed" };
+    return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: (e as Error)?.message ?? "fetch_failed" };
   }
 }
 
@@ -294,15 +294,15 @@ async function firecrawlFetch(url: string, apiKey: string): Promise<ScrapedPage>
 export async function scrapePage(url: string, firecrawlKey?: string): Promise<ScrapedPage> {
   try {
     return await directFetch(url);
-  } catch (e: any) {
+  } catch (e) {
     if (firecrawlKey) {
       try {
         return await firecrawlFetch(url, firecrawlKey);
-      } catch (e2: any) {
-        return failed(url, `fetch:${e?.message}; firecrawl:${e2?.message}`);
+      } catch (e2) {
+        return failed(url, `fetch:${(e as Error)?.message}; firecrawl:${(e2 as Error)?.message}`);
       }
     }
-    return failed(url, e?.message ?? "fetch_failed");
+    return failed(url, (e as Error)?.message ?? "fetch_failed");
   }
 }
 

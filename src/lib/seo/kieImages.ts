@@ -39,8 +39,8 @@ export async function createKieImageTask(model: ImageModelId, input: ImageGenInp
     }
     call.finish({ responseBody: data });
     return { taskId };
-  } catch (e: any) {
-    return { error: e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+  } catch (e) {
+    return { error: (e as Error)?.name === "AbortError" ? "timeout" : String((e as Error)?.message ?? e) };
   }
 }
 
@@ -67,7 +67,7 @@ export async function getKieImageTask(taskId: string, apiKey: string): Promise<{
     let resultUrls: string[] | undefined;
     if (d.resultJson) { try { resultUrls = JSON.parse(d.resultJson)?.resultUrls; } catch { /* leave undefined */ } }
     return { state, resultUrls, progress: typeof d.progress === "number" ? d.progress : undefined };
-  } catch (e: any) {
-    return { state: "fail", error: e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+  } catch (e) {
+    return { state: "fail", error: (e as Error)?.name === "AbortError" ? "timeout" : String((e as Error)?.message ?? e) };
   }
 }

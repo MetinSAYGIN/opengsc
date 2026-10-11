@@ -330,13 +330,13 @@ export async function runBacklinkExport(opts: ExportRunOpts): Promise<void> {
       rowsSeen: state.rowsSeen, pagesPulled: state.pagesPulled, unitsSpent: state.unitsSpent,
       summary: JSON.stringify(state), error: null,
     });
-  } catch (e: any) {
-    state.notes.push(String(e?.message ?? e));
+  } catch (e) {
+    state.notes.push(String((e as Error)?.message ?? e));
     await finishApiSync(syncId, {
       status: "error", stage: "error", complete: false,
       rowsSeen: state.rowsSeen, pagesPulled: state.pagesPulled, unitsSpent: state.unitsSpent,
       summary: JSON.stringify(state),
-      error: String(e?.message ?? e).slice(0, 500),
+      error: String((e as Error)?.message ?? e).slice(0, 500),
     });
   } finally {
     // Failed pages bill nothing at the gateway, so the reservation shrinks to what actually

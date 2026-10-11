@@ -95,8 +95,8 @@ async function post<T = any>(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(DFS_TIMEOUT_MS),
     }, { provider: "dataforseo" }));
-  } catch (e: any) {
-    return { data: null, error: `сеть DataForSEO: ${e?.cause?.code || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { data: null, error: `сеть DataForSEO: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as Error)?.message || "fetch failed"}` };
   }
   if (!res.ok) {
     const error = `dataforseo ${res.status}: ${(await res.text()).slice(0, 200)}`;

@@ -112,11 +112,11 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
       articles,
       links: placed,
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[MagicLinks] order detail failed", e);
     return NextResponse.json(
-      { error: "order_failed", message: String(e?.message ?? e) },
-      { status: e?.status >= 400 && e?.status < 500 ? e.status : 502 },
+      { error: "order_failed", message: String((e as Error)?.message ?? e) },
+      { status: ((e as { status?: number }).status ?? 0) >= 400 && ((e as { status?: number }).status ?? 0) < 500 ? (e as { status?: number }).status : 502 },
     );
   }
 }

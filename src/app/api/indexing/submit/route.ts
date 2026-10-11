@@ -51,8 +51,8 @@ export async function POST(req: Request) {
         call.finish({ error: String(error).slice(0, 300), responseBody: err });
         results.push({ url, ok: false, error });
       }
-    } catch (e: any) {
-      results.push({ url, ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      results.push({ url, ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 

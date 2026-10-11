@@ -92,11 +92,11 @@ export async function POST(req: Request) {
       canSubmit: balance.balanceMinor >= q.amountMinor,
     };
     return NextResponse.json(res);
-  } catch (e: any) {
+  } catch (e) {
     console.error("[MagicLinks] quote failed", e);
     return NextResponse.json(
-      { error: "quote_failed", message: String(e?.message ?? e), code: e?.code },
-      { status: e?.status >= 400 && e?.status < 500 ? e.status : 502 },
+      { error: "quote_failed", message: String((e as Error)?.message ?? e), code: (e as { code?: string })?.code },
+      { status: ((e as { status?: number }).status ?? 0) >= 400 && ((e as { status?: number }).status ?? 0) < 500 ? (e as { status?: number }).status : 502 },
     );
   }
 }

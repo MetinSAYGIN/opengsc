@@ -238,7 +238,7 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
             setProblems(d.problems ?? []);
           }
         }
-      } catch (e: any) { if (!cancelled) setErr(String(e?.message ?? e)); }
+      } catch (e) { if (!cancelled) setErr(String((e as Error)?.message ?? e)); }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };

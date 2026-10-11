@@ -45,8 +45,8 @@ export async function runContentSearch(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(45000),
     }, { provider: "dataforseo" }));
-  } catch (e: any) {
-    return { total: 0, items: [], error: `сеть DataForSEO: ${e?.cause?.code || e?.cause?.message || e?.message || "fetch failed"}` };
+  } catch (e) {
+    return { total: 0, items: [], error: `сеть DataForSEO: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as { cause?: { code?: string; message?: string } })?.cause?.message || (e as Error)?.message || "fetch failed"}` };
   }
   if (!res.ok) {
     const error = `dataforseo ${res.status}: ${(await res.text()).slice(0, 200)}`;

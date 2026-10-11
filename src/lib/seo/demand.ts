@@ -221,8 +221,8 @@ async function dfsPost<T = any>(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(DFS_TIMEOUT_MS),
     }, { provider: "dataforseo" }));
-  } catch (e: any) {
-    const reason = e?.cause?.code || e?.cause?.message || e?.message || "fetch failed";
+  } catch (e) {
+    const reason = (e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as { cause?: { code?: string; message?: string } })?.cause?.message || (e as Error)?.message || "fetch failed";
     return { items: [], error: `сеть DataForSEO: ${reason}` };
   }
 

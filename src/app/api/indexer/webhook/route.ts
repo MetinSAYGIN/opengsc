@@ -135,7 +135,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: true, links });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[Indexer Webhook Error]", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

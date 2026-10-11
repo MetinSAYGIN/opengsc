@@ -96,8 +96,8 @@ export default function IndexerDomainsPage() {
       } else {
         setErrorMsg(data.error || "Failed to add domain.");
       }
-    } catch (err: any) {
-      setErrorMsg(err.message);
+    } catch (err) {
+      setErrorMsg((err as Error).message);
     } finally {
       setSubmitting(false);
     }
@@ -112,8 +112,8 @@ export default function IndexerDomainsPage() {
       if (res.ok) {
         fetchDomains();
       }
-    } catch (e: any) {
-      setErrorMsg(e.message);
+    } catch (e) {
+      setErrorMsg((e as Error).message);
     }
   };
 

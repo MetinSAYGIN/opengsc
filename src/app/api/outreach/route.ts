@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   try {
     return NextResponse.json(await listOutreach(userId, { stage: params.get("stage") || undefined, campaignId: params.get("campaignId") || undefined }));
-  } catch (error: any) {
+  } catch (error) {
     if (outreachSchemaMissing(error)) {
       return NextResponse.json({ campaigns: [], prospects: [], backlinks: [], stats: null, notMigrated: true });
     }
@@ -38,8 +38,8 @@ export async function POST(req: Request) {
     if (body.action === "campaign") return NextResponse.json({ campaign: await createOutreachCampaign(userId, body) }, { status: 201 });
     const result = await createOutreachProspect(userId, body);
     return NextResponse.json(result, { status: result.created ? 201 : 200 });
-  } catch (error: any) {
-    const message = String(error?.message ?? "outreach_error");
+  } catch (error) {
+    const message = String((error as Error)?.message ?? "outreach_error");
     return NextResponse.json({ error: message }, { status: errorStatus(message) });
   }
 }

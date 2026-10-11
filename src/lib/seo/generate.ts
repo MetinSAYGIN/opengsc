@@ -1921,8 +1921,8 @@ async function fetchClusterVolumes(
       if (r.volume != null) out[r.keyword] = r.volume;
     }
     return { volumes: out, error: res.error };
-  } catch (e: any) {
-    return { volumes: out, error: String(e?.message ?? e) };
+  } catch (e) {
+    return { volumes: out, error: String((e as Error)?.message ?? e) };
   }
 }
 
