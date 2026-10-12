@@ -94,15 +94,17 @@ async function pumpAuditQueue(): Promise<void> {
   }
 }
 
-// Runs after an audit finishes (either way): releases the slot and applies the retry
-// policy to failures. runAudit never throws (it catches internally and marks the row
-// "error"), so reading the row back is the honest way to learn the outcome.
+// Runs after an audit finishes (either way): releases the slot, applies the retention
+// policy, and requeues failures per the retry policy. runAudit never throws (it catches
+// internally and marks the row "error"), so reading the row back is the honest way to
+// learn the outcome.
 async function settleAudit(auditId: string, userId: string): Promise<void> {
   const inFlight = inFlightByUser.get(userId);
   if (inFlight) { inFlight.delete(auditId); if (!inFlight.size) inFlightByUser.delete(userId); }
   try {
     const settings = await getAuditQueueSettings(userId);
-    const row = await prisma.siteAudit.findUnique({ where: { id: auditId }, select: { status: true, attempt: true } });
+    const row = await prisma.siteAudit.findUnique({ where: { id: auditId }, select: { status: true, attempt: true, siteId: true } });
+    if (row) await pruneAuditHistory(userId, settings.historyKeep, row.siteId).catch(() => {});
     if (row?.status !== "error") return;
     // attempt counts the try that just failed (1 = first). Total allowed = 1 + retryAttempts.
     if ((row.attempt ?? 1) >= 1 + Math.max(0, settings.retryAttempts)) return;
@@ -168,4 +170,38 @@ export async function setAuditQueuePaused(userId: string, paused: boolean): Prom
   const next = { ...settings, paused };
   await saveAuditQueueSettings(userId, next);
   return next;
+}
+
+// ── retention ─────────────────────────────────────────────────────────────────────
+
+// Keeps the newest `keep` finished runs per site and deletes the rest. Only terminal rows
+// (completed | error) are ever pruned — a queued row is an order the queue still owes and a
+// running one is a crawl writing underneath us, so neither is deletable history. `keep` of
+// 0 keeps everything. A deleted baseline is fine: baselineAuditId carries no relation, and
+// verification reads it opportunistically.
+export async function pruneAuditHistory(userId: string, keep: number, siteId?: string): Promise<number> {
+  if (keep <= 0) return 0;
+  const sites = await prisma.site.findMany({
+    where: { userId, ...(siteId ? { id: siteId } : {}) },
+    select: { id: true },
+  }).catch(() => []);
+  let deleted = 0;
+  for (const site of sites) {
+    const keepRows = await prisma.siteAudit.findMany({
+      where: { siteId: site.id, status: { in: ["completed", "error"] } },
+      orderBy: { startedAt: "desc" },
+      take: keep,
+      select: { id: true },
+    }).catch(() => []);
+    if (!keepRows.length) continue;
+    const res = await prisma.siteAudit.deleteMany({
+      where: {
+        siteId: site.id,
+        status: { in: ["completed", "error"] },
+        id: { notIn: keepRows.map(r => r.id) },
+      },
+    }).catch(() => ({ count: 0 }));
+    deleted += res.count;
+  }
+  return deleted;
 }

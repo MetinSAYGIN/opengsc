@@ -5330,5 +5330,14 @@
   "blpDfsNewDomains": "+ domaines",
   "blpDfsLostDomains": "− domaines",
   "blToxSignal_provider_spam": "Score de spam DataForSEO élevé sur les liens de ce donneur",
-  "blsyncSpent": "{cost} dépensés"
+  "blsyncSpent": "{cost} dépensés",
+  "auditsStatusDone": "Vérifié",
+  "auditsStatusError": "Erreur",
+  "auditsStatusNever": "Jamais audité",
+  "auditsSortHint": "Trier selon cette colonne",
+  "auditsSettingsKeep": "Analyses conservées par site",
+  "auditsSettingsKeepAll": "0 — tout conserver",
+  "auditCopyMdLink": "Copier le lien .md",
+  "auditCopyMdLinkHint": "Lien public noindex vers ce rapport en Markdown — à donner à un agent IA ou un développeur sans télécharger le fichier",
+  "auditMdLinkCopied": "Copié"
 }

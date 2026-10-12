@@ -75,3 +75,13 @@ test("effective schedule precedence: site cron > site interval > workspace cron 
     effectiveAuditSchedule(JSON.stringify({ mode: "cron", cron: "99 * * * *" }), q),
     { kind: "cron", expr: "0 4 * * *" });
 });
+
+test("retention: historyKeep defaults to keep-everything and clamps into 0..200", () => {
+  // 0 by design: an upgrade must not start deleting an operator's old audits unasked.
+  assert.equal(DEFAULT_AUDIT_QUEUE_SETTINGS.historyKeep, 0);
+  assert.equal(parseAuditQueueSettings(null).historyKeep, 0);
+  // a stored value survives; an out-of-range one clamps instead of being rejected
+  assert.equal(parseAuditQueueSettings(JSON.stringify({ historyKeep: 5 })).historyKeep, 5);
+  assert.equal(parseAuditQueueSettings(JSON.stringify({ historyKeep: 999 })).historyKeep, 200);
+  assert.equal(parseAuditQueueSettings(JSON.stringify({ historyKeep: -3 })).historyKeep, 0);
+});

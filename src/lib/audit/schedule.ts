@@ -12,6 +12,8 @@ export interface AuditQueueSettings {
   retryAttempts: number;      // extra tries beyond the first (0 = fail once)
   retryDelayMin: number;      // wait before a retried run becomes slot-eligible
   paused: boolean;            // stop starting new audits; runs in flight finish
+  historyKeep: number;        // finished runs kept per site (0 = keep everything; opt-in — an
+                               // upgrade must never start silently deleting old audits)
 }
 
 export const DEFAULT_AUDIT_QUEUE_SETTINGS: AuditQueueSettings = {
@@ -22,6 +24,7 @@ export const DEFAULT_AUDIT_QUEUE_SETTINGS: AuditQueueSettings = {
   retryAttempts: 1,
   retryDelayMin: 15,
   paused: false,
+  historyKeep: 0,
 };
 
 export function parseAuditQueueSettings(raw: string | null | undefined): AuditQueueSettings {
@@ -40,6 +43,7 @@ export function parseAuditQueueSettings(raw: string | null | undefined): AuditQu
       retryAttempts: num(parsed?.retryAttempts, DEFAULT_AUDIT_QUEUE_SETTINGS.retryAttempts, 0, 5),
       retryDelayMin: num(parsed?.retryDelayMin, DEFAULT_AUDIT_QUEUE_SETTINGS.retryDelayMin, 1, 1440),
       paused: parsed?.paused === true,
+      historyKeep: num(parsed?.historyKeep, DEFAULT_AUDIT_QUEUE_SETTINGS.historyKeep, 0, 200),
     };
   } catch {
     return { ...DEFAULT_AUDIT_QUEUE_SETTINGS };

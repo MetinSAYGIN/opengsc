@@ -5330,5 +5330,14 @@
   "blpDfsNewDomains": "+ домены",
   "blpDfsLostDomains": "− домены",
   "blToxSignal_provider_spam": "Высокая спам-оценка DataForSEO у ссылок этого донора",
-  "blsyncSpent": "потрачено {cost}"
+  "blsyncSpent": "потрачено {cost}",
+  "auditsStatusDone": "Проверено",
+  "auditsStatusError": "Ошибка",
+  "auditsStatusNever": "Не аудировался",
+  "auditsSortHint": "Сортировать по этой колонке",
+  "auditsSettingsKeep": "Хранить прогонов на сайт",
+  "auditsSettingsKeepAll": "0 — хранить все",
+  "auditCopyMdLink": "Копировать ссылку .md",
+  "auditCopyMdLinkHint": "Внешняя noindex-ссылка на этот отчёт в Markdown — можно отдать ИИ-агенту или разработчику без скачивания файла",
+  "auditMdLinkCopied": "Скопировано"
 }

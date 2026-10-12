@@ -5330,5 +5330,14 @@
   "blpDfsNewDomains": "+ 域名",
   "blpDfsLostDomains": "− 域名",
   "blToxSignal_provider_spam": "该来源域名链接的 DataForSEO 垃圾评分很高",
-  "blsyncSpent": "已花费 {cost}"
+  "blsyncSpent": "已花费 {cost}",
+  "auditsStatusDone": "已检查",
+  "auditsStatusError": "错误",
+  "auditsStatusNever": "从未审计",
+  "auditsSortHint": "按此列排序",
+  "auditsSettingsKeep": "每站点保留的运行数",
+  "auditsSettingsKeepAll": "0 — 全部保留",
+  "auditCopyMdLink": "复制 .md 链接",
+  "auditCopyMdLinkHint": "此报告 Markdown 版本的公开 noindex 链接——无需下载文件即可交给 AI 代理或开发者",
+  "auditMdLinkCopied": "已复制"
 }
