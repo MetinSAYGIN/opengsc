@@ -101,6 +101,12 @@ const STEPS = [
   { key: "restrictions", icon: Ban, label: "seoRestrictions", sub: "seoRestrictionsTabSub" },
 ] as const;
 
+const CheckRow = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
+  <label style={{ display: "flex", alignItems: "center", gap: "9px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", padding: "4px 0" }}>
+    <input type="checkbox" checked={on} onChange={onToggle} /> {label}
+  </label>
+);
+
 export default function PolicyPage() {
   const { t } = useLanguage();
   const [policies, setPolicies] = useState<EditorialPolicy[]>([DEFAULT_POLICY]);
@@ -548,11 +554,6 @@ function GenModal({ loading, err, t, onClose, onGenerate }: {
   });
 
   const lbl: React.CSSProperties = { fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", display: "block", marginBottom: "6px" };
-  const Check = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
-    <label style={{ display: "flex", alignItems: "center", gap: "9px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", padding: "4px 0" }}>
-      <input type="checkbox" checked={on} onChange={onToggle} /> {label}
-    </label>
-  );
   const groupBox: React.CSSProperties = { border: "1px solid var(--color-border)", borderRadius: "10px", padding: "12px 14px" };
 
   return (
@@ -571,17 +572,17 @@ function GenModal({ loading, err, t, onClose, onGenerate }: {
 
         <div style={{ ...groupBox, marginBottom: "12px" }}>
           <div className="tool-section-label" style={{ marginBottom: "6px" }}>{t("seoGenAiSources")}</div>
-          <Check on={useUrls} onToggle={() => setUseUrls(v => !v)} label={t("seoGenAiAddUrls")} />
+          <CheckRow on={useUrls} onToggle={() => setUseUrls(v => !v)} label={t("seoGenAiAddUrls")} />
           {useUrls && <textarea className="tool-input" style={{ minHeight: "56px", resize: "vertical", margin: "6px 0 4px" }} value={sourceUrls} onChange={e => setSourceUrls(e.target.value)} placeholder={t("seoGenAiUrlsPh")} />}
-          <Check on={useDesc} onToggle={() => setUseDesc(v => !v)} label={t("seoGenAiAddDesc")} />
+          <CheckRow on={useDesc} onToggle={() => setUseDesc(v => !v)} label={t("seoGenAiAddDesc")} />
           {useDesc && <textarea className="tool-input" style={{ minHeight: "64px", resize: "vertical", marginTop: "6px" }} value={brandDescription} onChange={e => setBrandDescription(e.target.value)} placeholder={t("seoGenAiDescPh")} />}
         </div>
 
         <div style={{ ...groupBox, marginBottom: "14px" }}>
           <div className="tool-section-label" style={{ marginBottom: "6px" }}>{t("seoGenAiStyleSources")}</div>
-          <Check on={useComp} onToggle={() => setUseComp(v => !v)} label={t("seoGenAiAnalyzeComp")} />
+          <CheckRow on={useComp} onToggle={() => setUseComp(v => !v)} label={t("seoGenAiAnalyzeComp")} />
           {useComp && <textarea className="tool-input" style={{ minHeight: "56px", resize: "vertical", margin: "6px 0 4px" }} value={competitorUrls} onChange={e => setCompetitorUrls(e.target.value)} placeholder={t("seoGenAiCompPh")} />}
-          <Check on={useSample} onToggle={() => setUseSample(v => !v)} label={t("seoGenAiAddSample")} />
+          <CheckRow on={useSample} onToggle={() => setUseSample(v => !v)} label={t("seoGenAiAddSample")} />
           {useSample && <textarea className="tool-input" style={{ minHeight: "80px", resize: "vertical", marginTop: "6px" }} value={sampleText} onChange={e => setSampleText(e.target.value)} placeholder={t("seoGenAiSamplePh")} />}
         </div>
 

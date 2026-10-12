@@ -139,18 +139,6 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
       });
   }, [data, search, sortKey]);
 
-  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
-    <button
-      onClick={() => setSortKey(k)}
-      style={{
-        padding: "4px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
-        border: `1px solid ${sortKey === k ? "#3B82F6" : "var(--color-border)"}`,
-        background: sortKey === k ? "rgba(59,130,246,0.1)" : "transparent",
-        color: sortKey === k ? "#3B82F6" : "var(--color-text-secondary)",
-        cursor: "pointer", transition: "all 0.15s",
-      }}
-    >{label}</button>
-  );
 
   return (
     <div style={{ padding: "20px 28px" }}>
@@ -191,9 +179,9 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
         {/* Sort */}
         <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
           <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("kcSortBy")}</span>
-          <SortBtn k="diff"        label={t("ctrSortWorst")} />
-          <SortBtn k="impressions" label={t("impressions")} />
-          <SortBtn k="position"    label={t("position")} />
+          <SortBtn label={t("ctrSortWorst")} active={sortKey === "diff"} onSelect={() => setSortKey("diff")} />
+          <SortBtn label={t("impressions")} active={sortKey === "impressions"} onSelect={() => setSortKey("impressions")} />
+          <SortBtn label={t("position")} active={sortKey === "position"} onSelect={() => setSortKey("position")} />
         </div>
       </div>
 
@@ -297,6 +285,19 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
+const SortBtn = ({ label, active, onSelect }: { label: string; active: boolean; onSelect: () => void }) => (
+  <button
+    onClick={onSelect}
+    style={{
+      padding: "4px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
+      border: `1px solid ${active ? "#3B82F6" : "var(--color-border)"}`,
+      background: active ? "rgba(59,130,246,0.1)" : "transparent",
+      color: active ? "#3B82F6" : "var(--color-text-secondary)",
+      cursor: "pointer", transition: "all 0.15s",
+    }}
+  >{label}</button>
+);
+
 export default function CtrBenchmark({ siteDbId }: { siteDbId: string }) {
   return (
     <div style={{ border: "1px solid var(--color-border)", borderRadius: "12px", overflow: "hidden", marginTop: "20px", background: "var(--color-card)" }}>
