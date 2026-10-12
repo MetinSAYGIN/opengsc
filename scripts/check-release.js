@@ -23,9 +23,13 @@ for (const name of ['README.md', 'README.ru.md']) {
 }
 
 const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-const firstRelease = changelog.match(/^## \[([^\]]+)\]/m)?.[1];
-if (firstRelease !== version) {
-  failures.push(`CHANGELOG.md starts with ${firstRelease || 'no release'}, expected ${version}`);
+const releases = [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((m) => m[1]);
+// Between releases, work lands under `## [Unreleased]` (Keep a Changelog style); the
+// release commit renames that section. The first versioned heading below it must
+// still be the released version, or the changelog and package.json have drifted.
+const firstVersioned = releases.find((r) => r !== 'Unreleased') ?? releases[0];
+if (firstVersioned !== version) {
+  failures.push(`CHANGELOG.md starts with ${firstVersioned || 'no release'}, expected ${version}`);
 }
 
 const mcpRoute = fs.readFileSync(path.join(root, 'src/app/api/mcp/route.ts'), 'utf8');

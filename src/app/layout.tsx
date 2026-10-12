@@ -15,6 +15,10 @@ import { LayoutProvider } from "@/lib/LayoutContext";
 export const metadata: Metadata = {
   title: "OpenGSC Dashboard",
   description: "Advanced Search Console Analytics without Limits",
+  // The panel runs on each operator's own domain behind a login — there is nothing to
+  // index, and installs that did get crawled ended up in Google outranking the product's
+  // own site for its brand. Paired with the X-Robots-Tag header in next.config.ts.
+  robots: { index: false, follow: false },
   manifest: "/manifest.webmanifest",
   icons: {
     icon: "/favicon.svg",

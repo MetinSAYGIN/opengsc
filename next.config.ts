@@ -17,6 +17,10 @@ const nextConfig: NextConfig = {
           // Share tokens travel in the query string. A linked asset must not echo that URL.
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "X-Content-Type-Options", value: "nosniff" },
+          // noindex at the HTTP layer — covers every response type, not just HTML, on
+          // whatever domain an install runs on. The <meta name="robots"> in
+          // src/app/layout.tsx is the HTML half of the same pair.
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
         ],
       },
       {

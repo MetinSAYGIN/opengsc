@@ -106,9 +106,12 @@ export default withAuth(
   }
 );
 
-// Protect all routes except /login and /api/auth
+// Protect all routes except /login, /api/auth and the anonymously fetchable assets.
+// robots.txt is one of those assets on purpose: a redirect to the login page instead of
+// the file reads to a crawler as a broken/garbage robots.txt, and the noindex pair
+// (layout.tsx + next.config.ts) needs crawlers fetching pages, not being bounced.
 export const config = {
   matcher: [
-    "/((?!login|api/auth|_next/static|_next/image|favicon.ico|favicon.svg|logo.svg|.*\\.svg$|.*\\.png$|.*\\.ico$).*)",
+    "/((?!login|api/auth|robots.txt|_next/static|_next/image|favicon.ico|favicon.svg|logo.svg|.*\\.svg$|.*\\.png$|.*\\.ico$).*)",
   ],
 };
