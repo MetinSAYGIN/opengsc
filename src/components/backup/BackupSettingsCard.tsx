@@ -291,11 +291,11 @@ export default function BackupSettingsCard() {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "10px", marginTop: "8px" }}>
                   <div>
                     <div style={hint}>{t("backupSftpHost")}</div>
-                    <input value={sftpHost} onChange={e => setSftpHost(e.target.value)} placeholder="nas.local" style={{ ...input, width: "100%", marginTop: "2px" }} />
+                    <input value={sftpHost} onChange={e => { setSftpHost(e.target.value); setSftpFingerprint(""); }} placeholder="nas.local" style={{ ...input, width: "100%", marginTop: "2px" }} />
                   </div>
                   <div>
                     <div style={hint}>{t("backupSftpPort")}</div>
-                    <input type="number" value={sftpPort} onChange={e => setSftpPort(Number(e.target.value))} style={{ ...input, width: "100%", marginTop: "2px" }} />
+                    <input type="number" value={sftpPort} onChange={e => { setSftpPort(Number(e.target.value)); setSftpFingerprint(""); }} style={{ ...input, width: "100%", marginTop: "2px" }} />
                   </div>
                   <div>
                     <div style={hint}>{t("backupSftpUser")}</div>

@@ -143,7 +143,10 @@ export function mergeBackupConfig(raw: Record<string, unknown>, current: BackupC
       // Canonical form: "SHA256:" + unpadded base64 — byte-identical to `ssh-keygen -lf`,
       // so an operator can read a fingerprint off their server and paste it as-is. The
       // prefix is added when missing; anything that isn't base64 (old MD5 hex, junk) is
-      // refused rather than silently stored as an unpinnable value.
+      // refused rather than silently stored as an unpinnable value. Unlike the secrets, an
+      // empty string CLEARS: the field always echoes the stored value, and the card empties
+      // it when host/port are edited — so "Save without Test" stores an unpinned destination
+      // the runner reports honestly, instead of pinning the old host's key onto the new one.
       let fp = cleanLine(s.hostKeyFingerprint, 100);
       if (fp) {
         fp = fp.replace(/^sha256:/i, "SHA256:");
