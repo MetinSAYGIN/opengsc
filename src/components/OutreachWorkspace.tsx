@@ -14,6 +14,33 @@ interface Props {
   onError?: (message: string) => void;
 }
 
+// The JSON GET /api/outreach answers with: the service's Prisma rows, dates as ISO strings
+// (they cross the wire), campaign totals folded into each campaign row, and each prospect's
+// backlink and stage events joined in. Only what this component reads is declared.
+interface OutreachEventRow { id: string; fromStage: string | null; toStage: string; createdAt: string }
+interface OutreachCampaignRow { id: string; name: string; status: string; targetAsset: string | null; notes: string | null; total: number; won: number }
+interface OutreachBacklinkRow { id: string; siteId: string; url: string; isAlive: boolean | null; aliveStatus: string | null }
+interface OutreachProspectRow {
+  id: string; domain: string; stage: string; campaignId: string | null;
+  sourceUrl: string | null; sourceTitle: string | null; sourceBrand: string | null; sourceDr: number | null;
+  contactName: string | null; contactEmail: string | null; contactUrl: string | null; contactSource: string | null;
+  pitchAngle: string | null; targetAsset: string | null; notes: string | null;
+  nextFollowUpAt: string | null; lastContactAt: string | null;
+  backlinkId: string | null; wonBacklinkUrl: string | null;
+  campaign?: { targetAsset?: string | null } | null;
+  backlink?: OutreachBacklinkRow | null;
+  events: OutreachEventRow[];
+}
+/** The stats cards index by their five known field names; `byStage` is never read here. */
+interface OutreachStats { [field: string]: number }
+interface OutreachData {
+  campaigns: OutreachCampaignRow[];
+  prospects: OutreachProspectRow[];
+  backlinks: OutreachBacklinkRow[];
+  stats: OutreachStats | null;
+  notMigrated?: boolean;
+}
+
 const input = "tool-input";
 const ghost: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 const primary: React.CSSProperties = { ...ghost, border: "none", background: "var(--color-accent-purple)", color: "#fff" };
@@ -32,22 +59,25 @@ function localDateInput(value?: string | null): string {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
-function backlinkState(backlink: any): string {
+function backlinkState(backlink: OutreachBacklinkRow | null | undefined): string {
   if (!backlink) return "unknown";
-  if (["alive", "dead", "blocked"].includes(backlink.aliveStatus)) return backlink.aliveStatus;
+  if (typeof backlink.aliveStatus === "string" && ["alive", "dead", "blocked"].includes(backlink.aliveStatus)) return backlink.aliveStatus;
   return backlink.isAlive === true ? "alive" : backlink.isAlive === false ? "dead" : "unknown";
 }
 
 export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: Props) {
   const now = useNow();
-  const { t, language } = useLanguage() as any;
-  const [data, setData] = useState<any>({ campaigns: [], prospects: [], backlinks: [], stats: null });
+  // `t` is typed as `(key: keyof Dictionary) => string`, but this component composes keys at
+  // runtime from OUTREACH_STAGES ("outreachStageWon", `outreachLink${Alive}`) — valid dictionary
+  // keys the literal union cannot prove. One widening cast beats one at every dynamic call.
+  const { t, language } = useLanguage() as unknown as { t: (key: string) => string; language: string };
+  const [data, setData] = useState<OutreachData>({ campaigns: [], prospects: [], backlinks: [], stats: null });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notMigrated, setNotMigrated] = useState(false);
   const [filterStage, setFilterStage] = useState("");
   const [filterCampaign, setFilterCampaign] = useState("");
-  const [selected, setSelected] = useState<any>(null);
+  const [selected, setSelected] = useState<OutreachProspectRow | null>(null);
   const [copied, setCopied] = useState(false);
   const [manualDomain, setManualDomain] = useState("");
   const [manualUrl, setManualUrl] = useState("");
@@ -66,7 +96,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
       setData(next);
       setNotMigrated(next.notMigrated === true);
       if (selected) {
-        const fresh = (next.prospects || []).find((prospect: any) => prospect.id === selected.id);
+        const fresh = (next.prospects || []).find((prospect: OutreachProspectRow) => prospect.id === selected.id);
         if (fresh) setSelected({ ...fresh, nextFollowUpAt: localDateInput(fresh.nextFollowUpAt), lastContactAt: localDateInput(fresh.lastContactAt) });
       }
     } catch (error) { fail((error as Error)?.message); }
@@ -75,7 +105,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
 
   useEffect(() => { void reload(); }, [refreshToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filtered = useMemo(() => (data.prospects || []).filter((prospect: any) =>
+  const filtered = useMemo(() => (data.prospects || []).filter((prospect: OutreachProspectRow) =>
     (!filterStage || prospect.stage === filterStage) && (!filterCampaign || prospect.campaignId === filterCampaign),
   ), [data.prospects, filterStage, filterCampaign]);
 
@@ -167,7 +197,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
     setSaving(false);
   }
 
-  async function toggleCampaign(campaign: any) {
+  async function toggleCampaign(campaign: OutreachCampaignRow) {
     try {
       const response = await fetch(`/api/outreach/campaigns/${encodeURIComponent(campaign.id)}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -186,7 +216,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
     } catch { fail("clipboard_error"); }
   }
 
-  async function verifyBacklink(prospect: any) {
+  async function verifyBacklink(prospect: OutreachProspectRow) {
     if (!prospect.backlink?.id || !prospect.backlink?.siteId) return;
     setSaving(true);
     try {
@@ -213,7 +243,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
           <button onClick={createCampaign} disabled={saving || !campaignName.trim()} style={{ ...primary, opacity: saving || !campaignName.trim() ? 0.55 : 1, minHeight: "38px" }}><Plus size={13} /> {t("outreachCampaignCreate")}</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: "10px" }}>
-          {(data.campaigns || []).map((campaign: any) => (
+          {(data.campaigns || []).map((campaign: OutreachCampaignRow) => (
             <div key={campaign.id} className="panel" style={{ display: "flex", flexDirection: "column", gap: "9px", opacity: campaign.status === "archived" ? 0.68 : 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <Target size={15} color="var(--color-accent-purple)" />
@@ -241,7 +271,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: "8px" }}>
           {[["total", "outreachTotal", "var(--color-text-primary)"], ["open", "outreachOpen", "#007aff"], ["due", "outreachDue", "#ff9f0a"], ["won", "outreachWon", "#34c759"], ["conversionPercent", "outreachConversion", "#af52de"]].map(([field, key, color]) => (
             <div key={field} className="panel" style={{ textAlign: "center", padding: "12px" }}>
-              <div style={{ fontSize: "23px", fontWeight: 800, color }}>{data.stats[field]}{field === "conversionPercent" ? "%" : ""}</div>
+              <div style={{ fontSize: "23px", fontWeight: 800, color }}>{data.stats?.[field]}{field === "conversionPercent" ? "%" : ""}</div>
               <div style={{ fontSize: "10px", color: "var(--color-text-secondary)" }}>{t(key)}</div>
             </div>
           ))}
@@ -255,7 +285,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
         </select>
         <select className={input} value={filterCampaign} onChange={e => setFilterCampaign(e.target.value)} style={{ width: "auto" }}>
           <option value="">{t("outreachAllCampaigns")}</option>
-          {(data.campaigns || []).map((campaign: any) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+          {(data.campaigns || []).map((campaign: OutreachCampaignRow) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
         </select>
         <span style={{ flex: 1 }} />
         <input className={input} value={manualDomain} onChange={e => setManualDomain(e.target.value)} placeholder={t("outreachDomainPh")} style={{ width: "180px" }} />
@@ -275,7 +305,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
             <th style={{ padding: "10px 12px" }} />
           </tr></thead>
           <tbody>
-            {filtered.map((prospect: any) => {
+            {filtered.map((prospect: OutreachProspectRow) => {
               const due = now > 0 && prospect.nextFollowUpAt && new Date(prospect.nextFollowUpAt).getTime() <= now && !["won", "lost"].includes(prospect.stage);
               const alive = backlinkState(prospect.backlink);
               return (
@@ -300,14 +330,14 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}><Mail size={16} color="var(--color-accent-purple)" /><strong style={{ color: "var(--color-text-primary)" }}>{selected.domain}</strong><span style={{ flex: 1 }} /><button onClick={() => setSelected(null)} style={ghost}>{t("close")}</button></div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: "8px" }}>
             <select className={input} value={selected.stage} onChange={e => setSelected({ ...selected, stage: e.target.value })}>{OUTREACH_STAGES.map(stage => <option key={stage} value={stage}>{t(stageKey[stage])}</option>)}</select>
-            <select className={input} value={selected.campaignId || ""} onChange={e => setSelected({ ...selected, campaignId: e.target.value })}><option value="">{t("outreachNoCampaign")}</option>{(data.campaigns || []).filter((campaign: any) => campaign.status === "active" || campaign.id === selected.campaignId).map((campaign: any) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select>
+            <select className={input} value={selected.campaignId || ""} onChange={e => setSelected({ ...selected, campaignId: e.target.value })}><option value="">{t("outreachNoCampaign")}</option>{(data.campaigns || []).filter((campaign: OutreachCampaignRow) => campaign.status === "active" || campaign.id === selected.campaignId).map((campaign: OutreachCampaignRow) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select>
             <input className={input} value={selected.contactName || ""} onChange={e => setSelected({ ...selected, contactName: e.target.value })} placeholder={t("outreachContactNamePh")} />
             <input className={input} value={selected.contactEmail || ""} onChange={e => setSelected({ ...selected, contactEmail: e.target.value })} placeholder={t("outreachContactEmailPh")} />
             <input className={input} value={selected.contactUrl || ""} onChange={e => setSelected({ ...selected, contactUrl: e.target.value })} placeholder={t("outreachContactUrlPh")} />
             <input className={input} value={selected.contactSource || ""} onChange={e => setSelected({ ...selected, contactSource: e.target.value })} placeholder={t("outreachContactSourcePh")} />
             <input className={input} value={selected.targetAsset || ""} onChange={e => setSelected({ ...selected, targetAsset: e.target.value })} placeholder={t("outreachTargetAssetPh")} />
             <input className={input} type="datetime-local" value={selected.nextFollowUpAt || ""} onChange={e => setSelected({ ...selected, nextFollowUpAt: e.target.value })} title={t("outreachFollowUp")} />
-            <select className={input} value={selected.backlinkId || ""} onChange={e => setSelected({ ...selected, backlinkId: e.target.value })}><option value="">{t("outreachNoBacklink")}</option>{(data.backlinks || []).map((backlink: any) => <option key={backlink.id} value={backlink.id}>{backlink.url}</option>)}</select>
+            <select className={input} value={selected.backlinkId || ""} onChange={e => setSelected({ ...selected, backlinkId: e.target.value })}><option value="">{t("outreachNoBacklink")}</option>{(data.backlinks || []).map((backlink: OutreachBacklinkRow) => <option key={backlink.id} value={backlink.id}>{backlink.url}</option>)}</select>
             <input className={input} value={selected.wonBacklinkUrl || ""} onChange={e => setSelected({ ...selected, wonBacklinkUrl: e.target.value })} placeholder={t("outreachWonUrlPh")} />
           </div>
           <textarea className={input} value={selected.pitchAngle || ""} onChange={e => setSelected({ ...selected, pitchAngle: e.target.value })} placeholder={t("outreachPitchAnglePh")} style={{ minHeight: "64px", resize: "vertical" }} />
@@ -317,7 +347,7 @@ export default function OutreachWorkspace({ mode, refreshToken = 0, onError }: P
             <button onClick={copyPitch} style={ghost}>{copied ? <Check size={13} /> : <Clipboard size={13} />} {t(copied ? "outreachCopied" : "outreachCopyPitch")}</button>
           </div>
           <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{t("outreachNoAutoSend")}</div>
-          {selected.events?.length > 0 && <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>{selected.events.slice(0, 8).map((event: any) => <span key={event.id} style={{ fontSize: "10px", color: "var(--color-text-secondary)", padding: "3px 7px", borderRadius: "6px", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>{event.fromStage ? `${t(stageKey[event.fromStage])} → ` : ""}{t(stageKey[event.toStage])} · {new Date(event.createdAt).toLocaleString(language)}</span>)}</div>}
+          {selected.events?.length > 0 && <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>{selected.events.slice(0, 8).map((event: OutreachEventRow) => <span key={event.id} style={{ fontSize: "10px", color: "var(--color-text-secondary)", padding: "3px 7px", borderRadius: "6px", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>{event.fromStage ? `${t(stageKey[event.fromStage])} → ` : ""}{t(stageKey[event.toStage])} · {new Date(event.createdAt).toLocaleString(language)}</span>)}</div>}
           <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             <button onClick={saveSelected} disabled={saving} style={primary}>{saving ? <Loader2 size={13} className="spin" /> : <Save size={13} />} {t("outreachSave")}</button>
             {selected.backlink && <button onClick={() => verifyBacklink(selected)} disabled={saving} style={ghost}><RefreshCw size={13} /> {t("outreachVerifyLink")}</button>}

@@ -110,6 +110,12 @@ export interface AparserCreds {
 
 export interface AparserResult<T> { data: T | null; error?: string }
 
+/**
+ * The wire envelope every action answers with: `{ success: 0|1, data }`. Field names drift
+ * across A-Parser builds, so both sides stay loose here and every reader re-checks its shape.
+ */
+interface AparserEnvelope { success?: unknown; data?: unknown }
+
 const fail = <T>(error: string): AparserResult<T> => ({ data: null, error });
 
 export interface AparserInfo {
@@ -127,7 +133,7 @@ export const APARSER_DEFAULT_TIMEOUT_MS = 120_000;
 /** ping/info answer instantly or not at all — a long wait here is a wrong host, not a slow one. */
 export const APARSER_PROBE_TIMEOUT_MS = 8_000;
 
-export async function aparserCall<T = any>(
+export async function aparserCall<T = unknown>(
   creds: AparserCreds,
   action: string,
   data?: unknown,
@@ -157,7 +163,7 @@ export async function aparserCall<T = any>(
 
   if (!res.ok) return fail<T>(`aparser ${host} ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
 
-  let body: any;
+  let body: AparserEnvelope;
   try { body = await res.json(); } catch { return fail<T>(`aparser ${host}: non-JSON response (${res.status})`); }
 
   if (body?.success !== 1) {
@@ -175,10 +181,10 @@ export async function aparserPing(creds: AparserCreds): Promise<AparserResult<st
 }
 
 export async function aparserInfo(creds: AparserCreds): Promise<AparserResult<AparserInfo>> {
-  const r = await aparserCall<any>(creds, "info", undefined, APARSER_PROBE_TIMEOUT_MS);
+  const r = await aparserCall<Record<string, unknown>>(creds, "info", undefined, APARSER_PROBE_TIMEOUT_MS);
   if (!r.data) return fail<AparserInfo>(r.error ?? "aparser: no info");
   const d = r.data;
-  const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   return {
     data: {
       version: String(d.version ?? ""),
@@ -214,8 +220,8 @@ export async function aparserProxies(creds: AparserCreds): Promise<AparserResult
  */
 export async function aparserParserPreset(
   creds: AparserCreds, parser: string, preset = "default",
-): Promise<AparserResult<Record<string, any>>> {
-  return aparserCall<Record<string, any>>(creds, "getParserPreset", { parser, preset }, APARSER_PROBE_TIMEOUT_MS);
+): Promise<AparserResult<Record<string, unknown>>> {
+  return aparserCall<Record<string, unknown>>(creds, "getParserPreset", { parser, preset }, APARSER_PROBE_TIMEOUT_MS);
 }
 
 // ─── oneRequest ──────────────────────────────────────────────────────────────
@@ -225,8 +231,9 @@ export interface AparserOption { type: "override" | "set"; id: string; value: un
 export interface AparserOneRequestData {
   /** The formatted string. Never parse it — see below. */
   resultString?: string;
-  results?: any[];
-  logs?: any[];
+  /** The structured rows; `results[0]` is the only one callers may read (see below). */
+  results?: Record<string, unknown>[];
+  logs?: unknown[];
 }
 
 /**
@@ -320,19 +327,20 @@ async function withConfigPresetFallback<T>(
  *
  * Returns null when the row is usable, otherwise a reason code.
  */
-export function parserResultProblem(row: any, contentKeys: string[] = ["serp"]): string | null {
+export function parserResultProblem(row: unknown, contentKeys: string[] = ["serp"]): string | null {
   if (!row || typeof row !== "object") return "aparser_no_result";
+  const record = row as Record<string, unknown>;
   // The parser reports its own outcome per query, independently of the API envelope.
-  if (row.success !== undefined && Number(row.success) !== 1) return "aparser_parser_failed";
+  if (record.success !== undefined && Number(record.success) !== 1) return "aparser_parser_failed";
 
   const hasContent = contentKeys.some(k => {
-    const v = row[k];
+    const v = record[k];
     return Array.isArray(v) ? v.length > 0 : v != null && v !== "";
   });
   if (hasContent) return null;
 
   // Nothing came back. Did the engine actually say "zero", or did we never reach it?
-  const total = row.totalcount ?? row.totalCount ?? row.total;
+  const total = record.totalcount ?? record.totalCount ?? record.total;
   if (total !== undefined && total !== null && String(total).trim() !== "" && Number(total) === 0) return null;
 
   return "aparser_blocked_or_empty";
@@ -350,7 +358,7 @@ export interface AparserAddTask {
 
 export interface AparserTaskState {
   status: string;
-  raw: Record<string, any>;
+  raw: Record<string, unknown>;
 }
 
 /**
@@ -390,24 +398,24 @@ export async function aparserAddTask(creds: AparserCreds, task: AparserAddTask):
     removeOnComplete: false,
     queries,
   });
-  const r = await withConfigPresetFallback(creds, cfg => aparserCall<any>(creds, "addTask", data(cfg)));
+  const r = await withConfigPresetFallback(creds, cfg => aparserCall<{ taskid?: unknown; taskId?: unknown } | number>(creds, "addTask", data(cfg)));
   if (!r.data) return fail<number>(r.error ?? "aparser: no task id");
-  const d = r.data as any;
-  const id = Number(d?.taskid ?? d?.taskId ?? d);
+  const d = r.data;
+  const id = Number(typeof d === "number" ? d : (d.taskid ?? d.taskId ?? d));
   return Number.isFinite(id) ? { data: id } : fail<number>("aparser: no task id");
 }
 
 export async function aparserTaskState(creds: AparserCreds, taskid: number): Promise<AparserResult<AparserTaskState>> {
-  const r = await aparserCall<any>(creds, "getTaskState", { taskid }, APARSER_PROBE_TIMEOUT_MS);
+  const r = await aparserCall<Record<string, unknown>>(creds, "getTaskState", { taskid }, APARSER_PROBE_TIMEOUT_MS);
   if (!r.data) return fail<AparserTaskState>(r.error ?? "aparser: no state");
-  const d = r.data as any;
+  const d = r.data;
   return { data: { status: String(d.status ?? d.state ?? ""), raw: d } };
 }
 
-export async function aparserTaskResults(creds: AparserCreds, taskid: number): Promise<AparserResult<any>> {
+export async function aparserTaskResults(creds: AparserCreds, taskid: number): Promise<AparserResult<unknown>> {
   // Whatever this build produces for a finished task: a download-link object on current
   // builds, raw file text on some older ones. Passed through unmodified.
-  return aparserCall<any>(creds, "getTaskResultsFile", { taskid });
+  return aparserCall<unknown>(creds, "getTaskResultsFile", { taskid });
 }
 
 /** Cap on a results file pulled through this server — past it the owner downloads it in A-Parser. */

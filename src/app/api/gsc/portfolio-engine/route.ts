@@ -19,9 +19,39 @@ import { periodToDays, resolveWindow } from "@/lib/periodWindow";
 const pct = (curr: number, prev: number) => (prev === 0 ? 0 : Math.round(((curr - prev) / prev) * 100));
 const clean = (u: string) => u.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/\/.*$/, "");
 const dstr = (d: Date) => d.toISOString().slice(0, 10);
-const parseBingDate = (v: any): string => { const m = String(v ?? "").match(/\/Date\((\d+)/); return m ? new Date(parseInt(m[1], 10)).toISOString().slice(0, 10) : String(v).slice(0, 10); };
+const parseBingDate = (v: unknown): string => { const m = String(v ?? "").match(/\/Date\((\d+)/); return m ? new Date(parseInt(m[1], 10)).toISOString().slice(0, 10) : String(v).slice(0, 10); };
 
 type Daily = { date: string; clicks: number; impressions: number; ctr: number; position: number }; // ctr as fraction
+
+// ── The JSON the two engine APIs actually print (field names included), nothing more ──
+
+/** Bing wraps every payload in `{ d: [...] }`. */
+interface BingEnvelope<T> { d?: T[] }
+/** One row of GetRankAndTrafficStats. Values are coerced below, never trusted. */
+interface BingTrafficRow { Date?: unknown; Clicks?: unknown; Impressions?: unknown; AvgImpressionPosition?: unknown; AvgClickPosition?: unknown }
+/** One row of GetQueryStats — only the fields the impression-weighted position reads. */
+interface BingQueryRow { AvgImpressionPosition?: unknown; AvgClickPosition?: unknown; Impressions?: unknown }
+/** One entry of GetUserSites — the field's case varied across Bing builds. */
+interface BingSiteRow { Url?: unknown; url?: string }
+
+interface YandexUser { user_id?: string | number }
+interface YandexHost { host_id?: string; ascii_host_url?: unknown; unicode_host_url?: unknown }
+interface YandexHostsBody { hosts?: YandexHost[] }
+interface YandexHistoryPoint { date?: unknown; value?: number | null }
+interface YandexHistoryIndicators { TOTAL_SHOWS?: YandexHistoryPoint[]; TOTAL_CLICKS?: YandexHistoryPoint[]; AVG_SHOW_POSITION?: YandexHistoryPoint[] }
+interface YandexHistoryBody { indicators?: YandexHistoryIndicators }
+
+/** Site identity as the dashboard card needs it: a DB site (tags carry over) or the engine-only synthetic id. */
+interface EngineSiteBase { id: string; url: string; tags: string | null }
+interface EngineSiteMetric { value: number; change: number }
+interface EngineSiteSummary { clicks: EngineSiteMetric; impressions: EngineSiteMetric; ctr: EngineSiteMetric; position: EngineSiteMetric }
+interface EngineSiteDatum {
+  date: string; clicks: number; impressions: number; ctr: number; position: number;
+  clicksC: number; impressionsC: number; ctrC: number; positionC: number;
+  cN: number; iN: number; tN: number; pN: number; cCN: number; iCN: number; tCN: number; pCN: number;
+}
+/** One site card in the SAME per-site shape as /api/gsc/portfolio — the dashboard renders both identically. */
+interface EngineSite extends EngineSiteBase { data: EngineSiteDatum[]; summary: EngineSiteSummary | null; hasData: boolean }
 
 // fetch with retries + a generous timeout — portfolio pulls hit each engine 100+ times, so a
 // single transient timeout/429 must not silently drop a site's data.
@@ -40,7 +70,7 @@ async function fetchRetry(url: string, init: RequestInit = {}, tries = 3, timeou
 // Fetch + parse JSON, retrying when the response is 200 OK but the extracted payload is EMPTY.
 // Bing/Yandex throttle heavy batch pulls by returning a valid-but-empty body (no error), which
 // plain retry-on-error never catches — this is what silently blanked some sites.
-async function fetchNonEmpty(url: string, init: RequestInit, isEmpty: (j: any) => boolean, tries = 4): Promise<any | null> {
+async function fetchNonEmpty<T>(url: string, init: RequestInit, isEmpty: (j: T) => boolean, tries = 4): Promise<T | null> {
   for (let i = 0; i < tries; i++) {
     const r = await fetchRetry(url, init, 2);
     if (r && r.ok) {
@@ -62,7 +92,7 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Prom
   return out;
 }
 
-function buildPayload(site: any, curr: Daily[], prev: Daily[], days: number) {
+function buildPayload(site: EngineSiteBase, curr: Daily[], prev: Daily[], days: number): EngineSite {
   const norm = (arr: number[]) => { const lo = Math.min(...arr, 0), hi = Math.max(...arr, 1); return arr.map(v => (hi === lo ? 50 : Math.round(((v - lo) / (hi - lo)) * 85 + 5))); };
   const sum = (rows: Daily[]) => rows.reduce((a, m) => ({ clicks: a.clicks + m.clicks, impressions: a.impressions + m.impressions, ctr: a.ctr + m.ctr, position: a.position + m.position, n: a.n + 1 }), { clicks: 0, impressions: 0, ctr: 0, position: 0, n: 0 });
   const c = sum(curr), p = sum(prev);
@@ -102,24 +132,25 @@ const splitWindows = (daily: Daily[], start: string, curEnd: string, prevStart: 
 });
 
 // ── Persistent cache (raw SQL so it works right after `prisma db push`, before generate) ──
-async function readCache(userId: string, engine: string, period: string): Promise<{ sites: any[]; cachedAt: string } | null> {
+async function readCache(userId: string, engine: string, period: string): Promise<{ sites: EngineSite[]; cachedAt: string } | null> {
   try {
-    const rows: any[] = await rawQuery(`SELECT data, updatedAt FROM "EnginePortfolioCache" WHERE userId = ? AND engine = ? AND period = ?`, userId, engine, period);
+    const rows = await rawQuery<{ data: string; updatedAt: string | Date }[]>(`SELECT data, updatedAt FROM "EnginePortfolioCache" WHERE userId = ? AND engine = ? AND period = ?`, userId, engine, period);
     if (!rows?.[0]?.data) return null;
     return { sites: JSON.parse(rows[0].data), cachedAt: new Date(rows[0].updatedAt).toISOString() };
   } catch { return null; }
 }
 // Keep a site's last-known-good data if this rebuild came back empty for it (transient
 // timeout/429). A site that previously had data never regresses to a blank card.
-async function mergeSticky(userId: string, engine: string, period: string, fresh: any[]): Promise<any[]> {
+// Entries the pool gave up on stay `undefined` — the map is probed with undefined keys for them.
+async function mergeSticky(userId: string, engine: string, period: string, fresh: (EngineSite | undefined)[]): Promise<(EngineSite | undefined)[]> {
   const prev = await readCache(userId, engine, period);
   if (!prev?.sites?.length) return fresh;
-  const prevByKey = new Map<string, any>();
+  const prevByKey = new Map<string | undefined, EngineSite>();
   for (const s of prev.sites) if (s?.hasData) { prevByKey.set(s.id, s); if (s.url) prevByKey.set(s.url, s); }
   return fresh.map(s => (s?.hasData ? s : (prevByKey.get(s?.id) ?? prevByKey.get(s?.url) ?? s)));
 }
 
-async function writeCache(userId: string, engine: string, period: string, sites: any[]): Promise<void> {
+async function writeCache(userId: string, engine: string, period: string, sites: (EngineSite | undefined)[]): Promise<void> {
   try {
     const id = (globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)) as string;
     await runUpsert({
@@ -171,7 +202,7 @@ export async function GET(req: Request) {
 
   // Match engine sites to DB sites by domain so tags/favorites carry over.
   const dbSites = await prisma.site.findMany({ where: { userId }, select: { id: true, url: true, tags: true } });
-  const dbByDomain = new Map<string, any>(dbSites.map((s: any) => [clean(s.url).replace(/^www\./, "").toLowerCase(), s]));
+  const dbByDomain = new Map<string, EngineSiteBase>(dbSites.map((s): [string, EngineSiteBase] => [clean(s.url).replace(/^www\./, "").toLowerCase(), s]));
   const makeSite = (url: string) => {
     const dom = clean(url).replace(/^www\./, "").toLowerCase();
     const db = dbByDomain.get(dom);
@@ -186,7 +217,7 @@ export async function GET(req: Request) {
       try {
         const r = await fetchRetry(`https://ssl.bing.com/webmaster/api.svc/json/GetUserSites?apikey=${encodeURIComponent(key)}`);
         if (!r || !r.ok) return;
-        const d: any[] = (await r.json())?.d ?? [];
+        const d: BingSiteRow[] = (await r.json())?.d ?? [];
         for (const s of d) {
           const url = String(s.Url ?? s.url ?? "");
           const dom = clean(url).replace(/^www\./, "").toLowerCase();
@@ -202,8 +233,8 @@ export async function GET(req: Request) {
     const res = await pool(targets, 3, async ({ url, key }) => {
       const dom = clean(url);
       const api = (method: string) => `https://ssl.bing.com/webmaster/api.svc/json/${method}?siteUrl=${encodeURIComponent(`https://${dom}/`)}&apikey=${encodeURIComponent(key)}`;
-      const j = await fetchNonEmpty(api("GetRankAndTrafficStats"), {}, x => !((x?.d ?? []).length));
-      const rows: any[] = j?.d ?? [];
+      const j = await fetchNonEmpty(api("GetRankAndTrafficStats"), {}, (x: BingEnvelope<BingTrafficRow>) => !((x?.d ?? []).length));
+      const rows: BingTrafficRow[] = j?.d ?? [];
       const daily: Daily[] = rows.map(x => {
         const clicks = Number(x.Clicks) || 0, impressions = Number(x.Impressions) || 0;
         const posv = Number(x.AvgImpressionPosition ?? x.AvgClickPosition ?? 0);
@@ -213,7 +244,7 @@ export async function GET(req: Request) {
       const payload = buildPayload(makeSite(url), curr, prev, days);
       // Avg position from query stats (weighted by impressions) when the series lacks it.
       if (payload.hasData && payload.summary && !payload.summary.position.value) {
-        const qj = await fetchNonEmpty(api("GetQueryStats"), {}, x => !((x?.d ?? []).length));
+        const qj = await fetchNonEmpty(api("GetQueryStats"), {}, (x: BingEnvelope<BingQueryRow>) => !((x?.d ?? []).length));
         let ws = 0, wi = 0;
         for (const q of (qj?.d ?? [])) { const p = Number(q.AvgImpressionPosition ?? q.AvgClickPosition ?? 0); const im = Number(q.Impressions) || 0; if (p > 0 && im > 0) { ws += p * im; wi += im; } }
         if (wi > 0) payload.summary.position.value = +(ws / wi).toFixed(1);
@@ -227,15 +258,15 @@ export async function GET(req: Request) {
 
   // Yandex: for each token, resolve user + hosts, then one history call per verified host.
   const BASE = "https://api.webmaster.yandex.net/v4";
-  const targets: { url: string; token: string; uid: any; hostId: string }[] = [];
+  const targets: { url: string; token: string; uid: string | number; hostId: string }[] = [];
   const seen = new Set<string>();
   await Promise.all(keys.map(async (token) => {
     const headers = { Authorization: `OAuth ${token}`, "Content-Type": "application/json" };
     const yGet = async (path: string) => { const r = await fetchRetry(`${BASE}${path}`, { headers }); return r && r.ok ? r.json() : null; };
     try {
-      const user = await yGet("/user/");
+      const user = await yGet("/user/") as YandexUser | null;
       if (!user?.user_id) return;
-      const hostsBody = await yGet(`/user/${user.user_id}/hosts/`);
+      const hostsBody = await yGet(`/user/${user.user_id}/hosts/`) as YandexHostsBody | null;
       for (const h of (hostsBody?.hosts ?? [])) {
         if (!h?.host_id) continue;
         const url = String(h.ascii_host_url ?? h.unicode_host_url ?? "");
@@ -248,12 +279,12 @@ export async function GET(req: Request) {
   const res = await pool(targets, 3, async ({ url, token, uid, hostId }) => {
     const headers = { Authorization: `OAuth ${token}`, "Content-Type": "application/json" };
     const path = `${BASE}/user/${uid}/hosts/${encodeURIComponent(hostId)}/search-queries/all/history/?query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&query_indicator=AVG_SHOW_POSITION&date_from=${prevStart}&date_to=${curEnd}`;
-    const j = await fetchNonEmpty(path, { headers }, x => {
-      const i = x?.indicators ?? {};
+    const j = await fetchNonEmpty(path, { headers }, (x: YandexHistoryBody) => {
+      const i: YandexHistoryIndicators = x?.indicators ?? {};
       return !((i.TOTAL_SHOWS ?? []).length || (i.TOTAL_CLICKS ?? []).length);
     });
     if (!j) return { ...makeSite(url), data: [], summary: null, hasData: false };
-    const ind = j.indicators ?? {};
+    const ind: YandexHistoryIndicators = j.indicators ?? {};
     const byDate = new Map<string, Daily>();
     const get = (d: string) => byDate.get(d) ?? { date: d, clicks: 0, impressions: 0, ctr: 0, position: 0 };
     for (const p of ind.TOTAL_SHOWS ?? []) { const d = String(p.date).slice(0, 10); byDate.set(d, { ...get(d), impressions: Math.round(p.value ?? 0) }); }
