@@ -18,7 +18,18 @@ const domainOf = (u: string) => { try { return new URL(u).hostname.replace(/^www
 // exercises `select`, `where` and pagination on code that already works against the real API.
 const AHREFS_DEFAULT_BASE = "https://api.ahrefs.com";
 
-async function fetchBrandLinks(ahrefsKey: string, baseUrl: string, brand: string, sinceIso: string, minDr: number, limit: number): Promise<{ rows?: any[]; error?: string }> {
+// One row of Ahrefs v3 all-backlinks output, trimmed to the fields the INSERT below reads.
+interface AhrefsBacklinkRow {
+  url_from?: unknown;
+  title?: unknown;
+  anchor?: unknown;
+  domain_rating_source?: unknown;
+  first_seen_link?: unknown;
+  url_to?: unknown;
+  is_dofollow?: unknown;
+}
+
+async function fetchBrandLinks(ahrefsKey: string, baseUrl: string, brand: string, sinceIso: string, minDr: number, limit: number): Promise<{ rows?: AhrefsBacklinkRow[]; error?: string }> {
   const params = new URLSearchParams({
     target: brand,
     mode: "subdomains",
@@ -73,7 +84,7 @@ export async function POST(req: Request) {
   const limit = Math.max(10, Math.min(100, Number(b.limit ?? 50)));
   const since = new Date(Date.now() - months * 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  let brands: any[] = [];
+  let brands: { domain: string }[] = [];
   try { brands = await rawQuery(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId); }
   catch { return NextResponse.json({ error: "not_migrated" }, { status: 500 }); }
   if (!brands.length) return NextResponse.json({ error: "no_brands" }, { status: 400 });

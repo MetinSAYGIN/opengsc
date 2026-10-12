@@ -30,16 +30,32 @@ export interface SeoDiagnostics {
 // A text record keeps only the article STRING in `data`, so everything the generator reported
 // alongside it — the mechanics audit, the QA reviewer's soft findings, how many sources
 // grounded it — must be carried in meta.diagnostics or it is dropped at import.
-export function textDiagnostics(result: any): SeoDiagnostics | null {
+//
+// Structural slice of the generator's text result this mapper reads (mechanics/judge fields are
+// validated at runtime below, so they stay `unknown`; only what is dereferenced needs a shape).
+// Duplicated inline rather than imported because this file must stay import-free.
+interface TextResultSlice {
+  mechanics?: unknown;
+  judgeConcerns?: unknown;
+  usedSources?: unknown;
+  autoCleaned?: unknown;
+  incomplete?: boolean;
+  missingHeadings?: unknown;
+  marksScrub?: { total: number };
+  metaFit?: unknown;
+}
+
+export function textDiagnostics(result: unknown): SeoDiagnostics | null {
   if (!result || typeof result !== "object") return null;
+  const r = result as TextResultSlice;
   const diag: Record<string, unknown> = {
-    ...(Array.isArray(result.mechanics) ? { mechanics: result.mechanics as SeoDiagnostics["mechanics"] } : {}),
-    ...(Array.isArray(result.judgeConcerns) ? { judgeConcerns: result.judgeConcerns as string[] } : {}),
-    ...(typeof result.usedSources === "number" ? { usedSources: result.usedSources } : {}),
-    ...(result.autoCleaned ? { autoCleaned: true } : {}),
-    ...(result.incomplete ? { incomplete: true, missingHeadings: result.missingHeadings ?? [] } : {}),
-    ...(result.marksScrub && result.marksScrub.total > 0 ? { marksScrub: result.marksScrub } : {}),
-    ...(Array.isArray(result.metaFit) ? { metaFit: result.metaFit as SeoDiagnostics["metaFit"] } : {}),
+    ...(Array.isArray(r.mechanics) ? { mechanics: r.mechanics as SeoDiagnostics["mechanics"] } : {}),
+    ...(Array.isArray(r.judgeConcerns) ? { judgeConcerns: r.judgeConcerns as string[] } : {}),
+    ...(typeof r.usedSources === "number" ? { usedSources: r.usedSources } : {}),
+    ...(r.autoCleaned ? { autoCleaned: true } : {}),
+    ...(r.incomplete ? { incomplete: true, missingHeadings: r.missingHeadings ?? [] } : {}),
+    ...(r.marksScrub && r.marksScrub.total > 0 ? { marksScrub: r.marksScrub } : {}),
+    ...(Array.isArray(r.metaFit) ? { metaFit: r.metaFit as SeoDiagnostics["metaFit"] } : {}),
   };
   return Object.keys(diag).length ? (diag as SeoDiagnostics) : null;
 }

@@ -3,13 +3,36 @@ import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
 
+// Free-form per-step diagnostics this debug endpoint prints — each step records what it has.
+type DebugStep = Record<string, unknown>;
+
+// The per-account diagnostic the route assembles step by step (later steps attach their own
+// optional findings onto the base record).
+interface AccountDebug {
+  accountId: string;
+  providerAccountId: string;
+  userId: string;
+  userEmail: string | null;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  tokenExpiresAt: string | null;
+  tokenExpired: boolean | null;
+  steps: DebugStep[];
+  googleEmail?: string | null;
+  googleName?: string | null;
+  gscSiteCount?: number;
+  gscSites?: { siteUrl?: string | null; permissionLevel?: string | null }[];
+  sitesInDb?: number;
+  sitesNotInDb?: string[];
+}
+
 export async function GET() {
     const workspaceId = await workspaceUserId("manageSecrets");
   if (!workspaceId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const results: any[] = [];
+  const results: AccountDebug[] = [];
 
   const accounts = await prisma.account.findMany({
     where: { provider: 'google' },
@@ -17,7 +40,7 @@ export async function GET() {
   });
 
   for (const account of accounts) {
-    const info: any = {
+    const info: AccountDebug = {
       accountId:        account.id,
       providerAccountId: account.providerAccountId,
       userId:           account.user.id,
@@ -30,7 +53,7 @@ export async function GET() {
       tokenExpired:     account.expires_at
         ? account.expires_at * 1000 < Date.now()
         : null,
-      steps: [] as any[],
+      steps: [] as DebugStep[],
     };
 
     // Step 1: try to get user email via OAuth2

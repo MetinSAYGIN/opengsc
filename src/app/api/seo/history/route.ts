@@ -16,11 +16,24 @@ import { rawQuery, rawExec } from "@/lib/db/raw";
 
 const COLS = `id, type, keyword, status, data, meta, createdAt`;
 
+// Row shapes rawQuery hands back (untyped at the driver boundary) — exactly the columns the
+// SELECT lists name. createdAt is Date or ISO string depending on the driver.
+interface HistoryRow {
+  id: string; type: string; keyword: string; status: string;
+  data: string; meta: string | null; createdAt: string | Date;
+}
+interface HistoryThinRow { id: string; type: string; keyword: string; status: string; createdAt: string | Date }
+// A record as the browser cache pushes it: identity fields are strings, the rest is JSON.
+interface HistoryRecordIn {
+  id?: unknown; type?: unknown; data?: unknown; keyword?: unknown;
+  status?: unknown; meta?: unknown; createdAt?: unknown;
+}
+
 async function uid(capability: Capability = "read"): Promise<string | null> {
 return workspaceUserId(capability);
 }
 
-function mapRow(r: any) {
+function mapRow(r: HistoryRow) {
   return {
     id: r.id, type: r.type, keyword: r.keyword, status: r.status,
     createdAt: new Date(r.createdAt).getTime(),
@@ -28,7 +41,7 @@ function mapRow(r: any) {
   };
 }
 
-function thinRow(r: any) {
+function thinRow(r: HistoryThinRow) {
   return { id: r.id, type: r.type, keyword: r.keyword, status: r.status, createdAt: new Date(r.createdAt).getTime() };
 }
 
@@ -46,7 +59,7 @@ export async function GET(req: Request) {
   const sp = new URL(req.url).searchParams;
   try {
     if (sp.get("index")) {
-      const rows: any[] = await rawQuery(
+      const rows: HistoryThinRow[] = await rawQuery(
         `SELECT id, type, keyword, status, createdAt FROM "SeoHistory" WHERE userId = ? ORDER BY createdAt DESC, id DESC`, userId);
       return NextResponse.json({ rows: rows.map(thinRow), total: rows.length });
     }
@@ -55,21 +68,21 @@ export async function GET(req: Request) {
       const ids = idsParam.split(",").map(s => s.trim()).filter(Boolean).slice(0, 100);
       if (!ids.length) return NextResponse.json({ records: [] });
       const ph = ids.map(() => "?").join(",");
-      const rows: any[] = await rawQuery(
+      const rows: HistoryRow[] = await rawQuery(
         `SELECT ${COLS} FROM "SeoHistory" WHERE userId = ? AND id IN (${ph})`, userId, ...ids);
       return NextResponse.json({ records: rows.map(mapRow) });
     }
     const id = sp.get("id");
     if (id) {
-      const one: any[] = await rawQuery(
+      const one: HistoryRow[] = await rawQuery(
         `SELECT ${COLS} FROM "SeoHistory" WHERE id = ? AND userId = ? LIMIT 1`, id, userId);
       return NextResponse.json({ record: one.length ? mapRow(one[0]) : null });
     }
     const limit = lim(Number(sp.get("limit")), 50, 200);
     const offset = Math.max(0, Math.floor(Number(sp.get("offset")) || 0));
-    const rows: any[] = await rawQuery(
+    const rows: HistoryRow[] = await rawQuery(
       `SELECT ${COLS} FROM "SeoHistory" WHERE userId = ? ORDER BY createdAt DESC, id DESC LIMIT ${limit} OFFSET ${offset}`, userId);
-    const counted: any[] = await rawQuery(
+    const counted: { c: number }[] = await rawQuery(
       `SELECT COUNT(*) as c FROM "SeoHistory" WHERE userId = ?`, userId);
     return NextResponse.json({ records: rows.map(mapRow), total: Number(counted[0]?.c ?? rows.length) });
   } catch {
@@ -77,14 +90,14 @@ export async function GET(req: Request) {
   }
 }
 
-function safeParse(s: string): any { try { return JSON.parse(s); } catch { return s; } }
+function safeParse(s: string): unknown { try { return JSON.parse(s); } catch { return s; } }
 
 export async function PUT(req: Request) {
   const userId = await uid("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  let body: any;
+  let body: { records?: HistoryRecordIn[] };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "bad_json" }, { status: 400 }); }
-  const records: any[] = Array.isArray(body?.records) ? body.records.slice(0, 200) : [];
+  const records: HistoryRecordIn[] = Array.isArray(body?.records) ? body.records.slice(0, 200) : [];
   if (!records.length) return NextResponse.json({ ok: true, saved: 0 }); // never wipe on empty push
   let saved = 0;
   try {

@@ -432,7 +432,7 @@ export default function LandingPage() {
                     <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 8px", borderRadius: "20px", flexShrink: 0,
                       color: SITE_TYPE_COLOR[s.site_type] || "var(--color-text-secondary)",
                       background: `${SITE_TYPE_COLOR[s.site_type] || "#888"}1a` }}>
-                      {t((SITE_TYPE_KEY[s.site_type] || "") as any) || s.site_type}
+                      {t((SITE_TYPE_KEY[s.site_type] || "") as Parameters<typeof t>[0]) || s.site_type}
                     </span>
                   )}
                 </div>
@@ -480,7 +480,7 @@ export default function LandingPage() {
                 </div>
               </Field>
               <Field l={t("seoCfgNarration")}>
-                <select className={inputStyle} value={narration} onChange={e => setNarration(e.target.value as any)}>
+                <select className={inputStyle} value={narration} onChange={e => setNarration(e.target.value as "" | "first" | "third")}>
                   <option value="">{t("seoNarrationDefault")}</option>
                   <option value="first">{t("seoNarrationFirst")}</option>
                   <option value="third">{t("seoNarrationThird")}</option>
@@ -501,7 +501,7 @@ export default function LandingPage() {
               <Field l={t("seoCfgTone")}>
                 <select className={inputStyle} value={tone} onChange={e => setTone(e.target.value)}>
                   <option value="">{t("seoTonePolicyDefault")}</option>
-                  {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as any)}</option>)}
+                  {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as Parameters<typeof t>[0])}</option>)}
                   <option value="custom">{t("seoToneCustom")}</option>
                 </select>
               </Field>
@@ -555,7 +555,7 @@ export default function LandingPage() {
 
 // Compact live preview — full SerpIntentPanel is reused in the saved detail view; here we only
 // need the two-line summary while the user is still picking competitors, before saving anything.
-function SerpIntentPanelInline({ analysis, t }: { analysis: ReturnType<typeof analyzeSerpIntent>; t: any }) {
+function SerpIntentPanelInline({ analysis, t }: { analysis: ReturnType<typeof analyzeSerpIntent>; t: ReturnType<typeof useLanguage>["t"] }) {
   if (!analysis) return null;
   return (
     <div style={{ marginTop: "14px", padding: "10px 12px", borderRadius: "8px", background: "var(--color-bg)", border: "1px solid var(--color-border)", fontSize: "12px", color: "var(--color-text-secondary)", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>

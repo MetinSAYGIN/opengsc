@@ -148,12 +148,14 @@ export async function POST(req: Request) {
   const cached = await pi.findMany({
     where: { siteId, url: { in: urlsToProcess } },
   });
-  const cachedMap = new Map(cached.map((e: any) => [e.url, e]));
+  // dbAny is the untyped client, so the row shape the route reads is restated here.
+  interface InspectionRow { url: string; lastInspect: Date | string; status: string }
+  const cachedMap = new Map<string, InspectionRow>(cached.map((e: InspectionRow): [string, InspectionRow] => [e.url, e]));
 
   const needsInspection = forceRefresh
     ? urlsToProcess
     : urlsToProcess.filter(url => {
-        const e = cachedMap.get(url) as any;
+        const e = cachedMap.get(url);
         return !e || new Date(e.lastInspect) < staleThreshold;
       });
 
@@ -174,7 +176,7 @@ export async function POST(req: Request) {
   }
 
   // ── Call URL Inspection API for stale/missing URLs ────────────────────────────
-  const freshResults: any[] = [];
+  const freshResults: InspectionRow[] = [];
 
   let quotaDead = false; // a 429 from Google ends the run: every later call would 429 too
   for (const url of needsInspection) {
@@ -198,7 +200,7 @@ export async function POST(req: Request) {
         const lastCrawl = idx?.lastCrawlTime ? new Date(idx.lastCrawlTime as string) : null;
 
         const richTypes = (rich?.detectedItems ?? [])
-          .map((d: any) => d.richResultType)
+          .map(d => d.richResultType)
           .filter(Boolean);
         const richResults = richTypes.length > 0 ? JSON.stringify(richTypes) : null;
 
@@ -236,7 +238,7 @@ export async function POST(req: Request) {
     }
     // If all accounts failed, keep existing cached row if any
     if (!inspected && cachedMap.has(url)) {
-      freshResults.push(cachedMap.get(url));
+      freshResults.push(cachedMap.get(url)!);
     }
   }
 

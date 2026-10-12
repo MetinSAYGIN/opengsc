@@ -18,7 +18,13 @@ export async function GET(req: Request) {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 7);
 
-    const where: any = {
+    // The where filters this route builds (domain relation + window + optional refinements).
+    const where: {
+      domain: { userId: string };
+      timestamp: { gte: Date };
+      domainId?: string;
+      botType?: string;
+    } = {
       domain: {
         userId,
       },

@@ -82,7 +82,7 @@ export default function TextGenPage() {
     const { provider, apiKey, model, baseUrl } = getTaskCreds("text");
     if (!apiKey) { setErr(t("seoErrNoAiKey")); return; }
     const policy = loadPolicies().find(p => p.name === policyName) || loadPolicies()[0];
-    const resolvedTone = tone ? toneToPrompt(tone) : toneToPrompt((policy as any)?.voice?.toneOfVoice || "");
+    const resolvedTone = tone ? toneToPrompt(tone) : toneToPrompt(policy?.voice?.toneOfVoice || "");
 
     setLoading(true); setErr("");
     const { jobId: jid, error } = await startJob("text", {
@@ -99,7 +99,7 @@ export default function TextGenPage() {
       // QA judge slot — a separate judging model when configured, the writer's own otherwise.
       ...(() => { const j = getTaskCreds("judge"); return { judgeProvider: j.provider, judgeApiKey: j.apiKey, judgeModel: j.model || undefined, judgeBaseUrl: j.baseUrl || undefined }; })(),
       ...fpc.payload(),
-    }, { tone: tone || (policy as any)?.voice?.toneOfVoice || "", promptType: promptType === "custom" ? t("seoPromptCustom") : t("seoPromptService"), outlineId: outline.id });
+    }, { tone: tone || policy?.voice?.toneOfVoice || "", promptType: promptType === "custom" ? t("seoPromptCustom") : t("seoPromptService"), outlineId: outline.id });
     setLoading(false);
     if (error || !jid) { setErr(error || t("seoErrText")); return; }
     setJobKeyword(outline.keyword); setJobId(jid); // background job — render live progress; user can leave
@@ -148,7 +148,7 @@ export default function TextGenPage() {
             <label className="tool-field-label">{t("seoTonePromptLabel")}</label>
             <select style={selectStyle} value={tone} onChange={e => setTone(e.target.value)}>
               <option value="">{t("seoTonePolicyDefault")}</option>
-              {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as any)}</option>)}
+              {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as Parameters<typeof t>[0])}</option>)}
             </select>
           </div>
           <div className={card}>
@@ -167,7 +167,7 @@ export default function TextGenPage() {
               {([["service", t("seoPromptService")], ["custom", t("seoPromptCustom")]] as const).map(([v, l]) => (
                 <label key={v} style={{ display: "flex", alignItems: "center", gap: "9px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer" }}>
                   <input type="radio" checked={promptType === v} onChange={() => {
-                    setPromptType(v as any);
+                    setPromptType(v);
                     // First switch to "custom" pre-fills an editable skeleton so the user
                     // immediately sees WHAT to write instead of a silent radio.
                     if (v === "custom" && !custom.trim()) setCustom(t("seoCustomPromptSkeleton"));
@@ -183,7 +183,7 @@ export default function TextGenPage() {
               )}
             </div>
             <label className="tool-field-label">{t("seoSourcesMode")}</label>
-            <select style={selectStyle} value={sourceMode} onChange={e => setSourceMode(e.target.value as any)}>
+            <select style={selectStyle} value={sourceMode} onChange={e => setSourceMode(e.target.value as "off" | "facts" | "cited")}>
               <option value="off">{t("seoSourcesOff")}</option>
               <option value="facts">{t("seoSourcesFacts")}</option>
               <option value="cited">{t("seoSourcesCited")}</option>
@@ -256,7 +256,7 @@ export default function TextGenPage() {
         <h3 style={{ fontSize: "16px", fontWeight: 700, color: "var(--color-text-primary)", margin: "0 0 14px" }}>{t("seoTextHistory")}</h3>
         <div style={{ display: "flex", gap: "6px", marginBottom: "12px", background: "var(--color-bg)", padding: "4px", borderRadius: "10px", width: "fit-content" }}>
           {([["all", `${t("seoTextFilterAll")} (${counts.all})`], ["processing", `${t("seoTextFilterProcessing")} (${counts.processing})`], ["error", `${t("seoTextFilterErrors")} (${counts.error})`]] as const).map(([k, label]) => (
-            <button key={k} onClick={() => setFilter(k as any)} style={{ padding: "7px 16px", borderRadius: "7px", fontSize: "13px", fontWeight: filter === k ? 700 : 500, cursor: "pointer", border: "none", background: filter === k ? "var(--color-card)" : "transparent", color: filter === k ? "var(--color-text-primary)" : "var(--color-text-secondary)", boxShadow: filter === k ? "0 1px 3px rgba(0,0,0,0.15)" : "none" }}>{label}</button>
+            <button key={k} onClick={() => setFilter(k)} style={{ padding: "7px 16px", borderRadius: "7px", fontSize: "13px", fontWeight: filter === k ? 700 : 500, cursor: "pointer", border: "none", background: filter === k ? "var(--color-card)" : "transparent", color: filter === k ? "var(--color-text-primary)" : "var(--color-text-secondary)", boxShadow: filter === k ? "0 1px 3px rgba(0,0,0,0.15)" : "none" }}>{label}</button>
           ))}
         </div>
 

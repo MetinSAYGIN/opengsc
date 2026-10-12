@@ -41,7 +41,7 @@ const num = (v: unknown): number | null => {
 };
 
 /** Read one CSV row field across the names it may ship under, case-insensitively. */
-export function taPick(row: Record<string, any>, ...names: string[]): any {
+export function taPick(row: Record<string, string>, ...names: string[]): string | null {
   const lower = new Map(Object.keys(row).map(k => [k.toLowerCase(), k]));
   for (const n of names) {
     const k = lower.get(n.toLowerCase());
@@ -62,7 +62,7 @@ export function parseTaCsv(text: string): Record<string, string>[] {
 }
 
 /** Monthly visits series, chronological — everything downstream draws it as a trend. */
-export function parseTaMonthly(rows: Record<string, any>[]): TrafficMonth[] {
+export function parseTaMonthly(rows: Record<string, string>[]): TrafficMonth[] {
   return rows
     .map(r => ({
       month: String(taPick(r, "display_date", "date", "month") ?? "").slice(0, 7),
@@ -81,7 +81,7 @@ export function parseTaMonthly(rows: Record<string, any>[]): TrafficMonth[] {
  * safe to substring-match after the others have run — so the specific channels are matched
  * before their generic parents, and GenAI (the reason this data is wired at all) first.
  */
-export function parseTaSources(rows: Record<string, any>[], totalVisits: number | null): TrafficSources {
+export function parseTaSources(rows: Record<string, string>[], totalVisits: number | null): TrafficSources {
   const out: TrafficSources = {
     direct: null, search: null, searchPaid: null, social: null, socialPaid: null,
     referrals: null, mail: null, displayAds: null, affiliate: null, genAI: null,
@@ -100,7 +100,7 @@ export function parseTaSources(rows: Record<string, any>[], totalVisits: number 
     if (/direct/.test(c)) return "direct";
     return null;
   };
-  const shareOf = (r: Record<string, any>): number | null => {
+  const shareOf = (r: Record<string, string>): number | null => {
     const share = num(taPick(r, "share", "visits_share", "share_percent", "percent", "visits_percentage"));
     if (share != null) return share <= 1 ? share : share / 100;
     const visits = num(taPick(r, "visits"));
@@ -118,7 +118,7 @@ export function parseTaSources(rows: Record<string, any>[], totalVisits: number 
 
 async function taCall(
   creds: TaCreds, report: string, params: Record<string, string>,
-): Promise<{ rows: Record<string, any>[]; error?: string }> {
+): Promise<{ rows: Record<string, string>[]; error?: string }> {
   const base = (creds.baseUrl || DEFAULT_BASE).replace(/\/+$/, "");
   const search = new URLSearchParams({ key: creds.apiKey, ...params });
   let res: Response;

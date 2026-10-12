@@ -27,6 +27,15 @@ const CTR_BENCHMARKS: Record<number, number> = {
   1: 27.6, 2: 15.8, 3: 11.0, 4: 8.4, 5: 6.3, 6: 4.9, 7: 3.9, 8: 3.3, 9: 2.7, 10: 2.4,
 };
 
+// Row shapes for the raw SQL below: rawQuery is untyped at the driver boundary, so each
+// SELECT list is restated here as the interface the mapper reads — exactly the columns the
+// statement names, nothing more. createdAt arrives as Date or ISO string depending on driver.
+interface SeoHistoryRow { id: string; type: string; keyword: string; status: string; data: string; meta: string | null; createdAt: string | Date }
+interface SeoHistoryListRow { id: string; type: string; keyword: string; status: string; createdAt: string | Date; size: number | null }
+interface DigestRow { id: string; tag: string; days: number; content: string; sentTo: string | null; createdAt: string | Date }
+interface DigestListRow { id: string; tag: string; days: number; sentTo: string | null; createdAt: string | Date; size: number | null }
+interface AlertEventRow { type: string; siteId: string | null; title: string; message: string; sent: boolean | number; createdAt: string | Date }
+
 // ─── tools ──────────────────────────────────────────────────────────────────────
 
 export const DATA_TOOLS: McpTool[] = [
@@ -170,8 +179,10 @@ export const DATA_TOOLS: McpTool[] = [
         select: { url: true, query: true, clicks: true, impressions: true, position: true },
       });
 
+      // A ContentGroup/TopicCluster rule, as stored in the group's `rules` JSON.
+      type ContentRule = { type?: string; values?: string[] };
       const applyRules = (rulesJson: string, field: "url" | "query") => {
-        let rules: any[] = [];
+        let rules: ContentRule[] = [];
         try { rules = JSON.parse(rulesJson); } catch { rules = []; }
         const matched = rows.filter(row => {
           const v = String(row[field] ?? "").toLowerCase();
@@ -302,7 +313,7 @@ export const DATA_TOOLS: McpTool[] = [
       const id = String(args.id ?? "").trim();
       try {
         if (id) {
-          const rows: any[] = await rawQuery(
+          const rows: SeoHistoryRow[] = await rawQuery(
             `SELECT id, type, keyword, status, data, meta, createdAt FROM "SeoHistory" WHERE id = ? AND userId = ?`, id, userId);
           if (!rows.length) throw new Error(`Generation not found: ${id}`);
           const r = rows[0];
@@ -311,10 +322,10 @@ export const DATA_TOOLS: McpTool[] = [
         const type = String(args.type ?? "").trim();
         const keyword = String(args.keyword ?? "").trim();
         const where = [`userId = ?`];
-        const params: any[] = [userId];
+        const params: string[] = [userId];
         if (type) { where.push(`type = ?`); params.push(type); }
         if (keyword) { where.push(`keyword LIKE ?`); params.push(`%${keyword}%`); }
-        const rows: any[] = await rawQuery(
+        const rows: SeoHistoryListRow[] = await rawQuery(
           `SELECT id, type, keyword, status, createdAt, LENGTH(data) as size FROM "SeoHistory"
            WHERE ${where.join(" AND ")} ORDER BY createdAt DESC LIMIT ${lim(args.limit, 25, 100)}`, ...params);
         return {
@@ -345,7 +356,7 @@ export const DATA_TOOLS: McpTool[] = [
       const engine = args.engine === "yandex" ? "yandex" : "bing";
       const period = String(args.period ?? "28d");
       try {
-        const rows: any[] = await rawQuery(
+        const rows: { data: string; updatedAt: string | Date }[] = await rawQuery(
           `SELECT data, updatedAt FROM "EnginePortfolioCache" WHERE userId = ? AND engine = ? AND period = ?`,
           userId, engine, period);
         if (!rows.length) {
@@ -380,7 +391,7 @@ export const DATA_TOOLS: McpTool[] = [
     },
     handler: async (userId, args) => {
       const site = await resolveSite(userId, args.site);
-      const propertyId = (site as any).ga4PropertyId as string | null;
+      const propertyId = site.ga4PropertyId;
       if (!propertyId) return { site: site.url, linked: false, note: "No GA4 property linked to this site — see docs/GA4-SETUP.md." };
 
       const accounts = (await prisma.account.findMany({
@@ -542,12 +553,12 @@ export const DATA_TOOLS: McpTool[] = [
       const id = String(args.id ?? "").trim();
       try {
         if (id) {
-          const rows: any[] = await rawQuery(
+          const rows: DigestRow[] = await rawQuery(
             `SELECT id, tag, days, content, sentTo, createdAt FROM "Digest" WHERE id = ? AND userId = ?`, id, userId);
           if (!rows.length) throw new Error(`Digest not found: ${id}`);
           return rows[0];
         }
-        const rows: any[] = await rawQuery(
+        const rows: DigestListRow[] = await rawQuery(
           `SELECT id, tag, days, sentTo, createdAt, LENGTH(content) as size FROM "Digest"
            WHERE userId = ? ORDER BY createdAt DESC LIMIT ${lim(args.limit, 10, 50)}`, userId);
         return {
@@ -583,10 +594,10 @@ export const DATA_TOOLS: McpTool[] = [
       const type = String(args.type ?? "").trim();
       try {
         const where = [`userId = ?`, `createdAt >= ?`];
-        const params: any[] = [userId, since];
+        const params: (string | Date)[] = [userId, since];
         if (siteId) { where.push(`siteId = ?`); params.push(siteId); }
         if (type) { where.push(`type = ?`); params.push(type); }
-        const rows: any[] = await rawQuery(
+        const rows: AlertEventRow[] = await rawQuery(
           `SELECT type, siteId, title, message, sent, createdAt FROM "AlertEvent"
            WHERE ${where.join(" AND ")} ORDER BY createdAt DESC LIMIT ${lim(args.limit, 50, 200)}`, ...params);
         const sites = await prisma.site.findMany({ where: { userId }, select: { id: true, url: true } });
@@ -608,9 +619,9 @@ export const DATA_TOOLS: McpTool[] = [
 
 // Exported for get_capabilities, which reports which optional modules actually hold data.
 export async function dataModuleCounts(userId: string): Promise<Json> {
-  const safeCount = async (sql: string, ...params: any[]) => {
+  const safeCount = async (sql: string, ...params: string[]) => {
     try {
-      const rows: any[] = await rawQuery(sql, ...params);
+      const rows: { c: number }[] = await rawQuery(sql, ...params);
       return Number(rows?.[0]?.c ?? 0);
     } catch { return 0; }
   };

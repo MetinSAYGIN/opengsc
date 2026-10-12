@@ -172,8 +172,10 @@ async function openReadonly(): Promise<ReadonlyDb> {
   // graph — the same dynamic + ts-ignore import execute_sql uses. readonly: true makes the
   // connection physically incapable of writing, which is the whole point of this script.
   // @ts-expect-error -- no declaration file for better-sqlite3
-  const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as any;
-  return new Database(dbFile(), { readonly: true, fileMustExist: true }) as ReadonlyDb;
+  const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as {
+    default: new (path: string, options: { readonly: boolean; fileMustExist: boolean }) => ReadonlyDb;
+  };
+  return new Database(dbFile(), { readonly: true, fileMustExist: true });
 }
 
 function loadArticles(db: ReadonlyDb): CalibArticle[] {

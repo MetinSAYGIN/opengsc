@@ -66,7 +66,7 @@ export async function GET(req: Request) {
 
   const cacheRows: { provider: string; payload: string; checkedAt: string }[] = [];
   try {
-    const rows: any[] = await rawQuery(
+    const rows: { provider: string; payload: string; checkedAt: string }[] = await rawQuery(
       `SELECT provider, payload, checkedAt FROM "TrafficCache" WHERE domain = ? ORDER BY checkedAt ASC`, domain);
     for (const r of rows ?? []) cacheRows.push(r);
   } catch { /* table missing until prisma db push — behave as a cache miss */ }

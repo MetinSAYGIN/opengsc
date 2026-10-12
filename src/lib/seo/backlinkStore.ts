@@ -40,6 +40,15 @@ const today = () => new Date().toISOString().slice(0, 10);
 export const normDomain = (d: string) =>
   d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
 
+// Row shapes rawQuery hands back (untyped at the driver boundary): booleans/flags arrive as
+// 0/1 on SQLite and nullables stay null, so the mappers below re-coerce each field.
+interface RefDomainRowDb {
+  provider: string; refDomain: string; dr: number | null; linksToTarget: number | null;
+  dofollow: number | boolean; firstSeen: string | null; cf: number | null; topic: string | null;
+  ip: string | null; lost: number | boolean; lostAt: string | null;
+  source: string; fetchedAt: string | number | Date;
+}
+
 /**
  * Read one target's stored referring domains. `provider` scopes to one provider's view —
  * except the literal `"all"`, which crosses providers for the merged tab: dedup happens
@@ -55,7 +64,7 @@ export async function readRefDomains(
   // profile tab renders — clamping it here would bring the ceiling back through the back door.
   const limit = Math.max(1, Math.min(100000, opts.limit ?? 500));
   try {
-    const rows: any[] = await rawQuery(
+    const rows: RefDomainRowDb[] = await rawQuery(
       `SELECT provider, refDomain, dr, linksToTarget, dofollow, firstSeen, cf, topic, ip,
               lost, lostAt, source, fetchedAt
          FROM "RefDomainRow"
@@ -222,7 +231,7 @@ export async function writeSnapshot(
 
 export async function readSnapshots(target: string, limit = 90, provider = "ahrefs"): Promise<Snapshot[]> {
   try {
-    const rows: any[] = await rawQuery(
+    const rows: { date: string; refDomains: number | null; backlinks: number | null; dofollowPct: number | null }[] = await rawQuery(
       `SELECT date, refDomains, backlinks, dofollowPct FROM "BacklinkSnapshot"
         WHERE target = ? AND provider = ? ORDER BY date DESC LIMIT ${Math.max(1, Math.min(365, limit))}`,
       normDomain(target), provider,
@@ -241,7 +250,7 @@ export async function readSnapshots(target: string, limit = 90, provider = "ahre
 /** Referring domains marked lost since a given day — the input to the lost-link alert. */
 export async function lostSince(target: string, sinceDay: string, minDr: number, provider = "ahrefs") {
   try {
-    const rows: any[] = await rawQuery(
+    const rows: { refDomain: string; dr: number | null; lostAt: string }[] = await rawQuery(
       `SELECT refDomain, dr, lostAt FROM "RefDomainRow"
         WHERE target = ? AND provider = ? AND lost = 1 AND lostAt >= ? AND dr >= ?
         ORDER BY dr DESC LIMIT 50`,

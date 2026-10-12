@@ -387,7 +387,7 @@ export default function AuditsPage() {
                   border: "none", background: on ? "var(--color-accent-blue)" : "transparent",
                   color: on ? "#fff" : "var(--color-text-secondary)",
                 }}>
-                  {t(f.labelKey as any)} ({f.count})
+                  {t(f.labelKey as Parameters<typeof t>[0])} ({f.count})
                 </button>
               );
             })}
@@ -463,7 +463,7 @@ export default function AuditsPage() {
                         </td>
                         <td style={{ padding: "8px 8px" }}>
                           <span title={t("auditsGColTrigger")} style={{ padding: "2px 8px", borderRadius: "20px", fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
-                            {t(triggerKey as any)}
+                            {t(triggerKey as Parameters<typeof t>[0])}
                           </span>
                         </td>
                         <td style={{ padding: "8px 8px", color: "var(--color-text-primary)" }}>{r.pagesCrawled}</td>

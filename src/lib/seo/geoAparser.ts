@@ -51,7 +51,7 @@ function asString(v: unknown): string {
 }
 
 /** Reads one `$sources` entry, tolerating the key spellings A-Parser's output modes produce. */
-function readSource(raw: any): GeoAparserSource | null {
+function readSource(raw: Record<string, unknown> | null | undefined): GeoAparserSource | null {
   if (!raw || typeof raw !== "object") return null;
   const link = asString(raw.link ?? raw.url ?? raw.href).trim();
   if (!/^https?:\/\//i.test(link)) return null;
@@ -73,7 +73,7 @@ function readSource(raw: any): GeoAparserSource | null {
  * own Template-Toolkit format, which A-Parser owners edit as a matter of course, so parsing it
  * would make the engine's contract depend on somebody's formatting choices.
  */
-export function mapGeoAparserRow(row: any): GeoAparserAnswer | null {
+export function mapGeoAparserRow(row: Record<string, unknown> | null | undefined): GeoAparserAnswer | null {
   if (!row || typeof row !== "object") return null;
   const answer = asString(row.answer ?? row.text).trim();
   if (!answer) return null;

@@ -785,7 +785,7 @@ server {
             ].map(opt => (
               <button
                 key={opt.id}
-                onClick={() => setIntegrationType(opt.id as any)}
+                onClick={() => setIntegrationType(opt.id as "php" | "phpStatic" | "nginx")}
                 style={{
                   padding: "8px 12px",
                   borderRadius: "8px",
@@ -961,10 +961,10 @@ server {
               gap: "6px"
             }}>
               <h4 style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>
-                {t(`indexerStep${step}Title` as any)}
+                {t(`indexerStep${step}Title` as Parameters<typeof t>[0])}
               </h4>
               <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0, lineHeight: 1.4 }}>
-                {t(`indexerStep${step}Text` as any)}
+                {t(`indexerStep${step}Text` as Parameters<typeof t>[0])}
               </p>
             </div>
           ))}

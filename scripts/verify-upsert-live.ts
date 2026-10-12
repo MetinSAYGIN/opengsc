@@ -72,7 +72,7 @@ async function writeKeyword(fields: {
 }
 
 async function readKeyword() {
-  const rows: any[] = await rawQuery(
+  const rows: { volume: number | null; difficulty: number | null; source: string }[] = await rawQuery(
     `SELECT volume, difficulty, source FROM "KeywordMetricCache"
       WHERE keyword = ? AND country = ? AND provider = ?`,
     KEYWORD, COUNTRY, PROVIDER,
@@ -91,7 +91,7 @@ async function writeUsage(units: number) {
 }
 
 async function readUsage() {
-  const rows: any[] = await rawQuery(
+  const rows: { units: number; requests: number }[] = await rawQuery(
     `SELECT units, requests FROM "ApiUsage" WHERE userId = ? AND provider = ? AND month = ?`,
     USER, PROVIDER, MONTH,
   );
