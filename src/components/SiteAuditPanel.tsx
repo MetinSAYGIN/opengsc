@@ -646,7 +646,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
             </div>
           )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "10px" }}>
-            <div className="panel" style={{ textAlign: "center" }}>
+            <div className="panel" style={{ textAlign: "center", cursor: "help" }} title={t("auditHealthScoreHint")}>
               <div style={{ fontSize: "26px", fontWeight: 800, color: summary.healthScore >= 80 ? "#34c759" : summary.healthScore >= 50 ? "#ff9f0a" : "#ff375f" }}>{summary.healthScore}</div>
               <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t("auditHealthScore")}</div>
             </div>

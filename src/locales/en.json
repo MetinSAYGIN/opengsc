@@ -2250,6 +2250,7 @@
   "auditEmpty": "No audits yet — run the first one.",
   "auditPagesUnit": "pages",
   "auditHealthScore": "Health score",
+  "auditHealthScoreHint": "Each page scores 100, minus 8 per distinct warning (never below 40); a page with a critical error scores 0. The site score is the average. Plain internal redirects and informational findings don't count.",
   "auditPagesCrawled": "Pages crawled",
   "auditPagesWithIssues": "Pages with issues",
   "auditAvgLoad": "Avg response",

@@ -40,6 +40,10 @@ export function startAuditScheduler(): void {
   // drops/serpmon schedulers.
   setTimeout(() => {
     recoverStaleAudits().catch(err => console.error("[audit-scheduler] recover failed:", err));
+    // Rescore audits stored under an older health-score formula (issue #30). Idempotent.
+    import("./scoreBackfill")
+      .then(m => m.backfillHealthScores())
+      .catch(err => console.error("[audit-scheduler] health score backfill failed:", err));
     kickAuditQueue(5_000);
   }, 10_000);
 

@@ -2250,6 +2250,7 @@
   "auditEmpty": "Noch keine Audits — führe das erste aus.",
   "auditPagesUnit": "Seiten",
   "auditHealthScore": "Health-Score",
+  "auditHealthScoreHint": "Jede Seite startet bei 100, minus 8 pro unterschiedlicher Warnung (nie unter 40); eine Seite mit kritischem Fehler erhält 0. Der Site-Score ist der Durchschnitt. Einfache interne Weiterleitungen und Hinweise zählen nicht.",
   "auditPagesCrawled": "Gecrawlte Seiten",
   "auditPagesWithIssues": "Seiten mit Problemen",
   "auditAvgLoad": "Ø Antwort",

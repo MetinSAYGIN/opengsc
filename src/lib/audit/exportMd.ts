@@ -273,8 +273,11 @@ export function buildAuditMarkdown(
   }
   out.push("");
   out.push(
-    `> Health score counts critical and warning findings only, which is why a score can stay high`,
-    `> while informational findings affect every page.`,
+    // Mirrors WARNING_PENALTY / WARNING_FLOOR in healthScore.ts; this module stays import-free.
+    `> Health score: each page starts at 100, loses 8 per distinct warning (never below 40) and scores`,
+    `> 0 with any critical finding; the site score is the average. Plain internal redirects and`,
+    `> informational findings do not count, which is why a score can stay high while an`,
+    `> informational finding affects every page.`,
     "",
   );
 

@@ -2250,6 +2250,7 @@
   "auditEmpty": "尚无审计——运行第一次。",
   "auditPagesUnit": "个页面",
   "auditHealthScore": "健康得分",
+  "auditHealthScoreHint": "每个页面从 100 分起算，每个不同的警告扣 8 分（最低 40 分）；存在严重错误的页面为 0 分。网站得分为平均值。普通的站内重定向和信息类发现不计入。",
   "auditPagesCrawled": "已抓取页面",
   "auditPagesWithIssues": "有问题的页面",
   "auditAvgLoad": "平均响应",

@@ -2250,6 +2250,7 @@
   "auditEmpty": "Aucun audit pour le moment — lancez le premier.",
   "auditPagesUnit": "pages",
   "auditHealthScore": "Score de santé",
+  "auditHealthScoreHint": "Chaque page part de 100, moins 8 par avertissement distinct (jamais sous 40) ; une page avec une erreur critique vaut 0. Le score du site est la moyenne. Les redirections internes simples et les constats informatifs ne comptent pas.",
   "auditPagesCrawled": "Pages explorées",
   "auditPagesWithIssues": "Pages avec problèmes",
   "auditAvgLoad": "Réponse moy.",
