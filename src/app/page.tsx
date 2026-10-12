@@ -1,14 +1,13 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, Suspense } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Search, Eye, EyeOff, Star, ExternalLink,
-  ArrowUpDown, SlidersHorizontal, Sparkles, Percent, MoveUp,
+  Search, EyeOff, Star, ExternalLink,
+  ArrowUpDown, SlidersHorizontal, 
   Globe, Monitor, FileText, ChevronDown, Check,
   Image, Video, Newspaper, Compass,
-  Download, Tag, X, Loader2, RefreshCw,
+  Download, Tag, X, Loader2, 
 } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from "recharts";
 import { buildCandleRows } from "@/lib/chartCandles";
@@ -112,60 +111,6 @@ function periodToDays(period: string): number {
     "3y":         1095,
   };
   return map[period] ?? 28;
-}
-
-function makeSiteData(n = 14, startDate?: Date): { data: Pt[]; summary: Record<Metric, { value: number; change: number }> } {
-  let c = 20 + Math.random() * 150,
-      im = c * (12 + Math.random() * 25),
-      t  = 2 + Math.random() * 12,
-      p  = 5 + Math.random() * 35;
-
-  const rc: number[] = [], ri: number[] = [], rt: number[] = [], rp: number[] = [];
-  const rcC: number[] = [], riC: number[] = [], rtC: number[] = [], rpC: number[] = [];
-
-  for (let i = 0; i < n; i++) {
-    c  = Math.max(1,   c  + (Math.random() - 0.47) * 25);
-    im = Math.max(10,  im + (Math.random() - 0.47) * 300);
-    t  = Math.max(0.1, Math.min(50, t + (Math.random() - 0.5) * 2));
-    p  = Math.max(1,   Math.min(100, p + (Math.random() - 0.5) * 3));
-    rc.push(Math.round(c));   ri.push(Math.round(im));
-    rt.push(+t.toFixed(1));   rp.push(+p.toFixed(1));
-    const f = 0.45 + Math.random() * 0.65;
-    rcC.push(Math.round(c * f));  riC.push(Math.round(im * f));
-    rtC.push(+(t * f).toFixed(1)); rpC.push(+Math.min(100, p / f).toFixed(1));
-  }
-
-  // Position flipped: rank 1 at the top of the sparkline, same as the API does for real rows.
-  const flip = (a: number[]) => norm(a).map(v => 95 - v);
-  const nC = norm(rc), nI = norm(ri), nT = norm(rt), nP = flip(rp);
-  const nCC = norm(rcC), nIC = norm(riC), nTC = norm(rtC), nPC = flip(rpC);
-
-  const base = startDate ? new Date(startDate) : (() => { const d = new Date(); d.setDate(d.getDate() - n); return d; })();
-
-  const data: Pt[] = rc.map((_, i) => {
-    const d = new Date(base);
-    d.setDate(base.getDate() + i);
-    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: n > 365 ? "numeric" : undefined });
-    return {
-      date: dateStr,
-      clicks: rc[i], impressions: ri[i], ctr: rt[i], position: rp[i],
-      clicksC: rcC[i], impressionsC: riC[i], ctrC: rtC[i], positionC: rpC[i],
-      cN: nC[i], iN: nI[i], tN: nT[i], pN: nP[i],
-      cCN: nCC[i], iCN: nIC[i], tCN: nTC[i], pCN: nPC[i],
-    };
-  });
-
-  const last = n - 1, mid = Math.floor(n / 2);
-  const pct = (a: number, b: number) => b === 0 ? 0 : Math.round(((a - b) / b) * 100);
-  return {
-    data,
-    summary: {
-      clicks:      { value: rc[last],  change: pct(rc[last],  rc[mid]) },
-      impressions: { value: ri[last],  change: pct(ri[last],  ri[mid]) },
-      ctr:         { value: rt[last],  change: pct(rt[last],  rt[mid]) },
-      position:    { value: rp[last],  change: pct(rp[last],  rp[mid]) },
-    },
-  };
 }
 
 function fmtK(n: number) { return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
@@ -741,7 +686,7 @@ function PortfolioPageContent() {
   const [engine, setEngine] = useState<"google" | "bing" | "yandex">("google");
   const [altEngines, setAltEngines] = useState<("bing" | "yandex")[]>([]);
   const [engineCache, setEngineCache] = useState<Record<string, SiteRow[]>>({});
-  const [engineSyncedAt, setEngineSyncedAt] = useState<Record<string, number>>({});
+  const [, setEngineSyncedAt] = useState<Record<string, number>>({});
   const [engineAccounts, setEngineAccounts] = useState<Record<string, { name: string }[]>>({ bing: [], yandex: [] });
   const [engineLoading, setEngineLoading] = useState(false);
   // Chart granularity and the comparison mode are presentation of the same window, so they
@@ -784,7 +729,7 @@ function PortfolioPageContent() {
     localStorage.setItem("gsc_sort", s);
   };
 
-  const [newSitesFound, setNewSitesFound] = useState(0);
+  const [, setNewSitesFound] = useState(0);
 
   // Stable identity of the current window: a preset key, or the custom range spelled out —
   // fetch effects and engine caches key on this so two different ranges never collide.
@@ -798,7 +743,7 @@ function PortfolioPageContent() {
       .then(r => r.json())
       .then(d => {
         if (d.sites) {
-          setNewSitesFound(prev => Math.max(0, (d.sites as SiteRow[]).length - sites.length));
+          setNewSitesFound(() => Math.max(0, (d.sites as SiteRow[]).length - sites.length));
           setSites(d.sites);
         }
       })
@@ -2196,7 +2141,7 @@ function PortfolioPageContent() {
             {label:t("totalImpressions"), icon:"◉", color:"#8B5CF6", bg:"rgba(139,92,246,0.06)", value: fmtK(totalImpressions),      sub: t("fromNSites").replace("{n}", String(visibleForTotals.length))},
             {label:t("averageCTR"),       icon:"%", color:"#10B981", bg:"rgba(16,185,129,0.06)", value: `${avgCtr}%`,                sub: withCtr.length > 0 ? t("acrossNSites").replace("{n}", String(withCtr.length)) : t("noData")},
             {label:t("averagePosition"),  icon:"↑", color:"#F59E0B", bg:"rgba(245,158,11,0.06)", value: avgPos > 0 ? String(avgPos) : "—", sub: withPos.length > 0 ? t("acrossNSites").replace("{n}", String(withPos.length)) : t("noData")},
-          ]).map(({label, icon, color, bg, value, sub}) => (
+          ]).map(({label, icon, color, value, sub}) => (
             <div key={label} style={{padding:"12px 16px",borderRadius:"12px",background:"var(--color-card)",border:"1px solid var(--color-border)"}}>
               <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"6px"}}>
                 <span style={{fontWeight:800,fontSize:"12px",color,lineHeight:1}}>{icon}</span>

@@ -37,15 +37,15 @@ import BacklinkSyncButton from "@/components/backlinks/BacklinkSyncButton";
 import type { BacklinkRow, BacklinkListStats } from "@/lib/seo/backlinkTypes";
 import { providerLabel, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
 import {
-  ArrowLeft, Sparkles, Eye, Percent, MoveUp,
+  Sparkles, Eye, Percent, MoveUp,
   SlidersHorizontal, ChevronDown, Smartphone, Monitor, Tablet,
   Users, Activity, Zap, DollarSign, Link2, Check, Star,
   FileText, Globe, Search, ArrowLeftRight, BookmarkCheck, Calendar, X, Download,
   ChevronLeft, ChevronRight, ExternalLink, Pencil, Trash2,
 } from "lucide-react";
 import {
-  ComposedChart, LineChart, AreaChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend, ReferenceLine, ReferenceArea,
+  ComposedChart, LineChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from "recharts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -240,65 +240,12 @@ function iso3ToName(code: string, locale?: string): string {
 function rnd(lo: number, hi: number) { return lo + Math.random() * (hi - lo); }
 function rndInt(lo: number, hi: number) { return Math.round(rnd(lo, hi)); }
 
-function makeChartData(days = 7) {
-  const today = new Date();
-  return Array.from({ length: days }, (_, i) => {
-    const d = new Date(today); d.setDate(today.getDate() - days + i);
-    const label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    const clicks = rndInt(5, 30);
-    const impr   = rndInt(100, 500);
-    return {
-      date: label,
-      clicks, impressions: impr,
-      ctr:      +((clicks / impr) * 100).toFixed(1),
-      position: +rnd(4, 20).toFixed(1),
-      clicksC:      rndInt(3, 25),
-      impressionsC: rndInt(80, 400),
-      ctrC:      +rnd(2, 12).toFixed(1),
-      positionC: +rnd(5, 22).toFixed(1),
-    };
-  });
-}
-
-const QUERIES = [
-  "μασαζ στο σπιτι θεσσαλονικη","λεμφικο μασαζ θεσσαλονικη","μασαζ κατοικον θεσσαλονίκη",
-  "erotic massage thessaloniki","μασαζ κατοικον θεσσαλονικη","relaxing massage thessaloniki",
-  "therapeutic massage","thai massage thessaloniki","deep tissue massage","sports massage greece",
-];
-const PAGES = [
-  "/masaz-kat-oikon-thessaloniki/","/en/massage-thessaloniki/",
-  "/masaz-sto-spiti-thessaloniki-kat-oikon-therapeia/","/",
-  "/to-kalytero-lemfiko-masaz-thessaloniki/","/sports-massage/",
-  "/thai-massage/","/deep-tissue-massage/",
-];
 const COUNTRIES = [
   { name: "Greece", flag: "🇬🇷" },{ name: "Cyprus", flag: "🇨🇾" },
   { name: "Türkiye", flag: "🇹🇷" },{ name: "North Macedonia", flag: "🇲🇰" },
   { name: "Sweden", flag: "🇸🇪" },{ name: "Italy", flag: "🇮🇹" },
   { name: "Serbia", flag: "🇷🇸" },{ name: "Ireland", flag: "🇮🇪" },
 ];
-
-function makeRows(labels: string[], baseClicks: number) {
-  return labels.map((label, i) => {
-    const clicks = Math.max(0, Math.round(baseClicks * Math.exp(-i * 0.3) * (0.7 + Math.random() * 0.6)));
-    const impr   = clicks * rndInt(5, 25);
-    const ctr    = impr > 0 ? +((clicks / impr) * 100).toFixed(1) : 0;
-    const pos    = +rnd(1, 30).toFixed(1);
-    const cPct   = rndInt(-20, 300);
-    const iPct   = rndInt(-10, 200);
-    return { label, clicks, impr, ctr, pos, cPct, iPct };
-  });
-}
-
-function makeCountryRows() {
-  return COUNTRIES.map(({ name, flag }, i) => {
-    const clicks = Math.max(0, rndInt(1, 130) * Math.exp(-i * 0.3) | 0);
-    const impr   = clicks * rndInt(8, 20);
-    const ctr    = impr > 0 ? +((clicks / impr) * 100).toFixed(1) : 0;
-    const pos    = +rnd(4, 25).toFixed(1);
-    return { name, flag, clicks, impr, ctr, pos, cPct: rndInt(0, 200), iPct: rndInt(10, 400) };
-  });
-}
 
 // ─── Shared components ────────────────────────────────────────────────────────
 function Change({ pct, invert = false }: { pct: number; invert?: boolean }) {
@@ -755,7 +702,7 @@ function ClusterTable({ title, data, blur = false }: { title: string; data: Clus
 type SetupItem = { name: string; rules: string; count: number; selected: boolean; editingName?: boolean };
 
 // ─── Editable item card (cluster or group) ────────────────────────────────────
-function SetupCard({ item, index, onToggle, onRename, onDelete, onPatternChange, ruleType }: {
+function SetupCard({ item, onToggle, onRename, onDelete, onPatternChange, ruleType }: {
   item: SetupItem; index: number;
   onToggle: () => void; onRename: (name: string) => void;
   onDelete: () => void; onPatternChange: (val: string) => void;
@@ -2211,22 +2158,6 @@ function GA4Tab({ domain, period, setPeriod, periodOptions, customDays }: {
 }
 
 // ─── Indexing Tab ─────────────────────────────────────────────────────────────
-function statusColor(s: string): string {
-  if (/submitted and indexed/i.test(s))           return "#4ADE80";
-  if (/crawled.*not indexed/i.test(s))            return "#FBBF24";
-  if (/discovered.*not indexed/i.test(s))         return "#F97316";
-  if (/unknown/i.test(s))                         return "#60A5FA";
-  if (/excluded|blocked|not found|404|noindex/i.test(s)) return "#F87171";
-  return "#94a3b8";
-}
-
-function statusCategory(s: string): string {
-  if (/submitted and indexed/i.test(s))           return "indexed";
-  if (/crawled.*not indexed/i.test(s))            return "notIndexed";
-  if (/discovered.*not indexed/i.test(s))         return "discovered";
-  return "other";
-}
-
 function timeAgo(date: string | Date): string {
   const ms = Date.now() - new Date(date).getTime();
   const mins  = Math.floor(ms / 60000);
@@ -3508,7 +3439,6 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
     } catch { return op.detail; }
   };
 
-  const hasData = urlRows.length > 0 || counters.total > 0;
 
   const COUNTER_CHIPS = [
     { label: t("idxTotal"), value: counters.total ?? 0, color: "var(--color-text-primary)", filter: "all" },
@@ -4867,7 +4797,6 @@ const OPTIMIZE_TOOLS = [
 
 function OptimizeTab({ siteDbId }: { siteDbId: string }) {
   const [active, setActive] = useState<string | null>(null);
-  const { blur } = usePrivacy();
   const { t } = useLanguage();
   // We grab domain from useParams here for ContentDecayMap
   const params = useParams();
@@ -5046,16 +4975,6 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
 }
 
 // ─── Stub tab ──────────────────────────────────────────────────────────────────
-function StubTab({ label }: { label: string }) {
-  return (
-    <div style={{ padding: "80px 32px", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-      <div style={{ fontSize: "32px" }}>🚧</div>
-      <p style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)" }}>{label}</p>
-      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>Coming soon</p>
-    </div>
-  );
-}
-
 // ─── Winners & Losers (idea from sundios/SEO-Dashboard Traffic Insights) ──────
 // Top queries/pages by click growth/decline between the current and previous period,
 // with a contribution bar showing each row's share of the total change.
@@ -5679,7 +5598,6 @@ export default function SitePage({
   ];
   const qcTotal = qcBuckets.reduce((s, b) => s + b.count, 0);
 
-  const periodLabel = PERIOD_OPTIONS.find(o => o.key === period)?.label ?? period;
   const periodOptions = PERIOD_OPTIONS.map(o => o.key);
 
   return (
