@@ -101,6 +101,23 @@ function EngineHowTo({ color, steps, note, docHref, linkHref, linkLabel }: { col
   );
 }
 
+const NavBtn = ({ id, icon, label, badge, active, onSelect }: { id: NavItem; icon: React.ReactNode; label: string; badge?: string; active: boolean; onSelect: () => void }) => (
+    <button
+      onClick={onSelect}
+      className={active ? "nav-btn active" : "nav-btn"}
+      style={{
+        display: "flex", alignItems: "center", gap: "10px",
+        padding: "8px 12px", borderRadius: "8px", width: "100%",
+        background: "transparent", color: active ? "#fff" : "var(--color-text-secondary)",
+        fontSize: "13px", fontWeight: 400, border: "none", cursor: "pointer", textAlign: "left",
+      }}
+    >
+      {icon}
+      <span style={{ flex: 1 }}>{label}</span>
+      {badge && <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.07)", borderRadius: "10px", padding: "1px 7px" }}>{badge}</span>}
+    </button>
+  );
+
 function BingAccountsManager() {
   const { t } = useLanguage();
   const [accounts, setAccounts] = useState<SearchEngineAccount[]>([]);
@@ -924,6 +941,21 @@ interface AlertRule { on: boolean; threshold?: number; percent?: number; days?: 
 interface RecentAlertEvent { id: string; title: string; message: string; sent: boolean; createdAt: string }
 type AlertNumField = "threshold" | "percent" | "days" | "minScore" | "failures" | "minDr";
 
+const numInput: React.CSSProperties = { width: "64px", padding: "6px 8px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px" };
+const alertRowStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: "10px", padding: "10px 0", borderBottom: "1px solid var(--color-border)", flexWrap: "wrap" };
+
+const AlertRow = ({ id, label, value, unit, field, alerts, onSave }: { id: string; label: string; value: AlertRule; unit: string; field: AlertNumField; alerts: Record<string, AlertRule>; onSave: (next: Record<string, AlertRule>) => void }) => (
+  <div style={alertRowStyle}>
+    <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", minWidth: "260px" }}>
+      <input type="checkbox" checked={!!value.on} onChange={e => onSave({ ...alerts, [id]: { ...value, on: e.target.checked } })} />
+      {label}
+    </label>
+    <input type="number" value={value[field]} style={numInput}
+      onChange={e => onSave({ ...alerts, [id]: { ...value, [field]: Number(e.target.value) } })} />
+    <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{unit}</span>
+  </div>
+);
+
 function NotificationsSection() {
   const { t, language } = useLanguage();
   // Telegram state
@@ -989,21 +1021,8 @@ function NotificationsSection() {
     } catch {}
   };
 
-  const numInput: React.CSSProperties = { width: "64px", padding: "6px 8px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px" };
-  const rowStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: "10px", padding: "10px 0", borderBottom: "1px solid var(--color-border)", flexWrap: "wrap" };
   const smallBtn: React.CSSProperties = { padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 
-  const AlertRow = ({ id, label, value, unit, field }: { id: string; label: string; value: AlertRule; unit: string; field: AlertNumField }) => (
-    <div style={rowStyle}>
-      <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", minWidth: "260px" }}>
-        <input type="checkbox" checked={!!value.on} onChange={e => saveAlerts({ ...alerts, [id]: { ...value, on: e.target.checked } })} />
-        {label}
-      </label>
-      <input type="number" value={value[field]} style={numInput}
-        onChange={e => saveAlerts({ ...alerts, [id]: { ...value, [field]: Number(e.target.value) } })} />
-      <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{unit}</span>
-    </div>
-  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -1095,17 +1114,17 @@ function NotificationsSection() {
       {alerts && (
         <SectionCard>
           <SectionTitle icon={<AlertCircle size={17} color="#F59E0B" />} title={t("alertsTitle")} sub={t("alertsSub")} />
-          <AlertRow id="rankDrop" label={t("alertRankDrop")} value={alerts.rankDrop} unit={t("alertPositionsUnit")} field="threshold" />
-          <AlertRow id="trafficDrop" label={t("alertTrafficDrop")} value={alerts.trafficDrop} unit="%" field="percent" />
-          <AlertRow id="ssl" label={t("alertSsl")} value={alerts.ssl} unit={t("alertDaysUnit")} field="days" />
-          <AlertRow id="audit" label={t("alertAudit")} value={alerts.audit} unit={t("alertScoreUnit")} field="minScore" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="rankDrop" label={t("alertRankDrop")} value={alerts.rankDrop} unit={t("alertPositionsUnit")} field="threshold" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="trafficDrop" label={t("alertTrafficDrop")} value={alerts.trafficDrop} unit="%" field="percent" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="ssl" label={t("alertSsl")} value={alerts.ssl} unit={t("alertDaysUnit")} field="days" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="audit" label={t("alertAudit")} value={alerts.audit} unit={t("alertScoreUnit")} field="minScore" />
           {/* Провайдерские алерты читают только локальные данные (кэш балансов / журнал
               вызовов) и сами никогда не ходят в сеть быстрее почасового тика. */}
-          <AlertRow id="balanceLow" label={t("alertBalanceLow")} value={alerts.balanceLow} unit="%" field="percent" />
-          <AlertRow id="providerDown" label={t("alertProviderDown")} value={alerts.providerDown} unit={t("alertFailuresUnit")} field="failures" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="balanceLow" label={t("alertBalanceLow")} value={alerts.balanceLow} unit="%" field="percent" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="providerDown" label={t("alertProviderDown")} value={alerts.providerDown} unit={t("alertFailuresUnit")} field="failures" />
           {/* Off by default and dependent on a loaded backlink profile — it reads stored rows
               and never calls a provider, so enabling it cannot cost anything by itself. */}
-          <AlertRow id="lostLink" label={t("alertLostLink")} value={alerts.lostLink} unit={t("alertLostLinkDr")} field="minDr" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="lostLink" label={t("alertLostLink")} value={alerts.lostLink} unit={t("alertLostLinkDr")} field="minDr" />
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
             <button onClick={async () => {
               const d = await fetch("/api/settings/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run" }) }).then(r => r.json());
@@ -2303,22 +2322,6 @@ export default function SettingsPage() {
     setRemoving(null);
   };
 
-  const NavBtn = ({ id, icon, label, badge }: { id: NavItem; icon: React.ReactNode; label: string; badge?: string }) => (
-    <button
-      onClick={() => setNav(id)}
-      className={nav === id ? "nav-btn active" : "nav-btn"}
-      style={{
-        display: "flex", alignItems: "center", gap: "10px",
-        padding: "8px 12px", borderRadius: "8px", width: "100%",
-        background: "transparent", color: nav === id ? "#fff" : "var(--color-text-secondary)",
-        fontSize: "13px", fontWeight: 400, border: "none", cursor: "pointer", textAlign: "left",
-      }}
-    >
-      {icon}
-      <span style={{ flex: 1 }}>{label}</span>
-      {badge && <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.07)", borderRadius: "10px", padding: "1px 7px" }}>{badge}</span>}
-    </button>
-  );
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -2339,17 +2342,17 @@ export default function SettingsPage() {
           <div style={{ marginBottom: "28px" }}>
             <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "2px" }}>{t("sidebarAccount")}</div>
             <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "10px" }}>{user?.email}</div>
-            <NavBtn id="accounts" icon={<GoogleIcon size={14} />} label={t("navMyGoogleAccounts")} />
-            <NavBtn id="bing" icon={<BingIcon size={14} />} label="Bing Webmaster" />
-            <NavBtn id="yandex" icon={<YandexIcon size={14} />} label="Яндекс.Вебмастер" />
-            {EXPERIMENTAL_TEAM_UI && <NavBtn id="teams" icon={<Users size={14} />} label={t("myTeams")} />}
-            <NavBtn id="api-keys" icon={<KeyRound size={14} />} label={t("navApiKeys")} />
-            <NavBtn id="api" icon={<Key size={14} />} label={t("navApiMcpKeys")} />
-            <NavBtn id="indexing-api" icon={<Globe size={14} />} label={t("navIndexingApi")} />
-            <NavBtn id="metrics" icon={<BarChart3 size={14} />} label={t("navMetrics")} />
-            <NavBtn id="seo-tools" icon={<Sparkles size={14} />} label={t("navSeoTools")} />
-            <NavBtn id="provider-log" icon={<ScrollText size={14} />} label={t("navProviderLog")} />
-            <NavBtn id="notifications" icon={<Zap size={14} />} label={t("navNotifications")} />
+            <NavBtn id="accounts" active={nav === "accounts"} onSelect={() => setNav("accounts")} icon={<GoogleIcon size={14} />} label={t("navMyGoogleAccounts")} />
+            <NavBtn id="bing" active={nav === "bing"} onSelect={() => setNav("bing")} icon={<BingIcon size={14} />} label="Bing Webmaster" />
+            <NavBtn id="yandex" active={nav === "yandex"} onSelect={() => setNav("yandex")} icon={<YandexIcon size={14} />} label="Яндекс.Вебмастер" />
+            {EXPERIMENTAL_TEAM_UI && <NavBtn id="teams" active={nav === "teams"} onSelect={() => setNav("teams")} icon={<Users size={14} />} label={t("myTeams")} />}
+            <NavBtn id="api-keys" active={nav === "api-keys"} onSelect={() => setNav("api-keys")} icon={<KeyRound size={14} />} label={t("navApiKeys")} />
+            <NavBtn id="api" active={nav === "api"} onSelect={() => setNav("api")} icon={<Key size={14} />} label={t("navApiMcpKeys")} />
+            <NavBtn id="indexing-api" active={nav === "indexing-api"} onSelect={() => setNav("indexing-api")} icon={<Globe size={14} />} label={t("navIndexingApi")} />
+            <NavBtn id="metrics" active={nav === "metrics"} onSelect={() => setNav("metrics")} icon={<BarChart3 size={14} />} label={t("navMetrics")} />
+            <NavBtn id="seo-tools" active={nav === "seo-tools"} onSelect={() => setNav("seo-tools")} icon={<Sparkles size={14} />} label={t("navSeoTools")} />
+            <NavBtn id="provider-log" active={nav === "provider-log"} onSelect={() => setNav("provider-log")} icon={<ScrollText size={14} />} label={t("navProviderLog")} />
+            <NavBtn id="notifications" active={nav === "notifications"} onSelect={() => setNav("notifications")} icon={<Zap size={14} />} label={t("navNotifications")} />
           </div>
 
           {/* Team */}
@@ -2375,9 +2378,9 @@ export default function SettingsPage() {
                 {t("workspaceSidebarHint")}
               </div>
             )}
-            <NavBtn id="members" icon={<Users size={14} />} label={t("navTeamMembers")} />
-            <NavBtn id="preferences" icon={<Settings size={14} />} label={t("navPreferences")} />
-            {EXPERIMENTAL_TEAM_UI && <NavBtn id="supersites" icon={<Star size={14} />} label={t("navSuperSites")} />}
+            <NavBtn id="members" active={nav === "members"} onSelect={() => setNav("members")} icon={<Users size={14} />} label={t("navTeamMembers")} />
+            <NavBtn id="preferences" active={nav === "preferences"} onSelect={() => setNav("preferences")} icon={<Settings size={14} />} label={t("navPreferences")} />
+            {EXPERIMENTAL_TEAM_UI && <NavBtn id="supersites" active={nav === "supersites"} onSelect={() => setNav("supersites")} icon={<Star size={14} />} label={t("navSuperSites")} />}
           </div>
         </div>
 
