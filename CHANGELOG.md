@@ -5,6 +5,13 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Changed — Site Audit health score weighs findings by severity (#30)
+
+- **A site with only minor warnings no longer scores 0/100.** The old score was the share of pages with no scored finding at all, so one image without alt counted as much as a 404, and a 4-page WordPress site with a small warning on every template scored the same as a site that was down — tripping the "health score below 50" alert. Each page is now scored on its own: 100, minus 8 per distinct warning (never below 40), or 0 with any critical finding (HTTP error, failed fetch, broken links, noindex, redirect loop). The site score is the average.
+- **A plain internal redirect is not a page.** A single 301/308 to the same site (http→https, www↔apex, trailing slash) is left out of the average; it is still listed as a finding. Redirect chains, loops and redirects off the site still count.
+- **History stays comparable.** Stored audits are rescored once at startup from their saved page findings, so the trend shows no jump on update day; the previous value is kept in the summary as `healthScoreV1`. The new score is never lower than the old one on the same audit, so rescoring cannot trigger a low-score alert. No schema change.
+- Hovering the score explains how it is calculated; the Markdown export says the same.
+
 ### Added — Cannibalization: real "winner changes", a site picker in Related intent, MCP on the shared computation
 
 - **Daily winner changes work.** Related intent's "daily winner changes" read the query+page rows, which are one 90-day total per pair on a single date — so it was always 0, and the 10% of the confidence score it feeds never counted. The sync now also stores per-day query + page rows for the last 28 days (new `QueryPageDaily` table, paged past 25 000 rows, replaced on every sync). Volumes still come from the 90-day totals; only the day-by-day winner is read from the new rows. The tab says which 28 days it used, or that the data arrives with the next sync.

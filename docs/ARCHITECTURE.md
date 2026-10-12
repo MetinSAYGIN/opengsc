@@ -653,8 +653,14 @@ The crawler BFS-walks same-host pages from the site root (≤500 pages, 4 worker
 manual-redirect mode so 3xx chains are visible, a politeness delay per request), then a **second
 pass** computes issues that need the whole crawl map: broken internal links, duplicate titles and
 redirect traces. Results land in `SiteAuditPage` rows plus a JSON summary on `SiteAudit`.
-Informational and useful-but-non-universal checks remain visible but do not lower the established
-health score; older audit snapshots retain the score already stored with them.
+The health score (`healthScore.ts`, v2 since issue #30) is scored per page and averaged: a page
+with any critical finding scores 0, otherwise it loses 8 points per distinct scored warning, never
+going below 40. Informational and `affectsScore: false` checks remain visible but cost nothing, and a
+single-hop redirect to the same site (http→https, www↔apex, trailing slash) is left out of the
+average because it is not a page. v1 counted the share of pages with any scored finding, so one
+missing alt weighed as much as a 404 and a small site with minor template warnings scored 0. Stored
+audits are rescored once at boot (`scoreBackfill.ts`) from their page rows, keeping the old value as
+`healthScoreV1`; v2 is never below v1 on the same rows, so the rescoring cannot fire a low-score alert.
 
 This registry belongs only to runtime **Site Audit**. It imports no `AeoCheck`/AI Visibility or
 `GeoAudit` data and does not change those products' settings, APIs or screens. The AI-crawler card

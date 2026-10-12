@@ -11,7 +11,8 @@ import { safeFetch } from "@/lib/security/safeFetch";
 import { extractAuditHtml, missingSecurityHeaders, robotsDirectivesConflict, type AuditHtmlSignals } from "@/lib/audit/pageSignals";
 export const AUDIT_PAGE_CEILING = 5000;
 
-import { AUDIT_ACTIONABLE_RULE_IDS, AUDIT_RULE_IDS, AUDIT_SCORING_RULE_IDS, evaluateAuditPageRules, type AuditPageFacts } from "@/lib/audit/rules";
+import { AUDIT_ACTIONABLE_RULE_IDS, AUDIT_RULE_IDS, evaluateAuditPageRules, type AuditPageFacts } from "@/lib/audit/rules";
+import { computeHealthScore } from "@/lib/audit/healthScore";
 import { compareAuditFindings } from "@/lib/audit/verification";
 import { checkHreflangSite, mergeHreflangEntries, normalizeHreflangUrl, parseHreflangLinkHeader, parseHreflangSitemap, type HreflangEntry, type HreflangTargetState } from "@/lib/audit/hreflang";
 import { normalizeAuditUrl, pickMainQuery } from "@/lib/audit/queryAlign";
@@ -652,11 +653,9 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
 
     const pagesWithFindings = rows.filter(row => row.issues.length).length;
     const pagesWithIssues = rows.filter(row => row.issues.some((issue: string) => AUDIT_ACTIONABLE_RULE_IDS.has(issue))).length;
-    // Informational and useful-but-non-universal checks remain visible without destabilizing the
-    // established health score. Older audits keep the score already stored with them.
-    const pagesWithScoredIssues = rows.filter(row => {
-      return row.issues.some((issue: string) => AUDIT_SCORING_RULE_IDS.has(issue));
-    }).length;
+    // Severity-weighted per-page score averaged over real pages (v2, issue #30) — see healthScore.ts.
+    // Informational and `affectsScore: false` checks stay visible without moving it.
+    const score = computeHealthScore(rows);
     // Awaited here, at the only point its result is used: the summary. By now the crawl has run
     // its course, so a slow robots/llms fetch (or one that already resolved) costs no extra latency.
     // The catch above already nulls a failed check, so a network error here never fails the audit.
@@ -701,8 +700,12 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
           pages: rows.length,
           pagesWithIssues,
           pagesWithFindings,
-          pagesWithScoredIssues,
-          healthScore: rows.length ? Math.round(100 * (1 - pagesWithScoredIssues / rows.length)) : 0,
+          pagesWithScoredIssues: score.pagesWithScoredIssues,
+          healthScore: score.healthScore,
+          healthScoreV1: score.healthScoreV1,
+          scoreVersion: score.scoreVersion,
+          scoredPages: score.scoredPages,
+          redirectsExcluded: score.redirectsExcluded,
           issues: issueTotals,
           avgLoadMs: rows.length ? Math.round(rows.reduce((s, r) => s + r.loadMs, 0) / rows.length) : 0,
           // The rule registry this audit ran with, so a future comparison can tell "the rule did
