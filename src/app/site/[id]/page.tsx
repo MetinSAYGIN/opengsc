@@ -390,6 +390,18 @@ function Pagination({ page, total, pageSize, onChange }: { page: number; total: 
 
 type DtSortCol = "clicks" | "impr" | "ctr" | "pos";
 
+const SortTh = ({ col, label, color, sortCol, sortDir, onSort }: { col: DtSortCol; label: string; color: string; sortCol: DtSortCol; sortDir: "asc" | "desc"; onSort: (col: DtSortCol) => void }) => {
+  const active = sortCol === col;
+  const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
+  return (
+    <th onClick={() => onSort(col)}
+      style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
+      {label}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
+    </th>
+  );
+};
+
+
 function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }: {
   title: string;
   rows: { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number }[];
@@ -434,16 +446,6 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
   };
 
   // Sortable column header helper
-  const SortTh = ({ col, label, color }: { col: DtSortCol; label: string; color: string }) => {
-    const active = sortCol === col;
-    const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
-    return (
-      <th onClick={() => handleSort(col)}
-        style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
-        {label}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
-      </th>
-    );
-  };
 
   // Totals row
   const totalClicks = rows.reduce((s, r) => s + r.clicks, 0);
@@ -463,10 +465,10 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
         <thead>
           <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
             <th style={{ textAlign: "left", padding: "8px 8px 8px 0", color: "var(--color-text-secondary)", fontWeight: 500, fontSize: "11px", letterSpacing: "0.04em" }}>{title === t("queriesTable") ? t("colQuery") : t("colPage")}</th>
-            <SortTh col="clicks" label={t("clicks").toUpperCase()}      color={C.clicks} />
-            <SortTh col="impr"   label={t("impressions").toUpperCase()} color={C.impressions} />
-            <SortTh col="ctr"    label="CTR"                            color={C.ctr} />
-            <SortTh col="pos"    label={t("position").toUpperCase()}    color={C.position} />
+            <SortTh col="clicks" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} label={t("clicks").toUpperCase()}      color={C.clicks} />
+            <SortTh col="impr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}   label={t("impressions").toUpperCase()} color={C.impressions} />
+            <SortTh col="ctr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label="CTR"                            color={C.ctr} />
+            <SortTh col="pos" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label={t("position").toUpperCase()}    color={C.position} />
           </tr>
         </thead>
         <tbody>
@@ -548,16 +550,6 @@ function CountryTable({ rows }: { rows: CountryRow[] }) {
     );
   };
 
-  const SortTh = ({ col, label, color }: { col: DtSortCol; label: string; color: string }) => {
-    const active = sortCol === col;
-    const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
-    return (
-      <th onClick={() => handleSort(col)}
-        style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
-        {label}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
-      </th>
-    );
-  };
 
   return (
     <div>
@@ -572,10 +564,10 @@ function CountryTable({ rows }: { rows: CountryRow[] }) {
         <thead>
           <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
             <th style={{ textAlign: "left", padding: "8px 0", color: "var(--color-text-secondary)", fontWeight: 500, fontSize: "11px" }}></th>
-            <SortTh col="clicks" label={t("clicks").toUpperCase()}      color={C.clicks} />
-            <SortTh col="impr"   label={t("impressions").toUpperCase()} color={C.impressions} />
-            <SortTh col="ctr"    label="CTR"                            color={C.ctr} />
-            <SortTh col="pos"    label={t("position").toUpperCase()}    color={C.position} />
+            <SortTh col="clicks" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} label={t("clicks").toUpperCase()}      color={C.clicks} />
+            <SortTh col="impr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}   label={t("impressions").toUpperCase()} color={C.impressions} />
+            <SortTh col="ctr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label="CTR"                            color={C.ctr} />
+            <SortTh col="pos" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label={t("position").toUpperCase()}    color={C.position} />
           </tr>
         </thead>
         <tbody>
@@ -4993,16 +4985,6 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
     );
   };
 
-  const SortTh = ({ col, label, color }: { col: DtSortCol; label: string; color: string }) => {
-    const active = sortCol === col;
-    const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
-    return (
-      <th onClick={() => handleSort(col)}
-        style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
-        {label.toUpperCase()}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
-      </th>
-    );
-  };
 
   return (
     <div>
@@ -5024,10 +5006,10 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
             <thead>
               <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
                 <th style={{ textAlign: "left", padding: "8px 0", color: "var(--color-text-secondary)", fontWeight: 500 }}></th>
-                <SortTh col="clicks" label={t("clicks")}      color={C.clicks} />
-                <SortTh col="impr"   label={t("impressions")} color={C.impressions} />
-                <SortTh col="ctr"    label="CTR"              color={C.ctr} />
-                <SortTh col="pos"    label={t("position")}    color={C.position} />
+                <SortTh col="clicks" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} label={t("clicks").toUpperCase()}      color={C.clicks} />
+                <SortTh col="impr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}   label={t("impressions").toUpperCase()} color={C.impressions} />
+                <SortTh col="ctr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label="CTR"              color={C.ctr} />
+                <SortTh col="pos" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label={t("position").toUpperCase()}    color={C.position} />
               </tr>
             </thead>
             <tbody>
