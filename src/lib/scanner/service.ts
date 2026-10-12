@@ -19,7 +19,22 @@ function parse(value: unknown) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
-export function scanDto(row: any, related: RelatedDomain[] = []) {
+/** A SiteScan row as scanDto reads it — the generated client's shape or dbAny's untyped one. */
+interface ScanRow {
+  id: string;
+  host: string;
+  url: string;
+  finalUrl: string | null;
+  status: string;
+  httpStatus: number;
+  score: number | null;
+  error: string | null;
+  report: string | null;
+  createdAt: Date;
+  finishedAt: Date | null;
+}
+
+export function scanDto(row: ScanRow, related: RelatedDomain[] = []) {
   return {
     id: row.id, host: row.host, url: row.url, finalUrl: row.finalUrl,
     status: row.status, httpStatus: row.httpStatus, score: row.score, error: row.error,

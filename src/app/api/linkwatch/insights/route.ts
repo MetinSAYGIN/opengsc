@@ -7,6 +7,18 @@ import { rawQuery } from "@/lib/db/raw";
 // AI summary over the stored mentions — themes, mention contexts, anchor patterns,
 // content/PR opportunities (the analysis step of detailed.com/ai-backlinks-api).
 
+// One stored LinkMention row as the SELECT names it (rawQuery stays untyped).
+interface MentionRow {
+  brand: string;
+  urlFrom: string;
+  domainFrom: string;
+  title: string | null;
+  anchor: string | null;
+  drFrom: number;
+  firstSeen: string | null;
+  dofollow: boolean | null;
+}
+
 export async function POST(req: Request) {
   const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -14,9 +26,9 @@ export async function POST(req: Request) {
   const apiKey = String(b.aiApiKey ?? "");
   if (!apiKey) return NextResponse.json({ error: "no_ai_key" }, { status: 400 });
 
-  let mentions: any[] = [];
+  let mentions: MentionRow[] = [];
   try {
-    mentions = await rawQuery(
+    mentions = await rawQuery<MentionRow[]>(
       `SELECT brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, dofollow
        FROM "LinkMention" WHERE userId = ? ORDER BY drFrom DESC LIMIT 400`, userId);
   } catch { return NextResponse.json({ error: "not_migrated" }, { status: 500 }); }

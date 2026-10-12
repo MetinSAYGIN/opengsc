@@ -13,12 +13,25 @@ import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { OutlineStructure, OutlineEntities, WireframeView, CompetitorSkeletons, SerpIntentPanel } from "@/components/SeoRenderers";
 import { HistoryItem } from "@/lib/seo/history";
 
+// The renderer components own these shapes but do not export them — pull them off the
+// component signatures so this view stays tied to what actually renders the data.
+type LandingOutline = Parameters<typeof OutlineStructure>[0]["outline"];
+type LandingWireframe = Parameters<typeof WireframeView>[0]["wireframe"];
+type LandingCompetitors = Parameters<typeof CompetitorSkeletons>[0]["competitors"];
+type LandingData = {
+  outline?: LandingOutline;
+  wireframe?: LandingWireframe;
+  competitors?: LandingCompetitors;
+  text?: string;
+  wireframeError?: string;
+};
+
 export default function SeoLandingDetail({ item }: { item: HistoryItem }) {
   const { t } = useLanguage();
   const router = useRouter();
   const [copied, setCopied] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
-  const data = (item.data || {}) as { outline?: any; wireframe?: any; competitors?: any[]; text?: string; wireframeError?: string };
+  const data = (item.data || {}) as LandingData;
   const { outline, wireframe, competitors, text, wireframeError } = data;
 
   function copyText() {

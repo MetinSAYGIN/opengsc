@@ -17,11 +17,25 @@ import { outreachErrorKey } from "@/lib/outreach/types";
 
 const card = "panel";
 const inputStyle = "tool-input";
+
+// Shapes the /api/linkwatch and /api/outreach endpoints return — JSON, typed by what this page reads.
+interface WatchBrand { id: string; domain: string }
+interface LinkMentionRow {
+  urlFrom: string;
+  title?: string | null;
+  domainFrom: string;
+  brand: string;
+  drFrom: number;
+  dofollow?: boolean | null;
+  anchor?: string | null;
+  firstSeen?: string | null;
+}
+interface TopDomainRow { domainFrom: string; brandsLinked: number; links: number; maxDr: number }
 const btnGhost: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: "6px", padding: "8px 13px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 const btnPurple: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: "7px", padding: "10px 16px", borderRadius: "9px", border: "none", background: "var(--color-accent-purple)", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" };
 
 export default function LinkWatchPage() {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   const lang = language || "en";
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -31,9 +45,9 @@ export default function LinkWatchPage() {
   // gateway key in the first place.
   const ahrefsKey = mounted ? getMetricsCreds("ahrefs").apiKey : "";
 
-  const [brands, setBrands] = useState<any[]>([]);
-  const [mentions, setMentions] = useState<any[]>([]);
-  const [topDomains, setTopDomains] = useState<any[]>([]);
+  const [brands, setBrands] = useState<WatchBrand[]>([]);
+  const [mentions, setMentions] = useState<LinkMentionRow[]>([]);
+  const [topDomains, setTopDomains] = useState<TopDomainRow[]>([]);
   const [newDomains, setNewDomains] = useState("");
   const [running, setRunning] = useState(false);
   const [insLoading, setInsLoading] = useState(false);
@@ -72,7 +86,7 @@ export default function LinkWatchPage() {
   async function reloadOutreachDomains() {
     try {
       const d = await fetch("/api/outreach", { cache: "no-store" }).then(r => r.json());
-      setProspectDomains(new Set((d.prospects || []).map((prospect: any) => String(prospect.domain))));
+      setProspectDomains(new Set((d.prospects || []).map((prospect: { domain?: unknown }) => String(prospect.domain))));
     } catch {}
   }
 
@@ -87,7 +101,7 @@ export default function LinkWatchPage() {
       setOutreachInfo(t(d.created ? "outreachProspectAdded" : "outreachProspectExists"));
       await reloadOutreachDomains();
       setOutreachRefresh(value => value + 1);
-    } catch (e) { setErr(t(outreachErrorKey((e as Error)?.message ?? e))); }
+    } catch (e) { setErr(t(outreachErrorKey((e as Error)?.message ?? e) as Parameters<typeof t>[0])); }
   }
 
   function toggleFav(domain: string) {
@@ -225,7 +239,7 @@ export default function LinkWatchPage() {
               <div style={{ display: "grid", gridTemplateColumns: "26px minmax(0,1fr) 90px 70px 70px 110px", gap: "8px", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", color: "var(--color-text-tertiary)", padding: "4px 8px" }}>
                 <span /><span>{t("lwColDomain")}</span><span>{t("lwColBrands")}</span><span>{t("lwColLinks")}</span><span>{t("lwColMaxDr")}</span><span />
               </div>
-              {topDomains.map((d: any) => (
+              {topDomains.map(d => (
                 <div key={d.domainFrom} style={{ display: "grid", gridTemplateColumns: "26px minmax(0,1fr) 90px 70px 70px 110px", gap: "8px", alignItems: "center", padding: "7px 8px", borderRadius: "8px", border: "1px solid var(--color-border)", fontSize: "12px" }}>
                   <Star size={14} style={{ cursor: "pointer" }} color={favs.has(d.domainFrom) ? "#F59E0B" : "var(--color-border)"} fill={favs.has(d.domainFrom) ? "#F59E0B" : "none"} onClick={() => toggleFav(d.domainFrom)} />
                   <a href={`https://${d.domainFrom}`} target="_blank" rel="noreferrer" style={{ color: "var(--color-text-primary)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis" }}>{d.domainFrom} <ExternalLink size={9} style={{ opacity: 0.5 }} /></a>
@@ -240,7 +254,7 @@ export default function LinkWatchPage() {
             </div>
           ) : (
             <div className="privacy-blur-all" style={{ display: "flex", flexDirection: "column", gap: "4px", maxHeight: "480px", overflow: "auto" }}>
-              {shownMentions.slice(0, 300).map((m: any, i: number) => (
+              {shownMentions.slice(0, 300).map((m, i) => (
                 <div key={i} style={{ padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
                   <div style={{ fontSize: "12px", color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <a href={m.urlFrom} target="_blank" rel="noreferrer" style={{ color: "var(--color-text-primary)" }}>{m.title || m.urlFrom}</a>

@@ -23,7 +23,7 @@ export default function IndexerLinksPage() {
       const res = await fetch("/api/indexer/domains");
       if (res.ok) {
         const d = await res.json();
-        setDomains(d.map((x: any) => ({ id: x.id, domain: x.domain, pages: x.pagesCount })));
+        setDomains(d.map((x: { id: string; domain: string; pagesCount: number }) => ({ id: x.id, domain: x.domain, pages: x.pagesCount })));
       }
     } catch (e) {
       console.error(e);
@@ -188,7 +188,7 @@ export default function IndexerLinksPage() {
           ].map(top => (
             <div
               key={top.id}
-              onClick={() => setTopology(top.id as any)}
+              onClick={() => setTopology(top.id as "mesh" | "ring" | "pyramid")}
               style={{
                 border: "1px solid var(--color-border)",
                 borderRadius: "10px",

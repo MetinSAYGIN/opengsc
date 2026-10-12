@@ -28,6 +28,15 @@ export interface PagingState {
   notes: string[];
 }
 
+/**
+ * A raw gateway row as the loops hand it to the persistence callback. The paging contract reads
+ * url_from/url_to as strings (the keyset cursor and the dedup edges are built from them), so the
+ * deps seam is typed by that contract; the loops cast the unvalidated RawRow page up to it at
+ * the hand-off. A type alias, not an interface, so store callbacks accepting plain records
+ * satisfy it without a cast of their own.
+ */
+export type PagingRow = { url_from: string; url_to: string };
+
 export interface PagingDeps {
   target: string;
   /** live backlink count from backlinks-stats, when the provider answered it. */
@@ -35,7 +44,7 @@ export interface PagingDeps {
   state: PagingState;
   fetchPage: (q: PageQuery) => Promise<PageFetch>;
   /** Persists one page and advances state.rowsSeen / pagesPulled. */
-  persistPage: (rows: any[]) => Promise<void>;
+  persistPage: (rows: PagingRow[]) => Promise<void>;
 }
 
 /** A short page ends the run only when the run has caught up with the provider's own count. */
@@ -43,9 +52,9 @@ function caughtUp(state: PagingState, live: number | null): boolean {
   return live != null && live > 0 && state.rowsSeen >= live;
 }
 
-const keyOf = (r: any) => `${r?.url_from ?? ""}\u0001${r?.url_to ?? ""}`;
+const keyOf = (r: Record<string, unknown>) => `${r?.url_from ?? ""}\u0001${r?.url_to ?? ""}`;
 /** First and last row of a page — two identical edges in a row mean the gateway served the same page. */
-const edgeOf = (rows: any[]) => `${keyOf(rows[0])}\u0002${keyOf(rows[rows.length - 1])}`;
+const edgeOf = (rows: Record<string, unknown>[]) => `${keyOf(rows[0])}\u0002${keyOf(rows[rows.length - 1])}`;
 
 /** offset paging. Steps by the rows actually received, never by the limit that was asked for. */
 export async function pageByOffset(d: PagingDeps): Promise<boolean> {
@@ -62,7 +71,7 @@ export async function pageByOffset(d: PagingDeps): Promise<boolean> {
     const edge = edgeOf(page.rows);
     if (edge === prevEdge) throw new Error("offset did not advance — gateway ignored the offset");
     prevEdge = edge;
-    await d.persistPage(page.rows);
+    await d.persistPage(page.rows as PagingRow[]);
     if (page.rows.length < EXPORT_PAGE_SIZE && caughtUp(state, live)) return true;
     offset += page.rows.length;
   }
@@ -83,7 +92,7 @@ export async function pageByKeyset(d: PagingDeps): Promise<boolean> {
     if (page.error) throw new Error(page.error);
     state.unitsSpent += page.units;
     if (!page.rows.length) return true;
-    await d.persistPage(page.rows);
+    await d.persistPage(page.rows as PagingRow[]);
     if (page.rows.length < EXPORT_PAGE_SIZE && caughtUp(state, live)) return true;
     // Ascending order: the last row of the page carries the largest url_from. A cursor that
     // does not advance means the gateway ignored the `where` and served the same head again —
@@ -112,7 +121,7 @@ export async function pageBySlices(d: PagingDeps): Promise<boolean> {
     if (page.error) throw new Error(page.error);
     state.unitsSpent += page.units;
     if (!page.rows.length) continue;
-    await d.persistPage(page.rows);
+    await d.persistPage(page.rows as PagingRow[]);
     if (page.rows.length >= EXPORT_PAGE_SIZE) state.slicesTruncated = true;
   }
   state.notes.push("slice fallback used: losses cannot be concluded from this run");

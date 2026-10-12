@@ -18,7 +18,7 @@ import { dbAny } from "@/lib/prisma";
 import { MetricsCreds, fetchKeyssoBacklinksPage, fetchDataforseoBacklinksPage } from "@/lib/seo/metrics";
 import { recordUsage, releaseUnusedUnits } from "@/lib/seo/metricsStore";
 import {
-  MappedBacklinkRow, PaginationMode, ExistingApiState,
+  ApiEventKind, MappedBacklinkRow, PaginationMode, ExistingApiState,
   mapApiRow, planEvents, probePagination, fetchBacklinksPage,
 } from "@/lib/seo/backlinksApi";
 import { providerFromSyncMode, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
@@ -33,6 +33,38 @@ export interface UpsertResult {
   events: number;
 }
 
+/** One raw gateway row (the all-backlinks shape backlinksApi maps from). */
+type RawExportRow = Record<string, unknown>;
+
+/** The api* "before" state of a row, plus sources — everything event planning and the
+ *  in-page dedup map read. Values written back mid-page (byKey.set) carry exactly this. */
+interface ApiBeforeRow {
+  id: string;
+  sources: string | null;
+  apiLost: unknown;
+  apiAnchor: unknown;
+  apiDofollow: unknown;
+  apiNofollow: unknown;
+  apiSponsored: unknown;
+  apiUgc: unknown;
+}
+
+/** The api* "before" columns `upsertFromApi` selects back for event planning, keyed by the
+ *  row's full identity (urlFromNorm + urlTo). */
+interface ExistingApiRow extends ApiBeforeRow {
+  urlFromNorm: string;
+  urlTo: string;
+}
+
+/** A SiteBacklinkEvent row this module enqueues (origin "api"). */
+interface ApiEventRow {
+  siteId: string;
+  backlinkId: string;
+  kind: ApiEventKind;
+  detail: string;
+  origin: string;
+}
+
 /**
  * Writes one page of raw all-backlinks rows.
  *
@@ -42,7 +74,7 @@ export interface UpsertResult {
  * complete pull would justify and which the provider answers directly anyway.
  */
 export async function upsertFromApi(
-  siteId: string, rawRows: any[], opts: { fetchedAt: Date },
+  siteId: string, rawRows: RawExportRow[], opts: { fetchedAt: Date },
 ): Promise<UpsertResult> {
   const mapped = rawRows.map(mapApiRow).filter(Boolean) as MappedBacklinkRow[];
   if (!mapped.length) return { written: 0, events: 0 };
@@ -51,7 +83,7 @@ export async function upsertFromApi(
   // full unique key — urlFromNorm alone is not the identity (one donor page can link to several
   // of our pages, and each pair is its own row).
   const norms = [...new Set(mapped.map(r => r.urlFromNorm))];
-  let existingRows: any[] = [];
+  let existingRows: ExistingApiRow[] = [];
   try {
     existingRows = await db.siteBacklink.findMany({
       where: { siteId, urlFromNorm: { in: norms } },
@@ -65,14 +97,16 @@ export async function upsertFromApi(
     existingRows = []; // best effort, like every writer in the metrics layer
   }
   const key = (norm: string, to: string) => `${norm}\u0000${to}`;
-  const byKey = new Map(existingRows.map((r: any) => [key(r.urlFromNorm, r.urlTo), r]));
+  const byKey = new Map<string, ApiBeforeRow>(
+    existingRows.map((r: ExistingApiRow) => [key(r.urlFromNorm, r.urlTo), r]),
+  );
 
-  const eventRows: any[] = [];
+  const eventRows: ApiEventRow[] = [];
   let written = 0;
 
   for (const row of mapped) {
     const k = key(row.urlFromNorm, row.urlTo);
-    const ex: any | undefined = byKey.get(k);
+    const ex: ApiBeforeRow | undefined = byKey.get(k);
     const before: ExistingApiState | null = ex
       ? {
           apiLost: !!ex.apiLost,
@@ -187,7 +221,17 @@ export async function latestBacklinkProvider(siteId: string): Promise<BacklinkPr
 /** A running sync whose heartbeat is fresh enough that a process may still be behind it. */
 const STALE_RUNNING_MS = 10 * 60 * 1000;
 
-export async function createApiSync(siteId: string, paginationMode: string): Promise<any> {
+/** A SiteBacklinkSync row as this module reads it back (the client stays untyped behind dbAny). */
+export interface SyncRunRow {
+  id: string;
+  status?: string;
+  paginationMode?: string;
+  summary?: string | null;
+  heartbeatAt?: Date | string | null;
+  startedAt: Date | string;
+}
+
+export async function createApiSync(siteId: string, paginationMode: string): Promise<SyncRunRow> {
   return db.siteBacklinkSync.create({
     data: { siteId, kind: "api", status: "running", stage: "pull", paginationMode, heartbeatAt: new Date() },
   });
@@ -198,8 +242,8 @@ export async function createApiSync(siteId: string, paginationMode: string): Pro
  * older than the stale window — are marked failed, not restarted: a restart would re-spend the
  * owner's units without a fresh price confirmation. The user starts a new run instead.
  */
-export async function runningApiSync(siteId: string): Promise<any | null> {
-  let rows: any[] = [];
+export async function runningApiSync(siteId: string): Promise<SyncRunRow | null> {
+  let rows: SyncRunRow[] = [];
   try {
     rows = await db.siteBacklinkSync.findMany({
       where: { siteId, kind: "api", status: "running" },
@@ -226,18 +270,18 @@ async function finishApiSync(id: string, patch: Record<string, unknown>): Promis
   await db.siteBacklinkSync.update({ where: { id }, data: { ...patch, finishedAt: new Date() } }).catch(() => {});
 }
 
-export async function listApiSyncs(siteId: string, take = 10): Promise<any[]> {
+export async function listApiSyncs(siteId: string, take = 10): Promise<Array<SyncRunRow & { summary: unknown }>> {
   try {
     const rows = await db.siteBacklinkSync.findMany({
       where: { siteId, kind: "api" },
       orderBy: { startedAt: "desc" },
       take,
     });
-    return rows.map((r: any) => ({ ...r, summary: tryParse(r.summary) }));
+    return rows.map((r: SyncRunRow) => ({ ...r, summary: tryParse(r.summary) }));
   } catch { return []; }
 }
 
-const tryParse = (s: unknown): any => {
+const tryParse = (s: unknown): unknown => {
   if (!s) return null;
   try { return JSON.parse(String(s)); } catch { return null; }
 };
@@ -301,7 +345,7 @@ export async function runBacklinkExport(opts: ExportRunOpts): Promise<void> {
 
     // Progress is measured against the live count the route already paid for. Unknown live →
     // the run reports pages and rows without a percentage rather than inventing one.
-    const persistPage = async (rows: any[]) => {
+    const persistPage = async (rows: RawExportRow[]) => {
       await heartbeatApiSync(syncId, { stage: "pull", unitsSpent: state.unitsSpent });
       await upsertFromApi(siteId, rows, { fetchedAt: new Date() });
       state.rowsSeen += rows.length;

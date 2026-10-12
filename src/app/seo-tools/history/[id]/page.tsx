@@ -20,6 +20,9 @@ import { getSeoGenCreds, getSerpCreds, getFirecrawlKey, getFactSourceCount, getH
 import { TONES, toneToPrompt } from "@/lib/seo/tones";
 import { LANGUAGES } from "@/lib/seo/regions";
 
+/** The translator hook hands back — the dictionary key union is not exported, so reuse it. */
+type Translate = ReturnType<typeof useLanguage>["t"];
+
 export default function TaskDetailPage() {
   const { t } = useLanguage();
   const router = useRouter();
@@ -82,7 +85,7 @@ export default function TaskDetailPage() {
     try {
       const blob = new Blob([html], { type: "text/html" });
       const txt = new Blob([plainText()], { type: "text/plain" });
-      (navigator.clipboard as any).write([new (window as any).ClipboardItem({ "text/html": blob, "text/plain": txt })]).then(() => flash("docs"));
+      navigator.clipboard.write([new ClipboardItem({ "text/html": blob, "text/plain": txt })]).then(() => flash("docs"));
     } catch { navigator.clipboard.writeText(plainText()).then(() => flash("docs")); }
   }
 
@@ -106,7 +109,7 @@ export default function TaskDetailPage() {
   function startEdit() { setEditText(isText ? plainText() : JSON.stringify(item!.data, null, 2)); setEdit(true); }
   function saveEdit() {
     if (!item) return;
-    let data: any = editText;
+    let data: unknown = editText;
     if (!isText) { try { data = JSON.parse(editText); } catch { return; } }
     updateHistory(item.id, data); setItem({ ...item, data }); setEdit(false);
   }
@@ -207,7 +210,7 @@ export default function TaskDetailPage() {
               {([["structure", t("seoTabContentStructure")], ["entities", t("seoTabEntityAnalysis")]] as const).map(([k, label]) => {
                 const on = tab === k;
                 return (
-                  <button key={k} onClick={() => setTab(k as any)} style={{ padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: on ? 700 : 500, cursor: "pointer", border: "none", background: on ? "var(--color-accent-purple)" : "transparent", color: on ? "#fff" : "var(--color-text-secondary)", boxShadow: on ? "0 1px 3px rgba(0,0,0,0.2)" : "none", transition: "all 0.15s" }}>{label}</button>
+                  <button key={k} onClick={() => setTab(k)} style={{ padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: on ? 700 : 500, cursor: "pointer", border: "none", background: on ? "var(--color-accent-purple)" : "transparent", color: on ? "#fff" : "var(--color-text-secondary)", boxShadow: on ? "0 1px 3px rgba(0,0,0,0.2)" : "none", transition: "all 0.15s" }}>{label}</button>
                 );
               })}
             </div>
@@ -278,7 +281,7 @@ function SidebarRow({ icon, label, value }: { icon: React.ReactNode; label: stri
   );
 }
 
-function HtmlModal({ title, html, t, onClose }: { title: string; html: string; t: any; onClose: () => void }) {
+function HtmlModal({ title, html, t, onClose }: { title: string; html: string; t: Translate; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const full = htmlDocument(title, html);
   return (
@@ -297,7 +300,7 @@ function HtmlModal({ title, html, t, onClose }: { title: string; html: string; t
   );
 }
 
-function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any; onClose: () => void; onDone: (rec: HistoryItem) => void }) {
+function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: Translate; onClose: () => void; onDone: (rec: HistoryItem) => void }) {
   const policies = loadPolicies();
   const [policyName, setPolicyName] = useState(getActivePolicyName());
   const [tone, setTone] = useState("");
@@ -352,7 +355,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
         <label style={label}>{t("seoGenTextTone")}</label>
         <select className="tool-input" value={tone} onChange={e => setTone(e.target.value)}>
           <option value="">{t("seoTonePolicyDefault")}</option>
-          {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as any)}</option>)}
+          {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as never)}</option>)}
         </select>
 
         <label style={label}>{t("seoGenTextLang")}</label>
@@ -361,7 +364,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
         </select>
 
         <label style={label}>{t("seoSourcesMode")}</label>
-        <select className="tool-input" value={sourceMode} onChange={e => setSourceMode(e.target.value as any)}>
+        <select className="tool-input" value={sourceMode} onChange={e => setSourceMode(e.target.value as "off" | "facts" | "cited")}>
           <option value="off">{t("seoSourcesOff")}</option>
           <option value="facts">{t("seoSourcesFacts")}</option>
           <option value="cited">{t("seoSourcesCited")}</option>
@@ -373,7 +376,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
           {([["service", t("seoPromptService")], ["custom", t("seoPromptCustom")]] as const).map(([v, l]) => (
             <label key={v} style={{ display: "flex", alignItems: "center", gap: "7px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer" }}>
               <input type="radio" checked={promptType === v} onChange={() => {
-                setPromptType(v as any);
+                setPromptType(v);
                 if (v === "custom" && !custom.trim()) setCustom(t("seoCustomPromptSkeleton"));
               }} /> {l}
             </label>

@@ -38,6 +38,16 @@ interface GapRow {
   ourImpressions: number;
 }
 
+/** A stored CompetitorKeyword row as the read query selects it (rawQuery stays untyped). */
+interface StoredKeywordRow {
+  competitor: string;
+  keyword: string;
+  position: number | null;
+  volume: number | null;
+  difficulty: number | null;
+  url: string | null;
+}
+
 export async function POST(req: Request) {
   const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -68,9 +78,9 @@ export async function POST(req: Request) {
 
   // ── Read: the stored competitor keywords, joined against our own GSC performance ──
   const buildGap = async (): Promise<{ rows: GapRow[]; competitors: string[] }> => {
-    let stored: any[] = [];
+    let stored: StoredKeywordRow[] = [];
     try {
-      stored = await rawQuery(
+      stored = await rawQuery<StoredKeywordRow[]>(
         `SELECT competitor, keyword, position, volume, difficulty, url
            FROM "CompetitorKeyword" WHERE siteId = ? AND country = ?
           ORDER BY volume DESC LIMIT 3000`,
@@ -253,7 +263,7 @@ export async function POST(req: Request) {
     // it is the one worth checking: 200 rows came back with it null on a pull priced *with* the
     // surcharge, which is money spent on a column the host does not proxy.
     if (withDifficulty) {
-      await learnFieldSupport(gatewayHost, ORGANIC_ENDPOINT, ["difficulty"], res.items as any[],
+      await learnFieldSupport(gatewayHost, ORGANIC_ENDPOINT, ["difficulty"], res.items as unknown as Record<string, unknown>[],
         { witnessField: "volume", minRows: 20 });
     }
 

@@ -119,7 +119,7 @@ export async function getWorkspace(): Promise<WorkspaceContext | null> {
 /** The resolution itself, unchanged — split out only so the context can be entered before it. */
 async function resolveWorkspace(): Promise<WorkspaceContext | null> {
   const session = await getServerSession(authOptions);
-  const actorId = (session?.user as any)?.id as string | undefined;
+  const actorId = session?.user?.id;
   if (!actorId) return null;
 
   const [actor, owner] = await Promise.all([
@@ -139,7 +139,8 @@ async function resolveWorkspace(): Promise<WorkspaceContext | null> {
     };
   }
 
-  let membership: any = null;
+  // A Membership row as the lookup selects it (the table is reached through dbAny).
+  let membership: { id: string; role: string; status: string; userId: string | null } | null = null;
   try {
     membership = await memberships().findFirst({
       where: { ownerId: owner.id, OR: [{ userId: actor.id }, { email: normalizeEmail(actor.email) }] },

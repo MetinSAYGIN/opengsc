@@ -538,6 +538,21 @@ const ROW_SELECT = {
   checkNofollow: true, checkSponsored: true, checkUgc: true,
 } as const;
 
+/** A verification queue row — exactly ROW_SELECT's columns (dbAny keeps the client untyped). */
+type VerifyRow = {
+  id: string;
+  urlFrom: string;
+  urlTo: string;
+  domainFrom: string;
+  apiJsCrawl: boolean;
+  checkStatus: string;
+  checkAnchor: string;
+  checkRel: string;
+  checkNofollow: boolean;
+  checkSponsored: boolean;
+  checkUgc: boolean;
+};
+
 export interface VerifyRunParams {
   siteId: string;
   ids?: string[];
@@ -590,7 +605,7 @@ export async function runPlacementVerify(syncId: string, params: VerifyRunParams
     let done = 0;
     for (let offset = 0; offset < total; offset += ROW_CHUNK) {
       const chunkIds = idRows.slice(offset, offset + ROW_CHUNK).map(r => r.id);
-      const rows: any[] = await backlinkStore().findMany({
+      const rows: VerifyRow[] = await backlinkStore().findMany({
         where: { siteId, id: { in: chunkIds } },
         select: ROW_SELECT,
       });

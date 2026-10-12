@@ -87,7 +87,7 @@ export function SeoKeyCard({ provider, hideDocsLink = false }: { provider: KeyCa
         <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: `${provider.color}20`, border: `1px solid ${provider.color}40`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", fontWeight: 700, color: provider.color, flexShrink: 0 }}>{provider.logo}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{provider.name}</div>
-          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t(provider.roleKey as any)}</div>
+          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t(provider.roleKey as never)}</div>
         </div>
         {isConfigured
           ? <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#10B981", fontWeight: 600 }}><CheckCircle size={12} color="#10B981" /> Connected</span>
@@ -108,9 +108,9 @@ export function SeoKeyCard({ provider, hideDocsLink = false }: { provider: KeyCa
         </button>
       </div>
 
-      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t(provider.hintKey as any)}</div>
+      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t(provider.hintKey as never)}</div>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
-        <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5, flex: 1 }}>📍 {t(provider.instrKey as any)}</span>
+        <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5, flex: 1 }}>📍 {t(provider.instrKey as never)}</span>
         {/* The Metrics screen renders its own, mode-aware link, so it suppresses this one
             rather than showing two destinations for the same thing. */}
         {!hideDocsLink && (
@@ -334,7 +334,8 @@ function MagicLinksCard() {
 }
 
 function ModelSelector() {  const { t } = useLanguage();
-  const [groups, setGroups] = useState<{ provider: string; name: string; models: { id: string; label: string }[] }[]>([]);
+  type ModelGroup = { provider: string; name: string; models: { id: string; label: string }[] };
+  const [groups, setGroups] = useState<ModelGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchErr, setFetchErr] = useState(false);
   const [sel, setSel] = useState("");
@@ -358,7 +359,7 @@ function ModelSelector() {  const { t } = useLanguage();
         return { provider: p.id, name: AI_PROVIDER_NAMES[p.id] || p.id, models: data.models as { id: string; label: string }[] };
       } catch { setFetchErr(true); return null; }
     }));
-    setGroups(results.filter(Boolean) as any);
+    setGroups(results.filter((r): r is ModelGroup => r !== null));
     setLoading(false);
   }
 

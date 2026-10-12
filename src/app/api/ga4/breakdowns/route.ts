@@ -7,6 +7,11 @@ import { daysParam } from '@/lib/periodWindow';
 
 type Row = { label: string; value: number; sub?: number };
 
+/** runReport/runRealtimeReport rows, read only through their value slots. */
+type Ga4Value = { value?: string | null };
+type Ga4ReportRow = { dimensionValues?: Ga4Value[]; metricValues?: Ga4Value[] };
+type Ga4Report = { data?: { rows?: Ga4ReportRow[] | null } | null } | null | undefined;
+
 const num = (v: string | null | undefined) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -14,8 +19,8 @@ const num = (v: string | null | undefined) => {
 
 // Map runReport rows → [{ label, value, sub }] using the first dimension as the
 // label, the first metric as the value and the (optional) second metric as sub.
-function mapRows(res: any): Row[] {
-  return (res?.data?.rows ?? []).map((r: any) => ({
+function mapRows(res: Ga4Report): Row[] {
+  return (res?.data?.rows ?? []).map((r) => ({
     label: r.dimensionValues?.[0]?.value ?? '',
     value: num(r.metricValues?.[0]?.value),
     sub: r.metricValues?.[1] ? num(r.metricValues?.[1]?.value) : undefined,
@@ -35,7 +40,7 @@ export async function GET(req: Request) {
   if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { userId, site } = auth;
 
-  const propertyId = (site as any).ga4PropertyId as string | null;
+  const propertyId = site.ga4PropertyId;
   if (!propertyId) return NextResponse.json({ linked: false });
 
   const accounts = (await prisma.account.findMany({

@@ -43,7 +43,7 @@ interface RelatedSiteSummary { siteId: string; siteName: string; tags: string[];
 export default function RelatedIntentCannibalization({ siteDbId, sites = null, onSelectSites }: {
   siteDbId: string; sites?: string[] | null; onSelectSites?: (next: string[] | null) => void;
 }) {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   const [groups, setGroups] = useState<RelatedIntentGroup[]>([]);
   const sitesKey = idsKey(sites);
   const [dataWindow, setDataWindow] = useState<{ window: DataWindow | null; mixed: boolean } | null>(null);
@@ -167,7 +167,7 @@ export default function RelatedIntentCannibalization({ siteDbId, sites = null, o
             ] as [string | number, string, string][]).map(([value, key, color]) => (
               <div key={String(key)} className="panel" style={{ padding: "10px 12px", textAlign: "center" }}>
                 <div style={{ color, fontSize: "20px", fontWeight: 800 }}>{value}</div>
-                <div style={{ color: "var(--color-text-secondary)", fontSize: "10px" }}>{t(String(key))}</div>
+                <div style={{ color: "var(--color-text-secondary)", fontSize: "10px" }}>{t(String(key) as Parameters<typeof t>[0])}</div>
               </div>
             ))}
           </div>
@@ -189,10 +189,10 @@ export default function RelatedIntentCannibalization({ siteDbId, sites = null, o
                     <ChevronRight size={15} color="var(--color-text-secondary)" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
                     <div style={{ flex: "1 1 280px", minWidth: 0 }}>
                       <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.primaryQuery}</div>
-                      <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)", marginTop: "3px" }}>{group.siteName} · {group.queries.length} {t("kcQueries")} · {t(intentKey[group.intent])}</div>
+                      <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)", marginTop: "3px" }}>{group.siteName} · {group.queries.length} {t("kcQueries")} · {t(intentKey[group.intent] as Parameters<typeof t>[0])}</div>
                     </div>
-                    <span style={{ fontSize: "10px", fontWeight: 700, color, background: `${color}18`, border: `1px solid ${color}55`, borderRadius: "20px", padding: "3px 8px" }}>{group.confidence}% · {t(`kcIntentConfidence${group.confidenceLevel[0].toUpperCase()}${group.confidenceLevel.slice(1)}`)}</span>
-                    <span style={{ fontSize: "10px", fontWeight: 700, color: "#a78bfa", background: "rgba(167,139,250,.12)", borderRadius: "20px", padding: "3px 8px" }}>{t(recommendationKey[group.recommendation])}</span>
+                    <span style={{ fontSize: "10px", fontWeight: 700, color, background: `${color}18`, border: `1px solid ${color}55`, borderRadius: "20px", padding: "3px 8px" }}>{group.confidence}% · {t(`kcIntentConfidence${group.confidenceLevel[0].toUpperCase()}${group.confidenceLevel.slice(1)}` as Parameters<typeof t>[0])}</span>
+                    <span style={{ fontSize: "10px", fontWeight: 700, color: "#a78bfa", background: "rgba(167,139,250,.12)", borderRadius: "20px", padding: "3px 8px" }}>{t(recommendationKey[group.recommendation] as Parameters<typeof t>[0])}</span>
                   </button>
 
                   {open && <div style={{ borderTop: "1px solid var(--color-border)", padding: "12px 14px 14px", display: "flex", flexDirection: "column", gap: "11px" }}>
@@ -203,7 +203,7 @@ export default function RelatedIntentCannibalization({ siteDbId, sites = null, o
                         [group.evidence.rankingUrlOverlap + "%", "kcIntentUrlOverlap"],
                         [dailyWindow ? group.evidence.flipFlops : "—", "kcIntentFlipFlops"],
                         [group.evidence.positionGap.toFixed(1), "kcIntentPositionGap"],
-                      ].map(([value, key]) => <div key={String(key)} style={{ background: "var(--color-bg)", borderRadius: "7px", padding: "7px 9px" }}><div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{value}</div><div style={{ fontSize: "9px", color: "var(--color-text-tertiary)" }}>{t(String(key))}</div></div>)}
+                      ].map(([value, key]) => <div key={String(key)} style={{ background: "var(--color-bg)", borderRadius: "7px", padding: "7px 9px" }}><div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{value}</div><div style={{ fontSize: "9px", color: "var(--color-text-tertiary)" }}>{t(String(key) as Parameters<typeof t>[0])}</div></div>)}
                     </div>
                     <div style={{ overflowX: "auto" }}>
                       <table style={{ width: "100%", minWidth: "720px", borderCollapse: "collapse", fontSize: "11px" }}>
@@ -212,13 +212,13 @@ export default function RelatedIntentCannibalization({ siteDbId, sites = null, o
                         </tr></thead>
                         <tbody>{group.pages.map(page => <tr key={page.fullUrl} style={{ borderBottom: "1px solid var(--color-border)" }}>
                           <td style={{ padding: "8px 6px", maxWidth: "280px" }}><span style={{ display: "flex", minWidth: 0 }}><UrlCell label={page.url} href={page.fullUrl} fontSize={11} color="#60a5fa" /></span></td>
-                          <td style={{ color: "var(--color-text-secondary)" }}>{t(roleKey[page.role])}</td>
+                          <td style={{ color: "var(--color-text-secondary)" }}>{t(roleKey[page.role] as Parameters<typeof t>[0])}</td>
                           <td style={{ color: "var(--color-text-secondary)", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{page.queries.slice(0, 3).join(" · ")}</td>
                           <td style={{ textAlign: "right" }}>{page.impressions.toLocaleString(language)}</td><td style={{ textAlign: "right" }}>{page.clicks}</td><td style={{ textAlign: "right" }}>{page.position.toFixed(1)}</td><td style={{ textAlign: "right", fontWeight: 700 }}>{page.share}%</td>
                         </tr>)}</tbody>
                       </table>
                     </div>
-                    <div style={{ color: "var(--color-text-secondary)", fontSize: "11px", lineHeight: 1.5 }}><b style={{ color: "#a78bfa" }}>{t(recommendationKey[group.recommendation])}:</b> {t(`${recommendationKey[group.recommendation]}Desc`)}</div>
+                    <div style={{ color: "var(--color-text-secondary)", fontSize: "11px", lineHeight: 1.5 }}><b style={{ color: "#a78bfa" }}>{t(recommendationKey[group.recommendation] as Parameters<typeof t>[0])}:</b> {t(`${recommendationKey[group.recommendation]}Desc` as Parameters<typeof t>[0])}</div>
                   </div>}
                 </div>
               );

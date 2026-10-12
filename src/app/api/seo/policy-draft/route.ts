@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { fetchLLMDetailed } from "@/lib/llm";
-import { scrapeMany } from "@/lib/seo/scrape";
+import { scrapeMany, type ScrapedPage } from "@/lib/seo/scrape";
 import { extractJson } from "@/lib/seo/prompts";
 
 // POST /api/seo/policy-draft — AI-drafts an editorial policy, grounded in brand pages,
@@ -11,7 +11,7 @@ import { extractJson } from "@/lib/seo/prompts";
 async function scrapeText(urls: string[], firecrawlKey?: string): Promise<string> {
   const list = (urls || []).map(u => u.trim()).filter(Boolean).slice(0, 5);
   if (!list.length) return "";
-  let pages: any[] = [];
+  let pages: ScrapedPage[] = [];
   try { pages = await scrapeMany(list, firecrawlKey, 4); } catch { return ""; }
   return pages.filter(p => p?.ok)
     .map(p => `[${p.url}] ${p.title || ""} — ${`${p.metaDescription || ""} ${p.textSample || ""}`.trim().slice(0, 1500)}`)

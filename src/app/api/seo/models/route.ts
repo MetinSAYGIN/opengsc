@@ -26,6 +26,27 @@ export async function POST(req: Request) {
 
 type M = { id: string; label: string };
 
+// Catalogue row dialects — one minimal shape per provider branch, typed by exactly what the
+// branch (or its label helper) reads off the row. The JSON is unvalidated; `id` is read as the
+// string the picker needs.
+type AnthropicModel = { id: string; display_name?: string };
+type OpenrouterModel = {
+  id: string;
+  name?: string;
+  pricing?: Record<string, string>;
+  context_length?: number;
+  supported_parameters?: string[];
+};
+type CheaperInferenceModel = {
+  id: string;
+  pricing?: Record<string, unknown>;
+  capabilities?: { reasoning?: unknown; vision?: unknown };
+  provider?: string;
+  owned_by?: string;
+};
+type GeminiModel = { name: string; displayName?: string; supportedGenerationMethods?: string[] };
+type IdModel = { id: string };
+
 // The catalogue probes are logged like any other provider call. None of them is billed per
 // request today, but they are made with the user's key against the account the paid calls run
 // on, and a picker that quietly 401s for a week is a fault the log can now show.
@@ -51,7 +72,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
       }
       const data = await res.json();
       call.finish();
-      const arr: any[] = data.data ?? data.models ?? [];
+      const arr: AnthropicModel[] = data.data ?? data.models ?? [];
       return arr.map((m) => ({ id: String(m.id), label: String(m.id) })).filter((m) => m.id);
     }
     const base = provider === "zai" ? "https://api.z.ai/api/anthropic" : "https://api.anthropic.com";
@@ -67,7 +88,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
     }
     const data = await res.json();
     call.finish();
-    const arr: any[] = data.data ?? data.models ?? [];
+    const arr: AnthropicModel[] = data.data ?? data.models ?? [];
     return arr.map((m) => ({ id: m.id, label: m.display_name || m.id })).filter((m) => m.id);
   }
 
@@ -84,7 +105,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
     }
     const data = await res.json();
     call.finish();
-    const arr: any[] = data.data ?? [];
+    const arr: IdModel[] = data.data ?? [];
     return arr
       .map((m) => m.id as string)
       .filter((id) => /^(gpt-|o[1-9]|chatgpt)/i.test(id) && !/(instruct|audio|realtime|transcribe|tts|search|image)/i.test(id))
@@ -99,7 +120,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
     // ids that `fetchLLM` cannot call at all. Asking for text output, newest first, means the
     // truncation now only ever loses the oldest models, and everything listed is callable.
     const url = "https://openrouter.ai/api/v1/models?output_modalities=text&sort=newest";
-    let arr: any[] = [];
+    let arr: OpenrouterModel[] = [];
     const { res, call } = await loggedFetch(url, { signal: timeout }, { provider: "openrouter" });
     if (res.ok) {
       arr = (await res.json()).data ?? [];
@@ -135,7 +156,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
     }
     const data = await res.json();
     call.finish();
-    const arr: any[] = data.data ?? data.models ?? [];
+    const arr: CheaperInferenceModel[] = data.data ?? data.models ?? [];
     return arr.map((m) => ({ id: String(m.id), label: ciLabel(m) })).filter((m) => m.id);
   }
 
@@ -148,7 +169,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
     }
     const data = await res.json();
     call.finish();
-    const arr: any[] = data.models ?? [];
+    const arr: GeminiModel[] = data.models ?? [];
     return arr
       .filter((m) => (m.supportedGenerationMethods ?? []).includes("generateContent"))
       .map((m) => ({ id: String(m.name).replace(/^models\//, ""), label: m.displayName || m.name }))
@@ -168,7 +189,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
       }
       const data = await res.json();
       call.finish();
-      const arr: any[] = data.data ?? [];
+      const arr: IdModel[] = data.data ?? [];
       const models = arr.map((m) => ({ id: m.id as string, label: m.id as string })).filter((m) => m.id);
       return models.length ? models : KIMI_FALLBACK;
     } catch {
@@ -194,7 +215,7 @@ async function listModels(provider: string, apiKey: string, baseUrl?: string): P
       }
       const data = await res.json();
       call.finish();
-      const arr: any[] = data.data ?? [];
+      const arr: IdModel[] = data.data ?? [];
       const models = arr.map((m) => ({ id: m.id as string, label: m.id as string })).filter((m) => m.id);
       return models.length ? models : DEEPSEEK_FALLBACK;
     } catch {
@@ -225,11 +246,11 @@ const perMillion = (v: unknown): string | null => {
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}`;
 };
 
-function orLabel(m: any): string {
+function orLabel(m: OpenrouterModel): string {
   const name = m.name || m.id;
   const bits: string[] = [];
-  const inPrice = perMillion(parseFloat(m?.pricing?.prompt) * 1e6);
-  const outPrice = perMillion(parseFloat(m?.pricing?.completion) * 1e6);
+  const inPrice = perMillion(parseFloat(m?.pricing?.prompt ?? "") * 1e6);
+  const outPrice = perMillion(parseFloat(m?.pricing?.completion ?? "") * 1e6);
   if (inPrice && outPrice) bits.push(`${inPrice}/${outPrice} per 1M`);
   else if (inPrice === null && outPrice === null && m?.pricing) bits.push("free");
   const ctx = Number(m?.context_length);
@@ -238,7 +259,7 @@ function orLabel(m: any): string {
   return bits.length ? `${name} — ${bits.join(" · ")}` : name;
 }
 
-function ciLabel(m: any): string {
+function ciLabel(m: CheaperInferenceModel): string {
   const bits: string[] = [];
   const inPrice = perMillion(m?.pricing?.input_per_million);
   const outPrice = perMillion(m?.pricing?.output_per_million);

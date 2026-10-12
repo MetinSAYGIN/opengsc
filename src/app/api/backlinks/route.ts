@@ -4,7 +4,7 @@ import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import {
   parseBacklinkImport, buildImportPlan, parseBacklinkFilters, buildBacklinkWhere,
-  parseBacklinkSort, nofollowFilterCondition,
+  parseBacklinkSort, nofollowFilterCondition, type ExistingBacklinkRow,
 } from "@/lib/seo/backlinkImport";
 import type { BacklinkListResponse, BacklinkListStats, BacklinkRow, BacklinkSource, PageStatus, PlacementStatus } from "@/lib/seo/backlinkTypes";
 import { latestBacklinkProvider } from "@/lib/seo/siteBacklinkStore";
@@ -20,7 +20,54 @@ const store = () => dbAny.siteBacklink;
 const PAGE_SIZES = [50, 100, 250, 500];
 const IMPORT_ROW_CAP = 5000;
 
-function toRow(b: any): BacklinkRow {
+/**
+ * A SiteBacklink row as `toRow` reads it — the columns of the schema's default selection,
+ * reached through the untyped dbAny client. Dates arrive as Prisma returns them (Date).
+ */
+interface SiteBacklinkRecord {
+  id: string;
+  urlFrom: string;
+  urlTo: string;
+  domainFrom: string;
+  favorite: boolean;
+  source: string;
+  sources: string;
+  apiSeen: boolean;
+  apiLost: boolean;
+  apiAnchor: string;
+  apiDr: number | null;
+  apiDofollow: boolean;
+  apiSponsored: boolean;
+  apiUgc: boolean;
+  apiContent: boolean;
+  apiJsCrawl: boolean;
+  apiFirstSeen: string;
+  checkStatus: string;
+  checkAnchor: string;
+  checkRel: string;
+  checkNofollow: boolean;
+  checkSponsored: boolean;
+  checkUgc: boolean;
+  checkTargetOk: boolean | null;
+  checkError: string;
+  checkedAt: Date | string | null;
+  pageStatus: string;
+  pageTitle: string;
+  xrStatus: string;
+  addedAt: Date | string;
+}
+
+/** The operator-field snapshot POST selects back for import planning. */
+interface ExistingImportRow {
+  id: string;
+  urlFromNorm: string;
+  urlTo: string;
+  sources: string | null;
+  note: string | null;
+  priceNote: string | null;
+}
+
+function toRow(b: SiteBacklinkRecord): BacklinkRow {
   return {
     id: b.id,
     urlFrom: b.urlFrom,
@@ -93,7 +140,7 @@ export async function GET(req: Request) {
   ]);
 
   const statusCount = (name: string) =>
-    (byStatus.find((s: any) => s.checkStatus === name)?._count?._all ?? 0) as number;
+    (byStatus.find((s: { checkStatus?: string | null; _count?: { _all?: number } }) => s.checkStatus === name)?._count?._all ?? 0) as number;
 
   const stats: BacklinkListStats = {
     total,
@@ -107,7 +154,7 @@ export async function GET(req: Request) {
   };
 
   const body: BacklinkListResponse = {
-    rows: (rawRows as any[]).map(toRow),
+    rows: (rawRows as SiteBacklinkRecord[]).map(toRow),
     total,
     page,
     pageSize,
@@ -146,7 +193,7 @@ export async function POST(req: Request) {
     where: { siteId: siteDbId },
     select: { id: true, urlFromNorm: true, urlTo: true, sources: true, note: true, priceNote: true },
   });
-  const existing = (existingRaw as any[]).map(r => ({
+  const existing = (existingRaw as ExistingImportRow[]).map((r): ExistingBacklinkRow => ({
     id: r.id,
     urlNorm: r.urlFromNorm,
     urlTo: r.urlTo,
@@ -162,7 +209,7 @@ export async function POST(req: Request) {
       ...(plan.creates.length
         ? [store().createMany({ data: plan.creates.map(c => ({ ...c, siteId: siteDbId })) })]
         : []),
-      ...plan.updates.map((u: any) => store().update({ where: { id: u.id }, data: u })),
+      ...plan.updates.map(u => store().update({ where: { id: u.id }, data: u })),
     ], { timeout: 60000 });
   } catch (e) {
     // P2002 = a concurrent import created the same row between our snapshot and the write.

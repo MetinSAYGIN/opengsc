@@ -257,7 +257,7 @@ function ClustersSection({ siteDbId }: { siteDbId: string }) {
         await fetch('/api/gsc/clusters', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ siteId: siteDbId, clusters: data.clusters.map((c: any) => ({ name: c.name, rules: c.rules })) }),
+          body: JSON.stringify({ siteId: siteDbId, clusters: data.clusters.map((c: { name: string; rules: string }) => ({ name: c.name, rules: c.rules })) }),
         });
         load();
         setAiStatus('ok');
@@ -422,7 +422,7 @@ function GroupsSection({ siteDbId }: { siteDbId: string }) {
         await fetch('/api/gsc/groups', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ siteId: siteDbId, groups: data.groups.map((g: any) => ({ name: g.name, rules: g.rules })) }),
+          body: JSON.stringify({ siteId: siteDbId, groups: data.groups.map((g: { name: string; rules: string }) => ({ name: g.name, rules: g.rules })) }),
         });
         load();
         setAiStatus('ok');
