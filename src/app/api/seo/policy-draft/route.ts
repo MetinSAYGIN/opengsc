@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { fetchLLM } from "@/lib/llm";
-import { scrapeMany } from "@/lib/seo/scrape";
+import { workspaceUserId } from "@/lib/team/workspace";
+import { fetchLLMDetailed } from "@/lib/llm";
+import { scrapeMany, type ScrapedPage } from "@/lib/seo/scrape";
 import { extractJson } from "@/lib/seo/prompts";
 
 // POST /api/seo/policy-draft — AI-drafts an editorial policy, grounded in brand pages,
@@ -12,7 +11,7 @@ import { extractJson } from "@/lib/seo/prompts";
 async function scrapeText(urls: string[], firecrawlKey?: string): Promise<string> {
   const list = (urls || []).map(u => u.trim()).filter(Boolean).slice(0, 5);
   if (!list.length) return "";
-  let pages: any[] = [];
+  let pages: ScrapedPage[] = [];
   try { pages = await scrapeMany(list, firecrawlKey, 4); } catch { return ""; }
   return pages.filter(p => p?.ok)
     .map(p => `[${p.url}] ${p.title || ""} — ${`${p.metaDescription || ""} ${p.textSample || ""}`.trim().slice(0, 1500)}`)
@@ -20,8 +19,8 @@ async function scrapeText(urls: string[], firecrawlKey?: string): Promise<string
 }
 
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!(session?.user as any)?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const workspaceId = await workspaceUserId("spend");
+  if (!workspaceId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json();
   const brandName = String(b.brandName ?? "").trim();
@@ -83,12 +82,28 @@ ${ctx}
 
   const model = b.model ? String(b.model) : undefined;
   const baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
-  let raw = await fetchLLM(prompt, provider, apiKey, 3000, model, baseUrl);
+  // 3000 tokens is a tight budget, and on a provider whose model thinks by default the reasoning
+  // alone can consume all of it — leaving a 200-OK response with no text. That surfaced here as a
+  // 502 "parse_failed" and, in the UI, as "the model returned invalid JSON": both blame the parser
+  // for something that never reached it. fetchLLMDetailed carries the provider's own reason, so the
+  // dialog can say what actually happened.
+  let res = await fetchLLMDetailed(prompt, provider, apiKey, 3000, model, baseUrl);
+  let raw = res.text;
   let policy = extractJson(raw);
   if (!policy) {
-    raw = await fetchLLM(prompt + "\n\nВерни ТОЛЬКО валидный JSON.", provider, apiKey, 3000, model, baseUrl);
+    res = await fetchLLMDetailed(prompt + "\n\nВерни ТОЛЬКО валидный JSON.", provider, apiKey, 3000, model, baseUrl);
+    raw = res.text;
     policy = extractJson(raw);
   }
-  if (!policy) return NextResponse.json({ error: "parse_failed", raw }, { status: 502 });
+  if (!policy) {
+    return NextResponse.json(
+      {
+        error: raw == null ? (res.error ?? "generation_failed") : "parse_failed",
+        detail: raw == null ? res.error : `Модель вернула текст, который не является JSON. Первые 300 символов: ${raw.trim().replace(/\s+/g, " ").slice(0, 300)}`,
+        raw,
+      },
+      { status: 502 },
+    );
+  }
   return NextResponse.json({ policy });
 }

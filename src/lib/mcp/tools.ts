@@ -1,64 +1,82 @@
 // MCP tool registry — the data surface exposed to AI agents via /api/mcp.
-// Most tools are plain Prisma reads over data the app has already synced (DailyMetric,
-// TrackedKeyword, Backlink, …), scoped to the token's user — they can never burn the
-// user's SERP/AI credits or Google quota. The two explicitly-labeled "live" tools
-// (query_gsc_live, inspect_url) call Google's own APIs through the user's stored OAuth
-// token: free, but subject to Google's per-day quotas — their descriptions say so, and
-// nothing here ever calls a PAID provider (SERP/AI/Ahrefs).
+//
+// Three groups make up the registry, split by file for readability but flattened into a
+// single MCP_TOOLS array at the bottom of this file:
+//
+//   • this file      — the GSC core (performance, striking distance, cannibalization, …)
+//   • toolsData.ts   — every other read surface (decay, CTR, GEO, indexer, digests, …)
+//   • toolsOptimize  — the page-optimization contour
+//
+// Cost model, and it is the thing to keep straight when adding a tool. Almost everything
+// is a plain Prisma read over data the app has already synced, scoped to the token's
+// user: free and instant. A few tools reach further and each says so in its description
+// and carries a `cost` field:
+//
+//   quota — query_gsc_live, inspect_url, get_analytics call Google on the user's own
+//           OAuth. Free, but they consume Google's per-day quota.
+//   net   — fetch_page_content, get_optimization_brief fetch a third-party page.
+//   paid  — start_rewrite_job, start_generation_job spend the user's own AI credits.
+//           Both are asynchronous: they return a job id, never the finished text.
+//
+// The paid group is new, and it is the one exception to what this file used to promise.
+// It exists because the web UI can do things an agent cannot reproduce (the outline
+// pipeline's fact grounding, Casino RAG, the user's editorial policy), and refusing to
+// expose them made the MCP a strictly worse OpenGSC. The exposure is deliberately
+// awkward: paid tools refuse to run without `confirm: true`, and their descriptions
+// point at the free path first. See toolsOptimize.ts for the reasoning in full.
 
 import { prisma } from "@/lib/prisma";
 import { google } from "googleapis";
+// Same version the UI shows in Settings → System, rather than a second copy that has to be
+// remembered on release day — it was already a release behind (1.1.0 against 1.2.0) by the time
+// anyone noticed. Imported rather than read at runtime: the bundler inlines the string, so the
+// route gains no filesystem access and nothing to trace.
+import pkg from "../../../package.json";
 import { getUserGoogleAccounts, makeOAuth2, queryGsc, isoDaysAgo } from "@/lib/gscQuery";
+import {
+  type McpTool, type ToolCost,
+  sinceDate, lim, pct, r1, resolveSite, resolveSites, siteArg, siteOrAllArg,
+} from "./shared";
+import { DATA_TOOLS, dataModuleCounts } from "./toolsData";
+import { OPTIMIZE_TOOLS } from "./toolsOptimize";
+import { METRICS_TOOLS } from "./toolsMetrics";
+import { DEMAND_TOOLS } from "./toolsDemand";
+import { OUTREACH_TOOLS } from "./toolsOutreach";
+import { SOURCE_AUDIT_TOOLS } from "./toolsSourceAudit";
+import { DROPS_TOOLS } from "./toolsDrops";
+import { SERPMON_TOOLS } from "./toolsSerpMon";
+// Wave-oct contour arrays (CONTRACT.md §5) — empty stubs until their tasks land:
+// toolsMeta (T1), toolsUptime (T2), toolsIndex (T4), toolsMentions (T6), toolsVisibility (T7).
+import { META_TOOLS } from "./toolsMeta";
+import { UPTIME_TOOLS } from "./toolsUptime";
+import { INDEX_TOOLS } from "./toolsIndex";
+import { MENTIONS_TOOLS } from "./toolsMentions";
+import { VISIBILITY_TOOLS } from "./toolsVisibility";
+// Wave-nov contour arrays (CONTRACT.md §3) — empty stubs until their tasks land:
+// toolsFootprint (N1), toolsBacklinkTox (N2), toolsLocal (N4), toolsTrends (N5),
+// toolsPlagiarism (N6), toolsReports (N8), toolsLeads (N9).
+import { FOOTPRINT_TOOLS } from "./toolsFootprint";
+import { BACKLINK_TOX_TOOLS } from "./toolsBacklinkTox";
+import { LOCAL_TOOLS } from "./toolsLocal";
+import { TRENDS_TOOLS } from "./toolsTrends";
+import { PLAGIARISM_TOOLS } from "./toolsPlagiarism";
+import { REPORTS_TOOLS } from "./toolsReports";
+import { LEADS_TOOLS } from "./toolsLeads";
+import { CONTEXT_TOOLS } from "./toolsContext";
+import { PUBLISH_TOOLS } from "./toolsPublish";
+import { rawQuery } from "@/lib/db/raw";
+import { findStriking } from "@/lib/striking/query";
+import { findCannibalization } from "@/lib/cannibalization/query";
+import { findRelatedIntent } from "@/lib/cannibalization/related";
 
-type Json = Record<string, unknown>;
-
-export interface McpTool {
-  name: string;
-  description: string;
-  inputSchema: Json;
-  handler: (userId: string, args: Json) => Promise<unknown>;
-}
-
-// ─── shared helpers ─────────────────────────────────────────────────────────────
-
-const sinceDate = (days: unknown, def = 90, max = 480): Date => {
-  const n = Math.min(max, Math.max(1, parseInt(String(days ?? def), 10) || def));
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d;
-};
-
-const lim = (v: unknown, def: number, max: number): number =>
-  Math.min(max, Math.max(1, parseInt(String(v ?? def), 10) || def));
-
-// Resolve a site by id, exact URL, or domain substring — agents usually pass a domain.
-async function resolveSite(userId: string, site: unknown) {
-  const q = String(site ?? "").trim();
-  if (!q) throw new Error("Missing required argument: site (domain, GSC property, or site id from list_sites)");
-  const sites = await prisma.site.findMany({ where: { userId } });
-  const norm = (s: string) => s.toLowerCase().replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/^www\./, "").replace(/\/+$/, "");
-  const nq = norm(q);
-  const found =
-    sites.find(s => s.id === q) ??
-    sites.find(s => norm(s.siteId) === nq || norm(s.url) === nq) ??
-    sites.find(s => norm(s.siteId).includes(nq) || norm(s.url).includes(nq));
-  if (!found) throw new Error(`Site not found: "${q}". Call list_sites to see available sites.`);
-  return found;
-}
-
-const siteArg = {
-  type: "string",
-  description: "The site — a domain (example.com), GSC property (sc-domain:example.com), or a site id from list_sites",
-};
-
-const pct = (n: number) => Math.round(n * 1000) / 10;
-const r1 = (n: number) => Math.round(n * 10) / 10;
+export type { McpTool, ToolCost };
 
 // ─── tools ──────────────────────────────────────────────────────────────────────
 
-export const MCP_TOOLS: McpTool[] = [
+const CORE_TOOLS: McpTool[] = [
   {
     name: "list_sites",
+    cost: "local",
     description:
       "List every site connected to this OpenGSC instance (all Google accounts), with tags and last-sync info. Call this first to discover what data is available and to get exact site identifiers for the other tools.",
     inputSchema: { type: "object", properties: {} },
@@ -77,6 +95,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_search_performance",
+    cost: "local",
     description:
       "Google Search Console performance for one site from the local metrics store: totals (clicks, impressions, CTR, avg position) plus the top rows grouped by query or page over a date window. Use dimension=query for keyword analysis, dimension=page to find top/weak pages. Pass `page` to see which queries drive traffic to ONE specific page.",
     inputSchema: {
@@ -96,7 +115,7 @@ export const MCP_TOOLS: McpTool[] = [
       const dim = args.dimension === "page" ? "url" : "query";
       const take = lim(args.limit, 50, 500);
       const pageFilter = String(args.page ?? "").trim();
-      const where: any = { siteId: site.id, date: { gte: since } };
+      const where: { siteId: string; date: { gte: Date }; url?: { contains: string } } = { siteId: site.id, date: { gte: since } };
       if (pageFilter) where.url = { contains: pageFilter };
 
       const totals = await prisma.dailyMetric.aggregate({
@@ -105,8 +124,11 @@ export const MCP_TOOLS: McpTool[] = [
         _avg: { position: true },
       });
       const rows = await prisma.dailyMetric.groupBy({
-        by: [dim] as any,
-        where: { ...where, [dim]: { not: "" } } as any,
+        by: [dim],
+        // The computed `[dim]` key widens the literal to a string index signature, which no longer
+        // matches the aggregate's own where type — the object itself is exactly `where` plus the
+        // group-by column filter, so the cast only narrows the widened literal back.
+        where: { ...where, [dim]: { not: "" } } as typeof where,
         _sum: { clicks: true, impressions: true },
         _avg: { ctr: true, position: true },
         orderBy: { _sum: { clicks: "desc" } },
@@ -118,7 +140,7 @@ export const MCP_TOOLS: McpTool[] = [
         site: site.url,
         days: Math.round((Date.now() - since.getTime()) / 86_400_000),
         totals: { clicks, impressions, ctrPercent: impressions ? pct(clicks / impressions) : 0, avgPosition: r1(totals._avg.position ?? 0) },
-        rows: (rows as any[]).map(r => ({
+        rows: rows.map(r => ({
           [dim === "url" ? "page" : "query"]: r[dim],
           clicks: r._sum.clicks ?? 0,
           impressions: r._sum.impressions ?? 0,
@@ -131,46 +153,49 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_striking_distance",
+    cost: "local",
     description:
-      "Striking-distance keywords for a site: queries ranking just off page 1 (default positions 4–20) with real impression volume — the fastest ranking wins. Each row includes the ranking page, so recommendations can target a concrete URL.",
+      "Striking-distance keywords: query + page pairs ranking just off the top (default positions 4–20) with real impression volume — the fastest ranking wins. " +
+      "Covers one site or the whole portfolio (site=\"all\"); every pair of every site is considered. Sorted by estGainClicks: the extra clicks the pair would get at position 3 with today's impressions (benchmark CTR) — for ordering, not a forecast. " +
+      "Data is the 90-day query+page total from the last Search Console sync; `window` gives its dates (there is no shorter period to choose).",
     inputSchema: {
       type: "object",
       properties: {
-        site: siteArg,
-        days: { type: "number", description: "Lookback window in days (default 90)" },
+        site: siteOrAllArg,
         positionFrom: { type: "number", description: "Lower bound of the position band (default 4)" },
-        positionTo: { type: "number", description: "Upper bound of the position band (default 20)" },
-        minImpressions: { type: "number", description: "Minimum summed impressions to include a query (default 10)" },
-        limit: { type: "number", description: "Max rows (default 50, max 300)" },
+        positionTo: { type: "number", description: "Upper bound of the position band, inclusive of the whole position (default 20 = up to 20.9)" },
+        minImpressions: { type: "number", description: "Minimum impressions over the 90 days (default 10)" },
+        sort: { type: "string", enum: ["gain", "impressions"], description: "gain (default) or impressions" },
+        limit: { type: "number", description: "Max rows (default 50, max 500)" },
       },
-      required: ["site"],
     },
     handler: async (userId, args) => {
-      const site = await resolveSite(userId, args.site);
-      const since = sinceDate(args.days, 90);
-      const posFrom = Math.max(1, Number(args.positionFrom ?? 4));
-      const posTo = Math.min(100, Number(args.positionTo ?? 20));
-      const minImpr = Math.max(0, Number(args.minImpressions ?? 10));
-
-      const rows = await prisma.dailyMetric.groupBy({
-        by: ["query", "url"],
-        where: { siteId: site.id, date: { gte: since }, position: { gte: posFrom, lte: posTo }, query: { not: "" }, url: { not: "" } },
-        _sum: { clicks: true, impressions: true },
-        _avg: { ctr: true, position: true },
-        having: { impressions: { _sum: { gte: minImpr } } },
-        orderBy: { _sum: { impressions: "desc" } },
-        take: lim(args.limit, 50, 300),
+      const sites = await resolveSites(userId, args.site);
+      if (!sites.length) return { keywords: [], note: "No sites connected." };
+      const posFrom = Math.min(100, Math.max(1, Math.floor(Number(args.positionFrom ?? 4)) || 4));
+      const posTo = Math.max(posFrom, Math.min(100, Math.floor(Number(args.positionTo ?? 20)) || 20));
+      const limit = lim(args.limit, 50, 500);
+      const res = await findStriking(sites.map(s => ({ id: s.id, url: s.url, tags: s.tags })), {
+        posFrom, posTo: posTo + 0.99,
+        minImpressions: Math.max(1, Number(args.minImpressions ?? 10) || 10),
+        limit: 20000,
       });
+      const rows = args.sort === "impressions" ? [...res.rows].sort((a, b) => b.impressions - a.impressions) : res.rows;
       return {
-        site: site.url,
+        sites: sites.map(s => s.url),
         positionBand: [posFrom, posTo],
-        keywords: rows.map(r => ({
+        window: res.window,
+        ...(res.mixedWindows ? { note: "Sites were last synced on different days; window shows the most recent." } : {}),
+        total: res.total,
+        keywords: rows.slice(0, limit).map(r => ({
+          ...(sites.length > 1 ? { site: r.siteName } : {}),
           query: r.query,
-          page: r.url,
-          impressions: r._sum.impressions ?? 0,
-          clicks: r._sum.clicks ?? 0,
-          ctrPercent: pct(r._avg.ctr ?? 0),
-          avgPosition: r1(r._avg.position ?? 0),
+          page: r.fullUrl,
+          impressions: r.impressions,
+          clicks: r.clicks,
+          ctrPercent: r.ctr,
+          avgPosition: r.position,
+          estGainClicks: r.gain,
         })),
       };
     },
@@ -178,47 +203,63 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_cannibalization",
+    cost: "local",
     description:
-      "Keyword cannibalization for a site: queries where two or more of the site's own URLs compete in search results, with per-URL clicks/impressions/position so the winner and loser pages are obvious. High-impression queries with a close position split are consolidation candidates.",
+      "Cannibalization for one site or the portfolio (site=\"all\"). mode=exact (default) returns queries where two or more of a site's URLs each take ≥10% of the impressions within 20 positions of each other (branded queries skipped); isTrue marks pairs whose pages' own top queries overlap. " +
+      "mode=related deterministically finds different query wordings with similar intent and conflicting ranking URLs, with confidence, page roles, winner changes (flipFlops, from per-day data of the last 28 days — see dailyWindow; null until the instance has synced it) and review-only recommendations. " +
+      "Local: no LLM, live SERP or paid call, never changes pages/canonicals/redirects. Volumes are the 90-day query+page total from the last sync; `window` gives the dates.",
     inputSchema: {
       type: "object",
       properties: {
-        site: siteArg,
-        days: { type: "number", description: "Lookback window in days (default 90)" },
-        minImpressions: { type: "number", description: "Minimum summed impressions per query (default 30)" },
-        limit: { type: "number", description: "Max queries (default 30, max 100)" },
+        site: siteOrAllArg,
+        mode: { type: "string", enum: ["exact", "related"], description: "exact (default) or related intent conflicts" },
+        minImpressions: { type: "number", description: "Minimum impressions per query across its competing pages (default 30)" },
+        limit: { type: "number", description: "Max queries / conflicts (default 30, max 200)" },
       },
-      required: ["site"],
     },
     handler: async (userId, args) => {
-      const site = await resolveSite(userId, args.site);
-      const since = sinceDate(args.days, 90);
-      const minImpr = Math.max(0, Number(args.minImpressions ?? 30));
-      const take = lim(args.limit, 30, 100);
+      const sites = await resolveSites(userId, args.site);
+      if (!sites.length) return { conflicts: [], note: "No sites connected." };
+      const minImpr = Math.max(1, Number(args.minImpressions ?? 30) || 30);
+      const take = lim(args.limit, 30, 200);
+      const scope = sites.map(s => ({ id: s.id, url: s.url, siteId: s.siteId, tags: s.tags }));
 
-      const pairs = await prisma.dailyMetric.groupBy({
-        by: ["query", "url"],
-        where: { siteId: site.id, date: { gte: since }, query: { not: "" }, url: { not: "" } },
-        _sum: { clicks: true, impressions: true },
-        _avg: { position: true },
-      });
-      const byQuery = new Map<string, { url: string; clicks: number; impressions: number; position: number }[]>();
-      for (const p of pairs) {
-        const list = byQuery.get(p.query) ?? [];
-        list.push({ url: p.url, clicks: p._sum.clicks ?? 0, impressions: p._sum.impressions ?? 0, position: r1(p._avg.position ?? 0) });
-        byQuery.set(p.query, list);
+      if (args.mode === "related") {
+        const res = await findRelatedIntent(scope, { minImpressions: minImpr, limit: take });
+        return {
+          sites: sites.map(s => s.url),
+          mode: "related",
+          window: res.window,
+          dailyWindow: res.dailyWindow,
+          total: res.total,
+          relatedConflicts: res.groups,
+          methodology: { deterministic: true, paidCalls: 0, candidateIndex: ["query_tokens", "ranking_urls"], autoActions: false },
+          truncated: res.truncated,
+        };
       }
-      const conflicts = [...byQuery.entries()]
-        .map(([query, urls]) => ({ query, urls: urls.sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions), totalImpressions: urls.reduce((s, u) => s + u.impressions, 0) }))
-        .filter(c => c.urls.length >= 2 && c.totalImpressions >= minImpr)
-        .sort((a, b) => b.totalImpressions - a.totalImpressions)
-        .slice(0, take);
-      return { site: site.url, conflicts };
+
+      const res = await findCannibalization(scope, { minImpressions: minImpr, limit: take });
+      return {
+        sites: sites.map(s => s.url),
+        window: res.window,
+        total: res.total,
+        conflicts: res.groups.map(g => ({
+          ...(sites.length > 1 ? { site: g.siteName } : {}),
+          query: g.query,
+          isTrue: g.isTrue,
+          totalImpressions: g.impressions,
+          urls: g.pages.map(p => ({
+            url: p.fullUrl, sharePercent: p.share, clicks: p.clicks, impressions: p.impressions,
+            position: p.position, topQuery: p.topQuery,
+          })),
+        })),
+      };
     },
   },
 
   {
     name: "get_rank_tracker",
+    cost: "local",
     description:
       "Tracked keyword rankings (Rank Tracker): every tracked keyword for a site with its latest SERP position check and the previous one for direction, plus country/device. Position 0/null means not found in the checked depth.",
     inputSchema: { type: "object", properties: { site: siteArg }, required: ["site"] },
@@ -244,6 +285,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_aeo_visibility",
+    cost: "local",
     description:
       "AI answer-engine visibility (AEO Tracker): tracked real-user questions and whether this site gets cited/mentioned when they are asked to ChatGPT, Perplexity, Claude, and Grok — latest result per engine per question. Use to assess AI-search presence and find questions where the site is invisible.",
     inputSchema: { type: "object", properties: { site: siteArg }, required: ["site"] },
@@ -263,6 +305,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_backlinks",
+    cost: "local",
     description:
       "The site's curated backlink inventory (Backlinks Checker): each tracked backlink with liveness (is the link still present) and indexed status, plus summary counts. This is the user's own link list — for competitor backlinks use get_link_mentions.",
     inputSchema: {
@@ -288,6 +331,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_link_mentions",
+    cost: "local",
     description:
       "Link Monitor data: fresh quality backlinks recently earned by the WATCHED COMPETITOR BRANDS (pulled from Ahrefs; in-content, DR-filtered), plus multi-linker domains — sites that link to 2+ watched brands and are therefore prime outreach targets. Use for link prospecting and digital-PR ideas.",
     inputSchema: {
@@ -299,16 +343,21 @@ export const MCP_TOOLS: McpTool[] = [
     },
     handler: async (userId, args) => {
       const brand = String(args.brand ?? "").trim().toLowerCase();
+      // Column values straight out of rawQuery: pass-through fields stay `unknown`, the ones the
+      // code coerces anyway (Number()/!!) never need a narrower type.
+      type MentionRow = { brand: unknown; urlFrom: unknown; domainFrom: unknown; title: unknown; anchor: unknown; drFrom: unknown; firstSeen: unknown; dofollow: unknown };
+      type TopDomainRow = { domainFrom: unknown; brandsLinked: unknown; links: unknown; maxDr: unknown };
+      type WatchedBrandRow = { domain: unknown };
       try {
-        const mentions: any[] = await prisma.$queryRawUnsafe(
+        const mentions = await rawQuery<MentionRow[]>(
           `SELECT brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, dofollow FROM "LinkMention"
            WHERE userId = ? ${brand ? "AND brand = ?" : ""} ORDER BY firstSeen DESC LIMIT ${lim(args.limit, 100, 500)}`,
           ...(brand ? [userId, brand] : [userId]));
-        const topDomains: any[] = await prisma.$queryRawUnsafe(
+        const topDomains = await rawQuery<TopDomainRow[]>(
           `SELECT domainFrom, COUNT(DISTINCT brand) as brandsLinked, COUNT(*) as links, MAX(drFrom) as maxDr
            FROM "LinkMention" WHERE userId = ? GROUP BY domainFrom HAVING COUNT(DISTINCT brand) >= 2
            ORDER BY brandsLinked DESC, links DESC LIMIT 50`, userId);
-        const brands: any[] = await prisma.$queryRawUnsafe(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId);
+        const brands = await rawQuery<WatchedBrandRow[]>(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId);
         return {
           watchedBrands: brands.map(b => b.domain),
           multiLinkerDomains: topDomains.map(d => ({ domain: d.domainFrom, brandsLinked: Number(d.brandsLinked), links: Number(d.links), maxDr: Number(d.maxDr) })),
@@ -322,6 +371,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_site_health",
+    cost: "local",
     description:
       "Site health snapshot: SSL certificate status/expiry, Google Safe Browsing verdict, VirusTotal reputation, and Core Web Vitals (PageSpeed, mobile) — as last checked by the app.",
     inputSchema: { type: "object", properties: { site: siteArg }, required: ["site"] },
@@ -343,6 +393,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "get_indexing_status",
+    cost: "local",
     description:
       "Indexing overview for a site: sitemap URL counts grouped by known Google index status, and the most recent URL Inspection results. Large 'unknown/not inspected' counts mean inspection coverage is thin, not that pages are deindexed.",
     inputSchema: {
@@ -369,13 +420,14 @@ export const MCP_TOOLS: McpTool[] = [
   },
   {
     name: "get_site_audit",
+    cost: "local",
     description:
-      "Latest technical site audit from OpenGSC's built-in crawler: health score, issue counts (broken links, missing/duplicate titles, missing meta descriptions, H1 problems, noindex, canonical mismatches, thin content, slow pages), and the affected URLs for a chosen issue. If no audit exists, tell the user to run one in the site's Audit tab.",
+      "Latest technical Site Audit from OpenGSC's built-in crawler: health score and issue counts across HTTP/redirects, metadata, canonicals/robots, HTML structure, JSON-LD/social metadata, links, mixed content, security headers and response time, plus affected URLs for one issue. This is the runtime Site Audit only; it does not combine AI Visibility or SEO Tools → GEO data. If no audit exists, tell the user to run one in the site's Audit tab.",
     inputSchema: {
       type: "object",
       properties: {
         site: siteArg,
-        issue: { type: "string", description: "Optional issue code to list affected pages for (e.g. broken_links, title_missing, thin_content)" },
+        issue: { type: "string", description: "Optional issue code to list affected pages for (e.g. broken_links, title_missing, description_too_short, thin_content)" },
         limit: { type: "number", description: "Max affected pages to return (default 30, max 200)" },
       },
       required: ["site"],
@@ -401,11 +453,21 @@ export const MCP_TOOLS: McpTool[] = [
           brokenLinks: p.brokenLinks ? JSON.parse(p.brokenLinks) : [],
         }));
       }
-      return { site: site.url, auditedAt: audit.finishedAt, pagesCrawled: audit.pagesCrawled, summary, ...(issue ? { issue, affectedPages } : {}) };
+      return {
+        site: site.url,
+        auditId: audit.id,
+        auditedAt: audit.finishedAt,
+        pagesCrawled: audit.pagesCrawled,
+        summary,
+        verification: audit.verification ? JSON.parse(audit.verification) : null,
+        baselineAuditId: audit.baselineAuditId,
+        ...(issue ? { issue, affectedPages } : {}),
+      };
     },
   },
   {
     name: "compare_periods",
+    cost: "local",
     description:
       "Period-over-period comparison from the local metrics store: current window vs the equally-sized previous window, grouped by query or page. Returns overall deltas plus the biggest winners, losers, new entries, and lost entries — answers \"which queries improved/declined vs last month?\" without any external API call.",
     inputSchema: {
@@ -428,18 +490,20 @@ export const MCP_TOOLS: McpTool[] = [
       const prevStart = new Date(now); prevStart.setDate(prevStart.getDate() - days * 2);
 
       const agg = (gte: Date, lt: Date) => prisma.dailyMetric.groupBy({
-        by: [dim] as any,
-        where: { siteId: site.id, date: { gte, lt }, [dim]: { not: "" } } as any,
+        by: [dim],
+        // Same computed-key widening as get_search_performance — cast only narrows the literal back.
+        where: { siteId: site.id, date: { gte, lt }, [dim]: { not: "" } } as { siteId: string; date: { gte: Date; lt: Date } },
         _sum: { clicks: true, impressions: true },
         _avg: { position: true },
       });
       const [cur, prev] = await Promise.all([agg(curStart, now), agg(prevStart, curStart)]);
 
       type Row = { key: string; clicks: number; impressions: number; position: number };
-      const toMap = (rows: any[]): Map<string, Row> => new Map(rows.map(r => [r[dim], {
+      type AggRow = Awaited<ReturnType<typeof agg>>[number];
+      const toMap = (rows: AggRow[]): Map<string, Row> => new Map(rows.map(r => [r[dim], {
         key: r[dim], clicks: r._sum.clicks ?? 0, impressions: r._sum.impressions ?? 0, position: r1(r._avg.position ?? 0),
       }]));
-      const curMap = toMap(cur as any[]), prevMap = toMap(prev as any[]);
+      const curMap = toMap(cur), prevMap = toMap(prev);
 
       const joined: { key: string; clicksDelta: number; cur?: Row; prev?: Row }[] = [];
       for (const [key, c] of curMap) joined.push({ key, cur: c, prev: prevMap.get(key), clicksDelta: c.clicks - (prevMap.get(key)?.clicks ?? 0) });
@@ -470,6 +534,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "query_gsc_live",
+    cost: "quota",
     description:
       "LIVE Google Search Console query (calls Google's Search Analytics API through the user's own OAuth token — free, but uses Google's daily quota; prefer get_search_performance for query/page data that's already synced). Use this when you need dimensions the local store doesn't have: country, device, date, or their combinations.",
     inputSchema: {
@@ -501,7 +566,7 @@ export const MCP_TOOLS: McpTool[] = [
         site: site.url,
         days,
         dimensions: dims,
-        rows: (rows as any[]).map(r => ({
+        rows: rows.map(r => ({
           keys: r.keys, clicks: r.clicks ?? 0, impressions: r.impressions ?? 0,
           ctrPercent: pct(r.ctr ?? 0), avgPosition: r1(r.position ?? 0),
         })),
@@ -511,6 +576,7 @@ export const MCP_TOOLS: McpTool[] = [
 
   {
     name: "inspect_url",
+    cost: "quota",
     description:
       "LIVE Google URL Inspection for up to 10 URLs (calls Google's URL Inspection API through the user's own OAuth token — free, but Google caps inspections per day; results are also cached into the app's Indexing tab). Returns index verdict, coverage state, last crawl, Google-selected canonical, and robots state per URL.",
     inputSchema: {
@@ -525,6 +591,23 @@ export const MCP_TOOLS: McpTool[] = [
       const site = await resolveSite(userId, args.site);
       const urls = (Array.isArray(args.urls) ? args.urls : []).map(String).filter(u => u.startsWith("http")).slice(0, 10);
       if (!urls.length) throw new Error("Pass 1–10 absolute URLs in `urls`.");
+
+      // Quota ledger (wave-oct T4): inspect_url, the manual button and the auto queue all draw
+      // on the same 2,000/day-per-property pool, counted in America/Los_Angeles days. On a day
+      // Google already answered 429 for this property, fail fast instead of making calls that
+      // are guaranteed to come back 429. (quota.ts from src/lib/indexing would be the cleaner
+      // import, but the T4 contour may only change this handler body, not the imports.)
+      const ptDay = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(d);
+      const today = ptDay(new Date());
+      const ledgerKey = { property_day: { property: site.siteId, day: today } };
+      const ledgerRow = await prisma.inspectionQuota.findUnique({ where: ledgerKey }).catch(() => null);
+      if (ledgerRow?.exhaustedAt && ptDay(new Date(ledgerRow.exhaustedAt)) === today) {
+        throw new Error(
+          `Google's URL Inspection quota for this property is exhausted for today (${ledgerRow.used}/2000 used) ` +
+          `and resets at midnight Pacific time. Manual checks and the auto queue share this pool.`,
+        );
+      }
+
       const accounts = await getUserGoogleAccounts(userId);
       if (!accounts.length) throw new Error("No Google account connected to this instance.");
 
@@ -561,14 +644,26 @@ export const MCP_TOOLS: McpTool[] = [
         }
         if (!done) results.push({ url, error: "inspection_failed (no linked account has access to this property, or quota exhausted)" });
       }
-      return { site: site.url, inspected: results };
+
+      // Account the spend: every URL hit the API at least once (retries included in the total
+      // would need per-account counting; one per URL is the honest floor). Manual use — the
+      // `auto` column stays for the scheduler's share.
+      const answered = results.filter(r => !(r as { error?: string }).error).length;
+      const errored = results.length - answered;
+      await prisma.inspectionQuota.upsert({
+        where: ledgerKey,
+        create: { property: site.siteId, day: today, used: results.length, errors: errored },
+        update: { used: { increment: results.length }, errors: errored ? { increment: errored } : undefined },
+      }).catch(() => {});
+      return { site: site.url, inspected: results, quota: { day: today, spent: results.length } };
     },
   },
 
   {
     name: "get_capabilities",
+    cost: "local",
     description:
-      "Instance overview — call this first if unsure what's available: server version, connected sites count, how fresh the synced GSC data is, and which optional modules (rank tracker, AEO, Link Monitor, audits) actually contain data, so you don't call tools that will come back empty.",
+      "Instance overview — call this first if unsure what's available: server version, connected sites count, how fresh the synced GSC data is, which optional modules (rank tracker, AEO, Link Monitor, audits, GEO, indexer, GA4, Clarity, Bing/Yandex) actually contain data, and every tool grouped by what it costs to call. Saves you from calling tools that will come back empty, and from calling a paid one by accident.",
     inputSchema: { type: "object", properties: {} },
     handler: async (userId) => {
       const [sites, metricCount, latestMetric, keywords, questions, audits] = await Promise.all([
@@ -581,13 +676,36 @@ export const MCP_TOOLS: McpTool[] = [
       ]);
       let linkMentions = 0;
       try {
-        const rows: any[] = await prisma.$queryRawUnsafe(`SELECT COUNT(*) as c FROM "LinkMention" WHERE userId = ?`, userId);
+        const rows = await rawQuery<{ c: unknown }[]>(`SELECT COUNT(*) as c FROM "LinkMention" WHERE userId = ?`, userId);
         linkMentions = Number(rows?.[0]?.c ?? 0);
       } catch { /* not migrated */ }
+      const extra = await dataModuleCounts(userId);
+      // How much third-party metric data is actually loaded. Reported because the metrics
+      // tools are read-only: an agent that sees 0 here knows the cache is empty and that no
+      // tool it can call will fill it, rather than reading an empty answer as a real one.
+      const metricCounts = async (table: string, where = "") => {
+        try {
+          const rows = await rawQuery<{ c: unknown }[]>(`SELECT COUNT(*) as c FROM "${table}" ${where}`);
+          return Number(rows?.[0]?.c ?? 0);
+        } catch { return 0; }
+      };
+      const [cachedKeywords, cachedDomains, refDomainRows, competitorKeywords] = await Promise.all([
+        metricCounts("KeywordMetricCache"),
+        metricCounts("DomainMetricCache"),
+        metricCounts("RefDomainRow"),
+        metricCounts("CompetitorKeyword"),
+      ]);
+      const named = (c: ToolCost) => MCP_TOOLS.filter(t => (t.cost ?? "local") === c).map(t => t.name);
       return {
         server: "opengsc",
-        version: "1.0.0",
-        tools: MCP_TOOLS.map(t => t.name),
+        version: pkg.version,
+        toolCount: MCP_TOOLS.length,
+        tools: {
+          local: named("local"),
+          quota: named("quota"),
+          net: named("net"),
+          paid: named("paid"),
+        },
         data: {
           sites,
           gscMetricRows: metricCount,
@@ -596,15 +714,26 @@ export const MCP_TOOLS: McpTool[] = [
           aeoQuestions: questions,
           completedAudits: audits,
           linkMonitorMentions: linkMentions,
+          cachedKeywordMetrics: cachedKeywords,
+          cachedDomainMetrics: cachedDomains,
+          backlinkProfileRows: refDomainRows,
+          competitorKeywords,
+          ...(extra as object),
         },
-        notes: "Local-store tools are free and instant. query_gsc_live and inspect_url call Google APIs via the user's OAuth (free, quota-limited).",
+        notes:
+          "local = reads this instance's database; free and instant. " +
+          "quota = calls a Google API on the owner's OAuth; free but quota-limited. " +
+          "net = fetches a third-party page. " +
+          "paid = spends the OWNER'S OWN AI credits and refuses to run without confirm: true — ask the user first, and prefer get_optimization_brief, which gives you the same material for free. " +
+          "The Ahrefs/Semrush/Majestic/Keys.so metric tools (get_keyword_metrics, get_domain_metrics, get_backlink_profile, get_competitor_gap, get_yandex_ai_answers) are local reads of a cache the human fills by hand — they cannot fetch, so an empty result means 'not loaded yet', never 'zero'.",
       };
     },
   },
   {
     name: "execute_sql_query",
+    cost: "local",
     description:
-      "Run a custom read-only SELECT (or WITH…SELECT) query over the local SQLite database — for cohorts, cross-table joins, and aggregations the standard tools don't cover. Available tables: Site, DailyMetric, TrackedKeyword, RankCheck, TrackedQuestion, AeoCheck, Backlink, SitemapUrl, PageInspection, PageInspectionHistory, SiteHealth, SiteAudit, SiteAuditPage, LinkWatchBrand, LinkMention, DrCache, AlertEvent, Digest, ContentGroup, TopicCluster; sqlite_master for schema discovery. Credential tables (User, Account, Session) are blocked, the connection is opened read-only at the engine level, and results are capped at 500 rows.",
+      "Run a custom read-only SELECT (or WITH…SELECT) query over the local database — for cohorts, cross-table joins, and aggregations the standard tools don't cover. Available tables: Site, DailyMetric, TrackedKeyword, RankCheck, TrackedQuestion, AeoCheck, Backlink, SitemapUrl, PageInspection, PageInspectionHistory, SiteHealth, SiteAudit, SiteAuditPage, LinkWatchBrand, LinkMention, DrCache, AlertEvent, Digest, ContentGroup, TopicCluster; sqlite_master (SQLite) or information_schema (MySQL) for schema discovery. Credential tables (User, Account, Session) are blocked, the connection is read-only, and results are capped at 500 rows.",
     inputSchema: {
       type: "object",
       properties: {
@@ -625,25 +754,60 @@ export const MCP_TOOLS: McpTool[] = [
         throw new Error(`Blocked keyword/table: "${banned[0]}". Credential tables (User/Account/Session) and write operations are not accessible through this tool.`);
       }
 
-      // True read-only enforcement: a separate SQLite connection opened with the
-      // readonly flag — the engine itself refuses any write no matter how the query
-      // text is disguised. prepare() also throws on multi-statement input, and
-      // stmt.reader confirms the statement returns rows.
-      const dbUrl = process.env.DATABASE_URL || "";
-      const rawPath = dbUrl.replace(/^file:/, "").split("?")[0];
-      const path = await import("path");
-      const dbPath = path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
-      // better-sqlite3 ships no bundled types (@types not installed).
-      // @ts-ignore -- no declaration file for better-sqlite3
-      const { default: Database } = (await import("better-sqlite3")) as any;
-      const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-      let rows: any[];
-      try {
-        const stmt = db.prepare(sql);
-        if (!stmt.reader) throw new Error("Query does not return rows — only SELECT queries are allowed.");
-        rows = stmt.all() as any[];
-      } finally {
-        db.close();
+      const url = process.env.DATABASE_URL || "";
+      const isMysql = /^(mysql|mariadb):/i.test(url);
+      let rows: Record<string, unknown>[];
+
+      if (isMysql) {
+        // On MySQL there is no local file to open read-only, so the SQLite path below does not
+        // apply. The query runs through the same `rawQuery` the rest of the app uses, which means
+        // portableSql rewrites `"identifier"` to backticks — so an agent writing the SQLite-style
+        // `FROM "User"` it sees everywhere else in this tool's output still works, and a query
+        // already using backticks is left untouched (portableSql only touches double quotes).
+        // The keyword screen above is the only write-guard on this branch: a MySQL account separate
+        // from the app's (e.g. a SELECT-only grant) would be a stronger one, but that is a
+        // deployment choice, not something the code can enforce on a connection it did not open.
+        rows = await rawQuery<Record<string, unknown>[]>(sql);
+      } else {
+        // True read-only enforcement on SQLite: a separate connection opened with the
+        // readonly flag — the engine itself refuses any write no matter how the query
+        // text is disguised. prepare() also throws on multi-statement input, and
+        // stmt.reader confirms the statement returns rows.
+        //
+        // Three `turbopackIgnore` markers, and the one that matters is on `process.cwd()`.
+        //
+        // Turbopack reports "Encountered unexpected file in NFT list" when it decides a route may
+        // read arbitrary files at runtime, and then traces the entire project into the build. What
+        // triggers that here is not the dynamic imports — it is `path.resolve(process.cwd(), …)`,
+        // a filesystem path rooted at the project directory, which the bundler cannot narrow. The
+        // warning names this case explicitly and gives the fix in its own text; marking only the
+        // imports leaves the warning exactly as it was.
+        //
+        // The imports keep their markers because neither needs bundling anyway: `path` is built in,
+        // and better-sqlite3 is a native addon that has to be resolved from node_modules at
+        // runtime.
+        const rawPath = url.replace(/^file:/, "").split("?")[0];
+        const path = await import(/* turbopackIgnore: true */ "path");
+        const dbPath = path.isAbsolute(rawPath)
+          ? rawPath
+          : path.resolve(/* turbopackIgnore: true */ process.cwd(), rawPath);
+        // better-sqlite3 ships no bundled types (@types not installed) — the shape below is only
+        // what this block reads: prepare(), stmt.reader, stmt.all(), close().
+        // @ts-expect-error -- no declaration file for better-sqlite3
+        const { default: Database } = (await import(/* turbopackIgnore: true */ "better-sqlite3")) as {
+          default: new (path: string, options: { readonly: true; fileMustExist: true }) => {
+            prepare(sql: string): { reader: boolean; all(): Record<string, unknown>[] };
+            close(): void;
+          };
+        };
+        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        try {
+          const stmt = db.prepare(sql);
+          if (!stmt.reader) throw new Error("Query does not return rows — only SELECT queries are allowed.");
+          rows = stmt.all();
+        } finally {
+          db.close();
+        }
       }
 
       // Best-effort tenant scoping on top (an instance is normally single-operator,
@@ -653,11 +817,21 @@ export const MCP_TOOLS: McpTool[] = [
       const allowedSiteIds = new Set(userSites.map(s => s.id));
       const filtered = rows.filter(row =>
         (row.userId === undefined || row.userId === userId) &&
-        (row.siteId === undefined || allowedSiteIds.has(row.siteId)));
+        (row.siteId === undefined || allowedSiteIds.has(row.siteId as string)));
 
       return { rowCount: Math.min(filtered.length, 500), truncated: filtered.length > 500, rows: filtered.slice(0, 500) };
     },
   },
 ];
+
+// The single registry the route handler sees. Order matters only for readability in
+// tools/list — agents pick by name, and get_capabilities groups them by cost.
+export const MCP_TOOLS: McpTool[] = [...CORE_TOOLS, ...DATA_TOOLS, ...METRICS_TOOLS, ...DEMAND_TOOLS, ...OPTIMIZE_TOOLS, ...OUTREACH_TOOLS, ...SOURCE_AUDIT_TOOLS, ...DROPS_TOOLS, ...SERPMON_TOOLS, ...META_TOOLS, ...UPTIME_TOOLS, ...INDEX_TOOLS, ...MENTIONS_TOOLS, ...VISIBILITY_TOOLS, ...FOOTPRINT_TOOLS, ...BACKLINK_TOX_TOOLS, ...LOCAL_TOOLS, ...TRENDS_TOOLS, ...PLAGIARISM_TOOLS, ...REPORTS_TOOLS, ...LEADS_TOOLS, ...CONTEXT_TOOLS, ...PUBLISH_TOOLS];
+
+// A duplicate name would silently shadow a tool in findTool, and the failure would look
+// like "that tool ignores half its arguments" rather than "there are two of them".
+// Cheap to assert once at module load, on a list this file no longer owns end to end.
+const duplicates = MCP_TOOLS.map(t => t.name).filter((n, i, all) => all.indexOf(n) !== i);
+if (duplicates.length) throw new Error(`Duplicate MCP tool name(s): ${[...new Set(duplicates)].join(", ")}`);
 
 export const findTool = (name: string): McpTool | undefined => MCP_TOOLS.find(t => t.name === name);

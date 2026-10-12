@@ -12,7 +12,14 @@
 // Stage 3 (DERIVE): everything numeric (metrics, trust signals, inclusion patterns, source
 //   breakdown, leaderboard scores) is computed deterministically in code from the trace.
 
+import { loggedFetch, type CallHandle } from "@/lib/providerLog/log";
+import { usageFrom } from "@/lib/providerLog/tokens";
 import { extractJson } from "@/lib/seo/prompts";
+import { OPENAI_FALLBACK_MODELS, OPENAI_FALLBACK_CHEAP } from "@/lib/seo/models";
+import { fetchLLMDetailed } from "@/lib/llm";
+import { defaultModelFor } from "@/lib/providerDefaults";
+import { runGeoAparser, GEO_APARSER_PARSER } from "@/lib/seo/geoAparser";
+import { safeFetch } from "@/lib/security/safeFetch";
 
 export type GeoResult = { ok: true; data: GeoReport } | { ok: false; error: string };
 
@@ -50,6 +57,19 @@ export interface GeoReport {
   };
   insights: { userSearchBehavior: string; dominantSource: string; strategicEngagement: string; opportunityGaps: string };
   answer: { text: string; citations: { n: number; domain: string; url: string; title: string }[]; chars: number };
+  /** Present when the audit was run with the user's own page URL. */
+  pageUrl?: string;
+  /**
+   * Stage-2 verdict on the user's own page: is it cited for this query, and what would it take
+   * to cite it. Present only when a pageUrl was given AND the page itself was fetchable.
+   */
+  yourPage?: {
+    cited: boolean;
+    citedCompetitors: string[];
+    gaps: string[];
+    fixes: string[];
+    summary: string;
+  };
 }
 
 export interface GeoBatch { id: string; queries: string[]; scanned: number; cited: number }
@@ -101,7 +121,57 @@ type RawTrace = {
   scannedAll: { url: string; domain: string }[];
   answerText: string;
   citations: { url: string; title: string; domain: string }[];
+  /**
+   * Set only by engines that REPORT a model instead of being asked for one — today just
+   * A-Parser, whose free ChatGPT session serves whatever it serves. Left undefined elsewhere,
+   * where the model is the one the user picked and already travels separately.
+   */
+  model?: string;
 };
+
+// What the trace miners below read out of a Responses-API (openai/kie) JSON payload — every
+// field optional, because a gateway that omits one is exactly the case they defend against.
+interface ResponsesAction {
+  type?: string;
+  query?: string;
+  queries?: string[];
+  url?: string;
+  /** Documented as [{url}], leniently also accepted as bare strings. */
+  sources?: ({ url?: string } | string)[];
+}
+interface ResponsesContentPart {
+  type?: string;
+  text?: string;
+  annotations?: { type?: string; url?: string; title?: string }[];
+}
+interface ResponsesOutputItem {
+  type?: string;
+  id?: string;
+  action?: ResponsesAction;
+  content?: ResponsesContentPart[];
+}
+interface ResponsesPayload {
+  output?: ResponsesOutputItem[];
+  output_text?: string;
+  status?: string;
+  error?: { message?: string };
+  incomplete_details?: { reason?: string };
+}
+
+// Stage-2 analysis output (the extractJson result) — every field optional by design: a failed
+// analysis is not a failed audit, and assembleReport fills each gap deterministically.
+interface GeoAnalysis {
+  intent?: string;
+  intentConfidence?: number;
+  stage?: string;
+  topic?: string;
+  brands?: { name?: string; domain?: string; tags?: string[]; pricing?: string; support?: string; featureBreadth?: string }[];
+  domainTypes?: Record<string, string>;
+  keyEntities?: { category?: string; name?: string; count?: number; brands?: string[] }[];
+  insights?: { userSearchBehavior?: string; dominantSource?: string; strategicEngagement?: string; opportunityGaps?: string };
+  coverageNotes?: { missingFactors?: string[]; missingEntities?: string[] };
+  yourPage?: { cited?: boolean; citedCompetitors?: string[]; gaps?: string[]; fixes?: string[]; summary?: string };
+}
 
 function buildSearchInput(query: string, language: string, country: string): string {
   return [
@@ -117,33 +187,227 @@ function buildSearchInput(query: string, language: string, country: string): str
 // "openai" hits OpenAI's own Responses API directly. "kie" routes the same request shape through
 // kie.ai's `/codex/v1/responses` endpoint, which mirrors OpenAI's Responses API 1:1 (including the
 // `web_search` tool) but bills against the user's kie.ai credits instead of a separate OpenAI key.
-export type GeoEngine = "openai" | "kie";
+// "gemini" runs Google's own grounding search (`google_search` tool on generateContent) on the
+// user's Gemini key — a different request shape whose grounding chunks map onto the same trace.
+// "aparser" is the odd one out: not a vendor API at all, but the user's own A-Parser
+// installation driving the public ChatGPT surface (lib/seo/aparser.ts). It carries no
+// per-token cost, reports its model rather than accepting one, and answers with sources but
+// not with the search steps that found them.
+export type GeoEngine = "openai" | "kie" | "gemini" | "aparser";
 
-async function runWebSearch(query: string, language: string, country: string, model: string, apiKey: string, engine: GeoEngine = "openai"): Promise<RawTrace | { error: string }> {
+// Upper bound for the search call, not a target. The audit row it feeds is allowed to sit
+// "processing" for 20 minutes (stale_timeout in the geo route) while runAudit is fire-and-
+// forget, so the cap only has to stay under that window with room for the ~2 min analysis
+// stage — 15 minutes does. With streaming on, cutting the connection also stops the
+// provider's generation server-side, so a runaway search costs waiting time, not the price
+// of a full completion that gets thrown away.
+const SEARCH_TIMEOUT_MS = 900_000;
+
+// Gemini grounding: google_search grounds the answer and reports webSearchQueries (what it
+// searched) plus groundingChunks (the pages it actually cited) — exactly the RawTrace shape the
+// report assembles from. No open_page equivalent exists, so `opened` stays empty by design.
+
+// The generateContent fields this engine reads; the usage block is read as `any` by usageFrom.
+interface GeminiSearchResponse {
+  candidates?: {
+    content?: { parts?: { text?: string }[] };
+    groundingMetadata?: { webSearchQueries?: string[]; groundingChunks?: { web?: { uri?: string; title?: string } }[] };
+  }[];
+}
+
+async function runGeminiGroundedSearch(
+  query: string, language: string, country: string, model: string, apiKey: string, baseUrl?: string,
+): Promise<RawTrace | { error: string }> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 280_000);
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  const root = (baseUrl || "").replace(/\/+$/, "") || "https://generativelanguage.googleapis.com/v1beta";
   const input = buildSearchInput(query, language, country);
-  const endpoint = engine === "kie" ? "https://api.kie.ai/codex/v1/responses" : "https://api.openai.com/v1/responses";
+  try {
+    const { res, call } = await loggedFetch(`${root}/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST", signal: ctrl.signal,
+      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: input }] }],
+        tools: [{ google_search: {} }],
+      }),
+    }, { provider: "gemini", model });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      const error = `gemini_${res.status}: ${t.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`;
+      call.finish({ error });
+      return { error };
+    }
+    const data: GeminiSearchResponse = await res.json();
+    call.finish({ ...usageFrom("gemini", data), responseBody: data });
+    const cand = Array.isArray(data?.candidates) ? data.candidates[0] : null;
+    const parts = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
+    let answerText = "";
+    for (const p of parts) if (typeof p?.text === "string") answerText += p.text + "\n";
+    const gm: NonNullable<NonNullable<GeminiSearchResponse["candidates"]>[number]["groundingMetadata"]> = cand?.groundingMetadata ?? {};
+    const queries: string[] = Array.isArray(gm.webSearchQueries) ? gm.webSearchQueries.map(q => String(q)).filter(Boolean) : [];
+    const seen = new Set<string>();
+    const sources: { url: string; domain: string; title: string }[] = [];
+    for (const c of Array.isArray(gm.groundingChunks) ? gm.groundingChunks : []) {
+      const url = c?.web?.uri ?? "";
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      sources.push({ url, domain: domainOf(url), title: c?.web?.title ?? "" });
+    }
+    return {
+      batches: queries.length ? [{ id: "g1", queries, sources: sources.map(s => ({ url: s.url, domain: s.domain })) }] : [],
+      opened: [],
+      scannedAll: sources.map(s => ({ url: s.url, domain: s.domain })),
+      answerText: answerText.trim(),
+      citations: sources,
+    };
+  } catch (e) {
+    return { error: (e as Error)?.name === "AbortError" ? `timeout_after_${Math.round(SEARCH_TIMEOUT_MS / 60_000)}m` : String((e as Error)?.message ?? e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A-Parser (FreeAI::ChatGPT) — the request and response live in lib/seo/aparser.ts. Here the
+// normalised answer is mapped onto RawTrace. `apiKey` is the instance password and `baseUrl`
+// its API endpoint: this engine authenticates against the user's own machine, not a vendor.
+//
+// `opened` stays empty for the same reason it does on the Gemini engine (geo.ts above): the
+// parser reports what the answer used, not the steps that found it. `batches` would be empty
+// too — and that is not merely one missing panel. An empty batch list zeroes `uniqueQueries`
+// and blanks every brand's coverage bar in the leaderboard, which reads as "surfaced for
+// nothing" rather than "the queries were not observable". One synthetic batch carrying the
+// audit's own query and the sources actually seen states precisely what is known, which is
+// what the Gemini engine does with webSearchQueries.
+async function runAparserSearch(
+  query: string, language: string, country: string, password: string, apiUrl: string,
+  preset?: string, configPreset?: string,
+): Promise<RawTrace | { error: string }> {
+  const input = buildSearchInput(query, language, country);
+  const r = await runGeoAparser({ baseUrl: apiUrl, password, query: input, preset, configPreset, timeoutMs: SEARCH_TIMEOUT_MS });
+  if ("error" in r) return r;
+
+  const seen = new Set<string>();
+  const scannedAll: { url: string; domain: string }[] = [];
+  const citations: { url: string; title: string; domain: string }[] = [];
+  for (const s of r.sources) {
+    if (seen.has(s.link)) continue;
+    seen.add(s.link);
+    const row = { url: s.link, domain: domainOf(s.link) };
+    scannedAll.push(row);
+    // Anything not typed "citation" is a scanned-but-uncited source — exactly the set the
+    // analysis prompt asks for, and the one the Responses API never exposes.
+    if (s.type === "citation") citations.push({ url: s.link, title: s.anchor, domain: row.domain });
+  }
+  // A preset that prints only $answer puts us in the kie.ai situation: real sources named in
+  // the prose with no metadata around them. The same fallback applies rather than a report of
+  // zeros — and since those links are then the only sources observed, the scanned pool mirrors
+  // them instead of claiming a wider one that was never seen.
+  if (citations.length === 0 && r.answer) {
+    for (const c of extractLinksFromText(r.answer)) {
+      citations.push(c);
+      if (!seen.has(c.url)) { seen.add(c.url); scannedAll.push({ url: c.url, domain: c.domain }); }
+    }
+  }
+  return {
+    batches: [{ id: "a1", queries: [query], sources: scannedAll.map(s => ({ url: s.url, domain: s.domain })) }],
+    opened: [],
+    scannedAll,
+    answerText: r.answer,
+    citations,
+    model: r.model || undefined,
+  };
+}
+
+async function runWebSearch(query: string, language: string, country: string, model: string, apiKey: string, engine: GeoEngine = "openai", baseUrl?: string, aparserPreset?: string, aparserConfig?: string): Promise<RawTrace | { error: string }> {
+  if (engine === "gemini") return runGeminiGroundedSearch(query, language, country, model, apiKey, baseUrl);
+  if (engine === "aparser") return runAparserSearch(query, language, country, apiKey, baseUrl ?? "", aparserPreset, aparserConfig);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  const input = buildSearchInput(query, language, country);
+  // Gateway override (aiBaseUrl_openai and friends): a proxy key only authenticates against the
+  // proxy, so the engine must follow the same endpoint-override convention as every other AI
+  // call in the app. Without this a gateway key got posted to api.openai.com, which answers
+  // with OpenAI's own "Incorrect API key provided" 401.
+  const root = (baseUrl || "").replace(/\/+$/, "");
+  const endpoint = root ? `${root}/responses`
+    : engine === "kie" ? "https://api.kie.ai/codex/v1/responses"
+    : "https://api.openai.com/v1/responses";
+  // Every engine on this path speaks the OpenAI Responses wire format, so all of them stream.
+  // SSE events arrive while the search runs, which keeps a proxy from killing a healthy
+  // multi-minute call (Cloudflare's 524 cuts a silent non-streaming response at ~100s) — and
+  // aborting a stream stops the generation server-side, so hitting the cap cancels the run
+  // instead of paying for a completion that is then thrown away. The terminal
+  // `response.completed` event carries the same object shape the non-streaming call returns;
+  // kie.ai documents `stream: true` → SSE on its Responses mirror like OpenAI's own.
+  const wantsStream = true;
+
+  // Every rung of the ladder below is its own request and its own row: a tool name the provider
+  // rejects is a separate call which may itself have been billed, and one row for the lot would
+  // hide however many round trips an audit actually took. `logged` holds the row for the request
+  // currently in hand; each is closed where its outcome is read.
+  let attempt = 0;
+  let logged: CallHandle | undefined;
 
   async function call(toolType: string) {
-    return fetch(endpoint, {
+    attempt += 1;
+    const opened = await loggedFetch(endpoint, {
       method: "POST", signal: ctrl.signal,
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        stream: false,
+        stream: wantsStream,
         tools: [{ type: toolType }],
         tool_choice: "auto",
         include: ["web_search_call.action.sources"],
         input,
       }),
-    });
+    }, { provider: engine, model, attempt });
+    logged = opened.call;
+    return opened.res;
+  }
+
+  // SSE reader for the Responses API: ignore progress events, take the terminal
+  // response.completed (or surface response.failed/incomplete) — parseResponses then consumes
+  // the exact same response object the non-streaming path gets.
+  async function readSse(res: Response): Promise<{ data?: ResponsesPayload; error?: string }> {
+    const reader = res.body?.getReader();
+    if (!reader) return { error: "no_stream_body" };
+    const decoder = new TextDecoder();
+    let buf = "";
+    let final: ResponsesPayload | null | undefined = null;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let ev: { type?: string; response?: ResponsesPayload };
+          try { ev = JSON.parse(payload); } catch { continue; /* keepalive/partial line */ }
+          if (ev?.type === "response.completed") { final = ev.response; break; }
+          if (ev?.type === "response.failed" || ev?.type === "response.incomplete") {
+            const why = ev.response?.error?.message || ev.response?.incomplete_details?.reason || ev.type;
+            return { error: `stream ${ev.type}: ${String(why).slice(0, 200)}` };
+          }
+        }
+        if (final) break;
+      }
+    } finally {
+      try { await reader.cancel(); } catch { /* already closed */ }
+    }
+    return final ? { data: final } : { error: "stream_ended_without_response" };
   }
 
   try {
     let res = await call("web_search");
     if (!res.ok) {
       const errText = await res.text();
+      logged?.finish({ error: `${engine}_${res.status}: ${errText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}` });
       // Older OpenAI snapshots expose the tool as `web_search_preview`; retry once. kie.ai's unified
       // endpoint only documents `web_search`, so skip the retry there.
       if (engine === "openai" && (/web_search(?!_preview)/.test(errText) || /tool/i.test(errText))) {
@@ -151,20 +415,43 @@ async function runWebSearch(query: string, language: string, country: string, mo
       }
       if (!res.ok) {
         const t2 = res.ok ? "" : await res.text().catch(() => errText);
-        return { error: `${engine}_${res.status}: ${(t2 || errText).slice(0, 300)}` };
+        // Cloudflare's 524 page is HTML noise — keep only the status, it already names the cause.
+        // A no-op on the row already closed above when no retry was made — a second close is
+        // ignored, so the first outcome recorded stands.
+        const error = `${engine}_${res.status}: ${(t2 || errText).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`;
+        logged?.finish({ error });
+        return { error };
       }
     }
+    if (wantsStream) {
+      const sse = await readSse(res);
+      if (sse.error) {
+        logged?.finish({ error: `openai_stream: ${sse.error}` });
+        return { error: `openai_stream: ${sse.error}` };
+      }
+      if (!sse.data) {
+        logged?.finish({ error: "openai_stream: no_response" });
+        return { error: "openai_stream: no_response" };
+      }
+      // The Responses API reports usage as input_tokens/output_tokens — the dialect tokens.ts
+      // spells under "kie", which is the same endpoint shape whichever host serves it.
+      logged?.finish({ ...usageFrom("kie", sse.data), responseBody: sse.data });
+      return parseResponses(sse.data);
+    }
     const data = await res.json();
+    logged?.finish({ ...usageFrom("kie", data), responseBody: data });
     return parseResponses(data);
-  } catch (e: any) {
-    return { error: e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+  } catch (e) {
+    const error = (e as Error)?.name === "AbortError" ? `timeout_after_${Math.round(SEARCH_TIMEOUT_MS / 60_000)}m` : String((e as Error)?.message ?? e);
+    logged?.finish({ error });
+    return { error };
   } finally {
     clearTimeout(timer);
   }
 }
 
-function parseResponses(data: any): RawTrace {
-  const out: any[] = Array.isArray(data?.output) ? data.output : [];
+function parseResponses(data: ResponsesPayload): RawTrace {
+  const out = Array.isArray(data?.output) ? data.output : [];
   const batches: RawTrace["batches"] = [];
   const opened: { url: string }[] = [];
   const scannedAll: { url: string; domain: string }[] = [];
@@ -173,9 +460,9 @@ function parseResponses(data: any): RawTrace {
 
   for (const item of out) {
     if (item?.type === "web_search_call") {
-      const action = item.action ?? {};
+      const action: ResponsesAction = item.action ?? {};
       const sources: { url: string; domain: string }[] = Array.isArray(action.sources)
-        ? action.sources.map((s: any) => { const url = s?.url ?? s; return { url, domain: domainOf(url) }; }).filter((s: any) => s.url)
+        ? action.sources.map((s): { url: string; domain: string } => { const url = typeof s === "string" ? s : (s?.url ?? ""); return { url, domain: domainOf(url) }; }).filter(s => s.url)
         : [];
       for (const s of sources) scannedAll.push(s);
       const atype = action.type ?? (action.query || action.queries ? "search" : action.url ? "open_page" : "");
@@ -186,16 +473,16 @@ function parseResponses(data: any): RawTrace {
       } else {
         // treat as a search batch
         const queries: string[] = action.queries
-          ? action.queries.map((q: any) => String(q)).filter(Boolean)
+          ? action.queries.map(q => String(q)).filter(Boolean)
           : action.query ? [String(action.query)] : [];
         batches.push({ id: item.id || `b${batches.length + 1}`, queries, sources });
       }
     } else if (item?.type === "message") {
-      const content: any[] = Array.isArray(item.content) ? item.content : [];
+      const content = Array.isArray(item.content) ? item.content : [];
       for (const c of content) {
         if (c?.type === "output_text" || typeof c?.text === "string") {
           answerText += (c.text ?? "") + "\n";
-          const anns: any[] = Array.isArray(c.annotations) ? c.annotations : [];
+          const anns = Array.isArray(c.annotations) ? c.annotations : [];
           for (const a of anns) {
             if (a?.type === "url_citation" && a.url) citations.push({ url: a.url, title: a.title ?? "", domain: domainOf(a.url) });
           }
@@ -240,15 +527,36 @@ function extractLinksFromText(text: string): { url: string; title: string; domai
 }
 
 // ─── Stage 2: qualitative analysis pass ──────────────────────────────────────────
-function buildAnalysisPrompt(t: RawTrace, query: string, language: string, country: string): string {
+function buildAnalysisPrompt(t: RawTrace, query: string, language: string, country: string, ownPage?: { url: string; text: string }): string {
   const citedDomains = Array.from(new Set(t.citations.map(c => c.domain)));
   const scannedDomains = Array.from(new Set(t.scannedAll.map(s => s.domain)));
   const citationList = t.citations.map((c, i) => `[${i + 1}] ${c.domain} — ${c.title || c.url}`).join("\n");
+  // The own-page block is what turns the audit from niche recon into "what do I fix on MY page":
+  // without it the schema below stays byte-identical to the old one, so existing consumers see
+  // no difference when no URL was given.
+  const ownPageBlock = ownPage ? `
+
+THE USER'S OWN PAGE (they ran this audit to learn what to change on it):
+URL: ${ownPage.url}
+PAGE TEXT (trimmed):
+"""
+${ownPage.text}
+"""
+` : "";
+  const yourPageShape = ownPage ? `,
+  "yourPage": {
+    "cited": true|false,
+    "citedCompetitors": ["domains of the cited pages that serve this query better"],
+    "gaps": ["what those cited pages offer that this page lacks — page-level and concrete"],
+    "fixes": ["specific changes to this page that would make it citation-worthy for this answer"],
+    "summary": "2-3 sentences: where this page stands for this query today"
+  }` : "";
+  const yourPageRule = ownPage ? `\n- "yourPage": judge the user's page as an answer engine would — would citing it add something the current citations lack? Compare it against what the cited pages actually offer, not against a generic ideal. Be specific to THIS page's text.` : "";
 
   return `You are a GEO (Generative Engine Optimization) analyst. Below is an AI assistant's answer to a real user query, plus the web sources it cited and scanned. Extract a STRICT JSON object (no prose, no markdown) describing how the niche is represented.
 
 QUERY: "${query}"  (language: ${language}, country: ${country})
-
+${ownPageBlock}
 CITED SOURCES (in answer order):
 ${citationList || "(none)"}
 
@@ -289,47 +597,146 @@ Return JSON with EXACTLY this shape:
   "coverageNotes": {
     "missingFactors": ["factors the answer never weighed, if any"],
     "missingEntities": ["entities absent but expected, if any"]
-  }
+  }${yourPageShape}
 }
 
 Rules:
 - ORDER "brands" by prominence in the answer (most prominent first). One entry per real brand/provider that appears as a bookable/usable option. Skip pure reference pages.
 - "domainTypes" MUST include every CITED domain and every prominent scanned domain. official_site = a provider's own website; ecommerce = marketplace/aggregator/booking platform; review_aggregator = reviews/ratings hubs; listicle_editorial = blog/magazine "best of" articles; forum = reddit/quora/community; wikipedia = wikipedia/wikidata.
-- Keep every string short. Language of notes: ${language}.`;
+- Keep every string short. Language of notes: ${language}.${yourPageRule}`;
 }
 
-async function runAnalysis(t: RawTrace, query: string, language: string, country: string, model: string, apiKey: string, engine: GeoEngine = "openai"): Promise<any> {
+// Fetch the user's own page for the stage-2 comparison. safeFetch rather than a bare fetch:
+// the URL is user-supplied and this runs server-side, so it gets the SSRF guard. A page that
+// cannot be fetched is not fatal — the audit simply ships without the yourPage block, exactly
+// like a failed stage-2 analysis.
+async function fetchOwnPageText(url: string): Promise<{ url: string; text: string } | undefined> {
+  try {
+    const res = await safeFetch(url, { timeoutMs: 20_000, maxBytes: 1_500_000 });
+    if (!res.ok) return undefined;
+    const html = await res.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"')
+      .replace(/&#0?39;/g, "'").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 8000);
+    // Below this floor the fetch "succeeded" but returned a shell (JS-rendered SPA, a consent
+    // wall) — comparing against it would produce recommendations about a page that is not there.
+    return text.length >= 200 ? { url, text } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Credentials for stage 2, when the user has configured a provider for the `utility` task.
+ *
+ * Stage 1 and stage 2 are different jobs and only one of them is fussy about who runs it. The
+ * search pass needs a provider-hosted `web_search` tool, which is why this module knows about
+ * OpenAI and kie.ai by name at all. The analysis pass just reads a trace and emits JSON — any
+ * model can do it, and pinning it to whoever happened to run the search meant the cheap
+ * mechanical half was billed at the searching provider's rates with no way to say otherwise.
+ */
+export interface GeoAnalysisCreds {
+  provider: string;
+  apiKey: string;
+  model?: string;
+  baseUrl?: string;
+}
+
+async function runAnalysis(
+  t: RawTrace, query: string, language: string, country: string,
+  analysisModel: string, apiKey: string, engine: GeoEngine = "openai",
+  creds?: GeoAnalysisCreds, baseUrl?: string,
+  ownPage?: { url: string; text: string },
+): Promise<GeoAnalysis | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 120_000);
-  const prompt = buildAnalysisPrompt(t, query, language, country);
+  const prompt = buildAnalysisPrompt(t, query, language, country, ownPage);
   try {
+    // Preferred path: the shared multi-provider client, so stage 2 obeys the per-task settings
+    // like every other analysis step in the app — and inherits the things that client learned
+    // the hard way, none of which the private fetch below has: retries on 429/5xx, and an empty
+    // 200 reported as the provider-side failure it is rather than returned as a successful
+    // empty answer for `extractJson` to blame on the JSON.
+    //
+    // `response_format: json_object` is not sent here, because it is an OpenAI-family parameter
+    // and this path may be talking to anyone. The prompt already demands JSON and `extractJson`
+    // already tolerates a fenced or prefixed reply — the same contract every other JSON step in
+    // this codebase runs on.
+    //
+    // One thing to watch when picking the model: a reasoning model can spend the whole budget
+    // thinking and return nothing. That now surfaces as a named error instead of a silent null,
+    // and the model picker marks which models reason.
+    if (creds?.provider && creds.apiKey) {
+      const r = await fetchLLMDetailed(
+        prompt, creds.provider, creds.apiKey, 8000, creds.model || undefined, creds.baseUrl, 0.2,
+      );
+      if (!r.text) {
+        console.error("[GEO] analysis failed:", r.error ?? "no text");
+        return null;
+      }
+      return extractJson<GeoAnalysis>(r.text);
+    }
+    if (engine === "aparser") {
+      // Deliberate dead end. On this engine `apiKey` is an A-Parser password and `baseUrl` is
+      // the user's own machine, so every fallback below would post that password to a vendor —
+      // api.openai.com in the default branch. Stage 2 therefore runs only through the `utility`
+      // credentials handled above; without them the audit ships with the deterministic half
+      // only, exactly as it does for any other failed analysis, which is not fatal by design.
+      console.error("[GEO] analysis skipped: aparser engine, no utility credentials configured");
+      return null;
+    }
+    if (engine === "gemini") {
+      // The Gemini engine's key only speaks generateContent — the shared client's gemini branch
+      // is the correct unattended fallback (same as the creds path, on the search key).
+      const r = await fetchLLMDetailed(prompt, "gemini", apiKey, 8000, analysisModel || undefined, baseUrl, 0.2);
+      if (!r.text) {
+        console.error("[GEO] analysis failed:", r.error ?? "no text");
+        return null;
+      }
+      return extractJson<GeoAnalysis>(r.text);
+    }
     if (engine === "kie") {
-      // kie.ai's chat catalog doesn't expose a cheap gpt-4o-mini equivalent; reuse the same
-      // Responses-API endpoint (no tools) with a lighter GPT model for the structured pass.
-      const res = await fetch("https://api.kie.ai/codex/v1/responses", {
+      // kie.ai publishes no /models listing and exposes a single documented id, so there is
+      // nothing to pick from and nothing to rank — the shared provider default is the answer.
+      // (It used to send `gpt-5-2`, an undocumented lighter id chosen for cost; a private id no
+      // listing confirms is exactly the kind of guess that breaks silently.) Same Responses-API
+      // endpoint as stage 1, minus the tools, with reasoning dialled down for a structured pass.
+      const { res, call } = await loggedFetch("https://api.kie.ai/codex/v1/responses", {
         method: "POST", signal: ctrl.signal,
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gpt-5-2", stream: false,
+          model: defaultModelFor("kie"), stream: false,
           input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
           reasoning: { effort: "low" },
         }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const out: any[] = Array.isArray(data?.output) ? data.output : [];
+      }, { provider: "kie", model: defaultModelFor("kie") });
+      if (!res.ok) {
+        call.finish({ error: `kie_${res.status}` });
+        return null;
+      }
+      const data: ResponsesPayload = await res.json();
+      call.finish({ ...usageFrom("kie", data), responseBody: data });
+      const out = Array.isArray(data?.output) ? data.output : [];
       let text = "";
       for (const item of out) {
         if (item?.type === "message") {
           for (const c of item.content ?? []) if (typeof c?.text === "string") text += c.text;
         }
       }
-      return extractJson(text);
+      return extractJson<GeoAnalysis>(text);
     }
 
-    // Use a fast, cheap text model for the structured pass (independent of the search model).
-    const analysisModel = /^gpt-5/.test(model) ? "gpt-4o-mini" : (model || "gpt-4o-mini");
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    // Same gateway override as stage 1: without utility creds this fallback posts the engine's
+    // key, and a gateway key against api.openai.com is a guaranteed 401 (and a silently hollow
+    // report — a failed analysis is deliberately not a failed audit).
+    const root = (baseUrl || "").replace(/\/+$/, "");
+    const { res, call } = await loggedFetch(root ? `${root}/chat/completions` : "https://api.openai.com/v1/chat/completions", {
       method: "POST", signal: ctrl.signal,
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -337,12 +744,52 @@ async function runAnalysis(t: RawTrace, query: string, language: string, country
         response_format: { type: "json_object" },
         messages: [{ role: "user", content: prompt }],
         temperature: 0.2,
+        // Same Cloudflare 524 wall as stage 1: a structured 8000-token analysis can outlive a
+        // gateway's time-to-first-byte window. Deltas start flowing immediately; [DONE] ends it.
+        ...(root ? { stream: true } : {}),
       }),
-    });
-    if (!res.ok) return null;
+    }, { provider: "openai", model: analysisModel });
+    if (!res.ok) {
+      call.finish({ error: `openai_${res.status}` });
+      return null;
+    }
+    if (root) {
+      const reader = res.body?.getReader();
+      if (!reader) {
+        call.finish({ error: "no_stream_body" });
+        return null;
+      }
+      const decoder = new TextDecoder();
+      let buf = "";
+      let text = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === "[DONE]") continue;
+            try { text += JSON.parse(payload)?.choices?.[0]?.delta?.content ?? ""; } catch { /* partial line */ }
+          }
+        }
+      } catch {
+        call.finish({ error: "stream_read_failed" });
+        return null;
+      } finally { try { await reader.cancel(); } catch { /* closed */ } }
+      // A streamed chat completion carries no usage block in this app's request shape, so the
+      // row closes with tokens absent rather than zeroed.
+      call.finish();
+      return text ? extractJson<GeoAnalysis>(text) : null;
+    }
     const data = await res.json();
+    call.finish({ ...usageFrom("openai", data), responseBody: data });
     const text = data?.choices?.[0]?.message?.content ?? "";
-    return extractJson(text);
+    return extractJson<GeoAnalysis>(text);
   } catch { return null; } finally { clearTimeout(timer); }
 }
 
@@ -350,9 +797,10 @@ async function runAnalysis(t: RawTrace, query: string, language: string, country
 function pct(n: number, d: number): number { return d > 0 ? Math.round((n / d) * 100) : 0; }
 
 export function assembleReport(opts: {
-  query: string; language: string; country: string; model: string; trace: RawTrace; analysis: any;
+  query: string; language: string; country: string; model: string; trace: RawTrace; analysis: GeoAnalysis | null;
+  pageUrl?: string; ownPage?: { url: string; text: string } | null;
 }): GeoReport {
-  const { query, language, country, model, trace, analysis } = opts;
+  const { query, language, country, model, trace, analysis, pageUrl, ownPage } = opts;
   const a = analysis ?? {};
 
   // Citation counts per domain.
@@ -415,7 +863,7 @@ export function assembleReport(opts: {
   const dominant = sourceTypes.find(s => s.cites > 0) ?? sourceTypes[0] ?? { type: "other", label: "Other", pct: 0 };
 
   // ── Brand leaderboard ──
-  const rawBrands: any[] = Array.isArray(a.brands) ? a.brands : [];
+  const rawBrands = Array.isArray(a.brands) ? a.brands : [];
   const queryCount = Math.max(uniqueQueries, 1);
   const brands: GeoBrand[] = rawBrands.slice(0, 12).map((b, i) => {
     const rank = i + 1;
@@ -449,7 +897,7 @@ export function assembleReport(opts: {
   }).filter(f => f.items.length > 0);
 
   // ── Key entities (grouped by category) ──
-  const rawEntities: any[] = Array.isArray(a.keyEntities) ? a.keyEntities : [];
+  const rawEntities = Array.isArray(a.keyEntities) ? a.keyEntities : [];
   const byCat = new Map<string, { name: string; count: number; brands: string[] }[]>();
   for (const e of rawEntities) {
     const cat = String(e.category || "Concepts");
@@ -477,7 +925,6 @@ export function assembleReport(opts: {
   // ── Inclusion pattern ──
   const citedTypesSorted = sourceTypes.filter(s => s.cites > 0);
   const scannedNeverCited = sourceTypes.filter(s => s.cites === 0 && s.domains > 0);
-  const topBrandDomains = new Set(brands.slice(0, 3).map(b => b.domain));
   const inclusionSignals: GeoInclusionSignal[] = [];
   if (citedTypesSorted[0]) {
     const s = citedTypesSorted[0];
@@ -509,7 +956,6 @@ export function assembleReport(opts: {
   const stability = brands.length >= 5 ? "high confidence" : brands.length >= 3 ? "low confidence" : "very low confidence";
 
   // ── Coverage gaps (missing source types = taxonomy types never seen) ──
-  const seenTypes = new Set(sourceTypes.map(s => s.type));
   const missingSourceTypes = ["review_aggregator", "listicle_editorial"]
     .filter(ty => (citesByType.get(ty) ?? 0) === 0)
     .map(ty => ({
@@ -540,6 +986,16 @@ export function assembleReport(opts: {
 
   const openPages = trace.opened.map((o, i) => ({ rank: i + 1, domain: domainOf(o.url), path: pathOf(o.url), url: o.url }));
 
+  // ── Your page (only when the audit ran with a pageUrl whose fetch succeeded) ──
+  const rawYour = (a.yourPage && typeof a.yourPage === "object") ? a.yourPage : null;
+  const yourPage: GeoReport["yourPage"] = ownPage && rawYour ? {
+    cited: Boolean(rawYour.cited),
+    citedCompetitors: Array.isArray(rawYour.citedCompetitors) ? rawYour.citedCompetitors.map(String).slice(0, 8) : [],
+    gaps: Array.isArray(rawYour.gaps) ? rawYour.gaps.map(String).slice(0, 8) : [],
+    fixes: Array.isArray(rawYour.fixes) ? rawYour.fixes.map(String).slice(0, 8) : [],
+    summary: String(rawYour.summary || ""),
+  } : undefined;
+
   return {
     query, language, country, model, createdAt: Date.now(),
     classification: {
@@ -566,12 +1022,53 @@ export function assembleReport(opts: {
       chars: trace.answerText.length,
       citations: trace.citations.map((c, i) => ({ n: i + 1, domain: c.domain, url: c.url, title: c.title })),
     },
+    pageUrl: pageUrl ?? undefined,
+    // JSON.stringify drops the key entirely when undefined, so audits run without a page URL
+    // keep the exact old report shape on disk.
+    ...(yourPage ? { yourPage } : {}),
   };
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────────
 export async function runGeoAudit(params: {
   query: string; language?: string; country?: string; model?: string; apiKey: string; engine?: GeoEngine;
+  /**
+   * Model for stage 2 — the structured pass that turns the search trace into a report. Separate
+   * from the search model on purpose: stage 1 needs browsing depth, stage 2 needs to emit JSON
+   * cheaply, and paying flagship rates for the second is waste.
+   *
+   * Supplied by the caller from the `utility` task setting. It used to be `"gpt-4o-mini"`,
+   * written into this file, which meant the cheap pass was pinned to a model the user could not
+   * see, could not change, and which will eventually be retired out from under them.
+   */
+  analysisModel?: string;
+  /**
+   * Full stage-2 credentials, when the caller has them. Optional and additive: a client that
+   * sends only `analysisModel` — or nothing — keeps the previous behaviour exactly, which
+   * matters because this runs detached in the background for live users.
+   */
+  analysis?: GeoAnalysisCreds;
+  /**
+   * Endpoint override for the GEO ENGINE (stage 1 + the stage-2 fallback), from
+   * aiBaseUrl_openai. Same convention as the shared client: a gateway key must be spent
+   * against the gateway, never against the vendor it proxies.
+   */
+  baseUrl?: string;
+  /**
+   * Preset name inside the user's A-Parser (engine "aparser" only). The preset decides both
+   * the parser options — "Search the web" MUST be on, or the answer comes from the model's
+   * weights and measures nothing — and the result format, which is why the response mapper
+   * accepts a range of shapes instead of one.
+   */
+  aparserPreset?: string;
+  /** A-Parser thread-count config to run under ("default" unless the user changed it). */
+  aparserConfig?: string;
+  /**
+   * The user's own page, when they want the report to say what to fix on IT rather than only
+   * describe the niche. Fetched after the search trace and fed to stage 2 as a comparison
+   * target; costs one extra fetch and a longer analysis prompt — nothing against stage 1.
+   */
+  pageUrl?: string;
 }): Promise<GeoResult> {
   const query = String(params.query ?? "").trim();
   if (!query) return { ok: false, error: "no_query" };
@@ -579,16 +1076,42 @@ export async function runGeoAudit(params: {
   if (!apiKey) return { ok: false, error: "no_key" };
   const language = String(params.language ?? "en");
   const country = String(params.country ?? "us");
-  const engine: GeoEngine = params.engine === "kie" ? "kie" : "openai";
-  const model = String(params.model ?? "") || (engine === "kie" ? "gpt-5-5" : "gpt-5");
+  const engine: GeoEngine = params.engine === "kie" ? "kie"
+    : params.engine === "gemini" ? "gemini"
+    : params.engine === "aparser" ? "aparser"
+    : "openai";
+  // A-Parser is not asked for a model — it reports the one its free session happened to serve —
+  // so the placeholder here is only what the audit row shows until the real id comes back on
+  // the trace. Defaulting it to an OpenAI id would put a model in the report that never ran.
+  const model = String(params.model ?? "")
+    || (engine === "aparser" ? GEO_APARSER_PARSER
+      : engine === "kie" ? "gpt-5-5"
+      : engine === "gemini" ? "gemini-2.5-flash"
+      : OPENAI_FALLBACK_MODELS[0]);
+  const baseUrl = String(params.baseUrl ?? "").trim() || undefined;
+  // The endpoint is not optional on this engine: there is no public host to fall back to, and
+  // an empty one would send the instance password nowhere useful.
+  if (engine === "aparser" && !baseUrl) return { ok: false, error: "aparser_no_url" };
 
-  const trace = await runWebSearch(query, language, country, model, apiKey, engine);
+  const trace = await runWebSearch(query, language, country, model, apiKey, engine, baseUrl, params.aparserPreset, params.aparserConfig);
   if ("error" in trace) return { ok: false, error: trace.error };
   if (!trace.answerText && trace.citations.length === 0 && trace.batches.length === 0) {
     return { ok: false, error: "empty_trace" };
   }
 
-  const analysis = await runAnalysis(trace, query, language, country, model, apiKey, engine);
-  const report = assembleReport({ query, language, country, model, trace, analysis });
+  // Through a gateway the hardcoded cheap default is an id the gateway may not serve (its
+  // catalogue is not OpenAI's), so the search model — a proven-valid id on that gateway —
+  // stands in for the unattended stage-2 fallback. The Gemini engine defaults likewise: an
+  // OpenAI id would 404 against the user's Gemini key.
+  const analysisModel = String(params.analysisModel ?? "")
+    || (engine === "gemini" || engine === "kie" || engine === "aparser" || baseUrl ? model : OPENAI_FALLBACK_CHEAP);
+  const pageUrl = typeof params.pageUrl === "string" && /^https?:\/\//i.test(params.pageUrl.trim())
+    ? params.pageUrl.trim().slice(0, 300) : undefined;
+  const ownPage = pageUrl ? await fetchOwnPageText(pageUrl) : undefined;
+  const analysis = await runAnalysis(trace, query, language, country, analysisModel, apiKey, engine, params.analysis, baseUrl, ownPage);
+  // What ran, not what was requested. On A-Parser the two differ by construction, and a report
+  // that silently claims the requested id would hide the whole point of the trade-off: the free
+  // tier serves whichever model it serves that day.
+  const report = assembleReport({ query, language, country, model: trace.model || model, trace, analysis, pageUrl, ownPage });
   return { ok: true, data: report };
 }

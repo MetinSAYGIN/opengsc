@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
-import { verifyAuthOrShare } from "@/lib/authShare";
+import { Prisma, Site } from "@/generated/prisma";
 import { getUserSerpCreds } from "@/lib/rank";
 import { getUserGoogleAccounts, queryGsc, isoDaysAgo } from "@/lib/gscQuery";
+import { validateLocation } from "@/lib/seo/localPack";
 
 async function ownedSite(userId: string, siteId: string) {
   return prisma.site.findFirst({ where: { id: siteId, userId } });
@@ -20,8 +20,8 @@ export async function GET(req: Request) {
   
   const shareToken = searchParams.get("shareToken");
   let userId: string;
-  let site: any = null;
-  let whereClause: any = {};
+  let site: Site | null = null;
+  let whereClause: Prisma.TrackedKeywordWhereInput = {};
 
   if (shareToken) {
     site = await prisma.site.findFirst({ where: { shareToken, shareEnabled: true } });
@@ -29,8 +29,7 @@ export async function GET(req: Request) {
     userId = site.userId;
     whereClause = { siteId: site.id };
   } else {
-    const session = await getServerSession(authOptions);
-    const loggedInId = (session?.user as any)?.id as string | undefined;
+        const loggedInId = await workspaceUserId();
     if (!loggedInId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     userId = loggedInId;
 
@@ -51,13 +50,13 @@ export async function GET(req: Request) {
       checks: {
         orderBy: { checkedAt: "desc" },
         take: 30,
-        select: { checkedAt: true, position: true, error: true },
+        select: { checkedAt: true, position: true, error: true, provider: true, localPack: true, hasLocalPack: true },
       },
     },
   });
 
   // GSC comparison: one query for all keywords (top 500 by clicks, last 7 finalized days)
-  let gscMap: Record<string, { pos: number; clicks: number; impressions: number }> = {};
+  const gscMap: Record<string, { pos: number; clicks: number; impressions: number }> = {};
   if (withGsc && keywords.length && site) {
     const accounts = await getUserGoogleAccounts(userId);
     const rows = await queryGsc(accounts, site.siteId, {
@@ -80,6 +79,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     provider: creds?.provider ?? null,
+    fallbackProvider: creds?.fallback?.provider ?? null,
     hasSerpKey: !!creds,
     keywords: keywords.map(k => ({
       id: k.id,
@@ -87,6 +87,8 @@ export async function GET(req: Request) {
       country: k.country,
       lang: k.lang,
       device: k.device,
+      // wave-nov N3: "" = country-level keyword (as before) | city | "lat,lng"
+      location: k.location,
       createdAt: k.createdAt,
       lastCheckedAt: k.lastCheckedAt,
       position: k.lastPosition,
@@ -94,6 +96,12 @@ export async function GET(req: Request) {
       bestPosition: k.bestPosition,
       url: k.lastUrl,
       lastError: k.checks[0]?.error ?? null,
+      lastProvider: k.checks[0]?.provider ?? null,
+      // Map pack, kept OUTSIDE `position` (wave-nov §0.2): our place 1..3 or null = not in pack.
+      localPack: k.lastLocalPack,
+      // What the last check said about the pack itself: true = pack existed, we are not in it;
+      // false = no pack on that SERP; null = provider does not report packs.
+      lastHasLocalPack: k.checks[0]?.hasLocalPack ?? null,
       // sparkline: oldest → newest
       history: [...k.checks].reverse().map(c => ({ date: c.checkedAt, position: c.position })),
       gsc: gscMap[k.keyword.toLowerCase()] ?? null,
@@ -101,10 +109,12 @@ export async function GET(req: Request) {
   });
 }
 
-// POST /api/rank/keywords  { siteId, keywords: string[], country?, lang?, device? }
+// POST /api/rank/keywords  { siteId, keywords: string[], country?, lang?, device?, location? }
+// wave-nov N3: `location` ("" | city | "lat,lng") is part of the keyword's IDENTITY — the same
+// query from Thessaloniki and from Athens is two rows. A line may carry its own location as a
+// CSV second column ("taxi thessaloniki airport,Thessaloniki, Greece"), overriding the field.
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));
@@ -116,35 +126,69 @@ export async function POST(req: Request) {
   const lang = (String(b.lang ?? "en").trim().toLowerCase() || "en").slice(0, 5);
   const device = b.device === "mobile" ? "mobile" : "desktop";
 
-  const raw: string[] = Array.isArray(b.keywords) ? b.keywords : [String(b.keywords ?? "")];
-  const list = [...new Set(
-    raw.flatMap(s => String(s).split("\n"))
-      .map(s => s.trim().toLowerCase().replace(/\s+/g, " "))
-      .filter(s => s.length > 0 && s.length <= 200),
-  )].slice(0, 200);
+  const locCheck = validateLocation(b.location);
+  if (!locCheck.ok) return NextResponse.json({ error: locCheck.error }, { status: 400 });
+  const defaultLocation = locCheck.value;
 
-  if (!list.length) return NextResponse.json({ error: "no_keywords" }, { status: 400 });
+  const raw: string[] = Array.isArray(b.keywords) ? b.keywords : [String(b.keywords ?? "")];
+  const invalid: { keyword: string; error: string }[] = [];
+  const parsed: { keyword: string; location: string }[] = [];
+  for (const line of raw.flatMap(s => String(s).split("\n"))) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // "keyword,location": the first comma starts the location column. A comma inside a keyword
+    // is not a query anyone searches, so it is read as the CSV separator, not punished.
+    const comma = trimmed.indexOf(",");
+    const kwPart = comma > 0 ? trimmed.slice(0, comma) : trimmed;
+    const locPart = comma > 0 ? trimmed.slice(comma + 1).trim() : "";
+    const keyword = kwPart.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!keyword || keyword.length > 200) continue;
+    let location = defaultLocation;
+    if (locPart !== "") {
+      const perLine = validateLocation(locPart);
+      if (!perLine.ok) { invalid.push({ keyword, error: perLine.error }); continue; }
+      location = perLine.value;
+    }
+    parsed.push({ keyword, location });
+  }
+
+  const seen = new Set<string>();
+  const list: { keyword: string; location: string }[] = [];
+  for (const p of parsed) {
+    const key = `${p.keyword}\u0000${p.location}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(p);
+    if (list.length >= 200) break;
+  }
+
+  if (!list.length) {
+    // With only invalid lines, say WHY (the location error is fixable); with nothing at all,
+    // keep the old "no_keywords" contract.
+    return invalid.length
+      ? NextResponse.json({ error: invalid[0].error, invalid }, { status: 400 })
+      : NextResponse.json({ error: "no_keywords" }, { status: 400 });
+  }
 
   let added = 0, existing = 0;
   const ids: string[] = [];
-  for (const keyword of list) {
+  for (const { keyword, location } of list) {
     try {
       const k = await prisma.trackedKeyword.create({
-        data: { siteId, keyword, country, lang, device },
+        data: { siteId, keyword, country, lang, device, location },
       });
       ids.push(k.id);
       added++;
     } catch {
-      existing++; // unique constraint — already tracked
+      existing++; // unique constraint (now incl. location) — already tracked
     }
   }
-  return NextResponse.json({ ok: true, added, existing, ids });
+  return NextResponse.json({ ok: true, added, existing, invalid, ids });
 }
 
 // DELETE /api/rank/keywords  { siteId, ids: string[] }
 export async function DELETE(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));

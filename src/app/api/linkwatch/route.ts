@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { workspaceUserId } from "@/lib/team/workspace";
+import type { Capability } from "@/lib/team/roles";
+import { rawQuery, rawExec, currentDialect } from "@/lib/db/raw";
 
 // Link Monitor brands + aggregated report (detailed.com/ai-backlinks-api workflow).
 // GET    /api/linkwatch                → { brands, mentions, topDomains }
@@ -11,20 +11,28 @@ import { prisma } from "@/lib/prisma";
 const norm = (s: string) => s.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
 const rid = () => "lw" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
-async function uid(): Promise<string | null> {
-  const session = await getServerSession(authOptions);
-  return ((session?.user as any)?.id as string) || null;
+async function uid(capability: Capability = "read"): Promise<string | null> {
+return workspaceUserId(capability);
 }
+
+// Row shapes the three GET queries return (all columns TEXT/REAL per the Prisma models,
+// dates as ISO strings) — kept local because they only live between rawQuery and the JSON body.
+interface BrandRow { id: string; domain: string; createdAt: string }
+interface MentionRow {
+  brand: string; urlFrom: string; domainFrom: string; title: string; anchor: string;
+  drFrom: number; firstSeen: string; dofollow: boolean; fetchedAt: string;
+}
+interface TopDomainRow { domainFrom: string; brandsLinked: number; links: number; maxDr: number }
 
 export async function GET() {
   const userId = await uid();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const brands: any[] = await prisma.$queryRawUnsafe(`SELECT id, domain, createdAt FROM "LinkWatchBrand" WHERE userId = ? ORDER BY domain`, userId);
-    const mentions: any[] = await prisma.$queryRawUnsafe(
+    const brands = await rawQuery<BrandRow[]>(`SELECT id, domain, createdAt FROM "LinkWatchBrand" WHERE userId = ? ORDER BY domain`, userId);
+    const mentions = await rawQuery<MentionRow[]>(
       `SELECT brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, dofollow, fetchedAt
        FROM "LinkMention" WHERE userId = ? ORDER BY firstSeen DESC LIMIT 1000`, userId);
-    const topDomains: any[] = await prisma.$queryRawUnsafe(
+    const topDomains = await rawQuery<TopDomainRow[]>(
       `SELECT domainFrom, COUNT(DISTINCT brand) as brandsLinked, COUNT(*) as links, MAX(drFrom) as maxDr
        FROM "LinkMention" WHERE userId = ? GROUP BY domainFrom ORDER BY brandsLinked DESC, links DESC LIMIT 100`, userId);
     return NextResponse.json({ brands, mentions, topDomains });
@@ -34,16 +42,22 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const userId = await uid();
+  const userId = await uid("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const b = await req.json().catch(() => ({}));
-  const domains: string[] = ([...new Set((Array.isArray(b.domains) ? b.domains : []).map((d: any) => norm(String(d))).filter((d: string) => d.includes(".")))] as string[]).slice(0, 200);
+  const domains: string[] = ([...new Set((Array.isArray(b.domains) ? b.domains : []).map((d: unknown) => norm(String(d))).filter((d: string) => d.includes(".")))] as string[]).slice(0, 200);
   if (!domains.length) return NextResponse.json({ error: "no_domains" }, { status: 400 });
   let added = 0;
+  // `INSERT OR IGNORE` is SQLite's "skip the duplicate" spelling; MySQL writes it `INSERT IGNORE`.
+  // The rest of the codebase routes conflict-skips through runUpsert, but this insert carries a
+  // generated id and wants to do nothing on conflict, which is exactly what both spellings mean.
+  // portableSql rewrites the double-quoted table name to backticks on MySQL; the OR IGNORE / IGNORE
+  // keyword is chosen here because it sits outside any quoted identifier.
+  const ignore = currentDialect() === "mysql" ? "IGNORE" : "OR IGNORE";
   for (const d of domains) {
     try {
-      await prisma.$executeRawUnsafe(
-        `INSERT OR IGNORE INTO "LinkWatchBrand" (id, userId, domain, createdAt) VALUES (?, ?, ?, ?)`,
+      await rawExec(
+        `INSERT ${ignore} INTO "LinkWatchBrand" (id, userId, domain, createdAt) VALUES (?, ?, ?, ?)`,
         rid(), userId, d, new Date().toISOString());
       added++;
     } catch { /* skip */ }
@@ -52,14 +66,14 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const userId = await uid();
+  const userId = await uid("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { searchParams } = new URL(req.url);
   const domain = norm(String(searchParams.get("domain") ?? ""));
   if (!domain) return NextResponse.json({ error: "no_domain" }, { status: 400 });
   try {
-    await prisma.$executeRawUnsafe(`DELETE FROM "LinkWatchBrand" WHERE userId = ? AND domain = ?`, userId, domain);
-    await prisma.$executeRawUnsafe(`DELETE FROM "LinkMention" WHERE userId = ? AND brand = ?`, userId, domain);
+    await rawExec(`DELETE FROM "LinkWatchBrand" WHERE userId = ? AND domain = ?`, userId, domain);
+    await rawExec(`DELETE FROM "LinkMention" WHERE userId = ? AND brand = ?`, userId, domain);
   } catch { /* table missing */ }
   return NextResponse.json({ ok: true });
 }

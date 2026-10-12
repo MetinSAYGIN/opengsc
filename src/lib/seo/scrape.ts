@@ -3,6 +3,15 @@
 // fall back to Firecrawl when direct fetch fails or returns too little (anti-bot pages).
 // No third-party HTML-parsing deps — pure regex extraction.
 
+import { extractMainContent } from "./readability";
+import { loggedFetch, type CallHandle } from "@/lib/providerLog/log";
+import { safeFetch, type SafeFetchResponse } from "@/lib/security/safeFetch";
+
+// Only the Firecrawl calls in this file are logged as provider calls. Everything else here goes
+// out through `safeFetch` to the customer's own target sites, which nobody bills for and which
+// would swamp the provider log with the one thing it is not about — so this module is
+// deliberately absent from the enumeration in providerModules.test.ts.
+
 export interface ScrapedPage {
   url: string;
   ok: boolean;
@@ -13,7 +22,20 @@ export interface ScrapedPage {
   wordCount: number;
   hasPriceTable: boolean;
   hasFaq: boolean;
-  textSample: string; // first ~6000 chars of body text (for the LLM grounding)
+  /**
+   * First ~6000 chars of the ARTICLE BODY (not the raw document) — the LLM grounding sample.
+   * It used to be the first 6000 chars of the flattened page, which on any real site is the
+   * mega-menu, so every consumer of this field was being fed navigation. See ./readability.ts.
+   */
+  textSample: string;
+  /** Article body as Markdown with headings intact — for callers that rewrite or reproduce a page. */
+  contentMarkdown: string;
+  /** Body word count after boilerplate removal (differs from wordCount, which counts the raw page). */
+  contentWords: number;
+  /** Share of body text sitting inside links; high means navigation survived. */
+  linkDensity: number;
+  /** No article found — the page yielded chrome only. Callers must refuse rather than process it. */
+  boilerplateOnly: boolean;
   error?: string;
 }
 
@@ -65,6 +87,10 @@ export function parseHtml(url: string, html: string): ScrapedPage {
     /itemtype=["'][^"']*FAQPage/i.test(html) ||
     /frequently asked/i.test(bodyText);
 
+  // Boilerplate removal happens here, once, so every downstream consumer (Rewriter, outline MAP
+  // stage, Content Gap, fact-checking) gets article text instead of navigation.
+  const main = extractMainContent(html);
+
   return {
     url,
     ok: true,
@@ -75,7 +101,14 @@ export function parseHtml(url: string, html: string): ScrapedPage {
     wordCount,
     hasPriceTable,
     hasFaq,
-    textSample: bodyText.slice(0, 6000),
+    // Prefer extracted body whenever there is ANY of it. Falling back to the flattened document
+    // just because the article is short would put the navigation straight back into the sample —
+    // a short article is still an article, and menu text is never the better option.
+    textSample: (main.text || bodyText).slice(0, 6000),
+    contentMarkdown: main.markdown,
+    contentWords: main.words,
+    linkDensity: main.linkDensity,
+    boilerplateOnly: main.boilerplateOnly,
   };
 }
 
@@ -129,12 +162,13 @@ export interface StructureResult {
 // per-section word count — used by the Landing-flow "under my page" import.
 export async function scrapeStructure(url: string, firecrawlKey?: string): Promise<StructureResult> {
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml",
       },
-      signal: AbortSignal.timeout(15000),
+      timeoutMs: 15_000,
+      maxBytes: 5 * 1024 * 1024,
       redirect: "follow",
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -144,15 +178,18 @@ export async function scrapeStructure(url: string, firecrawlKey?: string): Promi
     const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     const title = titleMatch ? decodeEntities(stripTags(titleMatch[1])) : "";
     return { url, ok: true, via: "fetch", title, nodes, totalWords: nodes.reduce((s, n) => s + n.words, 0) };
-  } catch (e: any) {
+  } catch (e) {
     if (firecrawlKey) {
+      let call: CallHandle | undefined;
       try {
-        const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
+        const opened = await loggedFetch("https://api.firecrawl.dev/v1/scrape", {
           method: "POST",
           headers: { Authorization: `Bearer ${firecrawlKey}`, "Content-Type": "application/json" },
           body: JSON.stringify({ url, formats: ["html", "markdown"], onlyMainContent: true }),
           signal: AbortSignal.timeout(45000),
-        });
+        }, { provider: "firecrawl" });
+        const res = opened.res;
+        call = opened.call;
         if (!res.ok) throw new Error(`firecrawl ${res.status}`);
         const data = await res.json();
         const html: string = data?.data?.html ?? "";
@@ -160,27 +197,52 @@ export async function scrapeStructure(url: string, firecrawlKey?: string): Promi
         const meta = data?.data?.metadata ?? {};
         const nodes = html ? extractStructure(html) : extractStructureFromMarkdown(md);
         if (!nodes.length) throw new Error("no_headings");
+        call.finish();
         return { url, ok: true, via: "firecrawl", title: meta.title || "", nodes, totalWords: nodes.reduce((s, n) => s + n.words, 0) };
-      } catch (e2: any) {
-        return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: `fetch:${e?.message}; firecrawl:${e2?.message}` };
+      } catch (e2) {
+        call?.finish({ error: (e2 as Error)?.message ?? "firecrawl_failed" });
+        return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: `fetch:${(e as Error)?.message}; firecrawl:${(e2 as Error)?.message}` };
       }
     }
-    return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: e?.message ?? "fetch_failed" };
+    return { url, ok: false, via: "failed", title: "", nodes: [], totalWords: 0, error: (e as Error)?.message ?? "fetch_failed" };
+  }
+}
+
+// Decode a response using the charset the page actually declares.
+//
+// `res.text()` trusts the Content-Type header and silently falls back to UTF-8 when it is missing
+// or wrong. That mangles pages declaring their encoding only in a <meta charset> tag — still common
+// on older regional sites (windows-1251 in RU/UA, ISO-8859-7 in GR). Mojibake here is invisible
+// downstream: the rewrite still "succeeds", it just produces garbled text.
+async function decodeResponse(res: Pick<SafeFetchResponse, "arrayBuffer" | "headers">): Promise<string> {
+  const buf = await res.arrayBuffer();
+  const header = /charset=["']?([\w-]+)/i.exec(res.headers.get("content-type") || "")?.[1];
+  // Sniff the first 2KB as Latin-1 to read the meta tag without knowing the final encoding yet.
+  const head = new TextDecoder("latin1").decode(buf.slice(0, 2048));
+  const meta =
+    /<meta[^>]+charset=["']?([\w-]+)/i.exec(head)?.[1] ||
+    /<meta[^>]+content=["'][^"']*charset=([\w-]+)/i.exec(head)?.[1];
+  const charset = (header || meta || "utf-8").toLowerCase();
+  try {
+    return new TextDecoder(charset).decode(buf);
+  } catch {
+    return new TextDecoder("utf-8").decode(buf); // unknown label — UTF-8 is the safe default
   }
 }
 
 async function directFetch(url: string): Promise<ScrapedPage> {
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
       Accept: "text/html,application/xhtml+xml",
     },
-    signal: AbortSignal.timeout(15000),
+    timeoutMs: 15_000,
+    maxBytes: 5 * 1024 * 1024,
     redirect: "follow",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
+  const html = await decodeResponse(res);
   const parsed = parseHtml(url, html);
   // Heuristic: anti-bot / empty pages → force fallback
   if (parsed.wordCount < 80 && parsed.headings.length === 0) {
@@ -191,14 +253,18 @@ async function directFetch(url: string): Promise<ScrapedPage> {
 
 // Firecrawl fallback. Docs: https://firecrawl.dev — returns clean markdown + html.
 async function firecrawlFetch(url: string, apiKey: string): Promise<ScrapedPage> {
-  const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
+  const { res, call } = await loggedFetch("https://api.firecrawl.dev/v1/scrape", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ url, formats: ["html", "markdown"], onlyMainContent: true }),
     signal: AbortSignal.timeout(45000),
-  });
-  if (!res.ok) throw new Error(`firecrawl ${res.status}`);
+  }, { provider: "firecrawl" });
+  if (!res.ok) {
+    call.finish({ error: `firecrawl ${res.status}` });
+    throw new Error(`firecrawl ${res.status}`);
+  }
   const data = await res.json();
+  call.finish();
   const html: string = data?.data?.html ?? "";
   const md: string = data?.data?.markdown ?? "";
   const meta = data?.data?.metadata ?? {};
@@ -212,7 +278,12 @@ async function firecrawlFetch(url: string, apiKey: string): Promise<ScrapedPage>
     wordCount: md ? md.split(/\s+/).length : 0,
     hasPriceTable: /\|.*(price|cost|€|\$|£|руб)/i.test(md),
     hasFaq: /faq|frequently asked/i.test(md),
+    // Firecrawl was asked for onlyMainContent, so its markdown is already the article body.
     textSample: md.slice(0, 6000),
+    contentMarkdown: md,
+    contentWords: md ? md.split(/\s+/).filter(Boolean).length : 0,
+    linkDensity: 0,
+    boilerplateOnly: md.split(/\s+/).filter(Boolean).length < 120,
   };
   parsed.via = "firecrawl";
   parsed.title = parsed.title || meta.title || "";
@@ -223,15 +294,15 @@ async function firecrawlFetch(url: string, apiKey: string): Promise<ScrapedPage>
 export async function scrapePage(url: string, firecrawlKey?: string): Promise<ScrapedPage> {
   try {
     return await directFetch(url);
-  } catch (e: any) {
+  } catch (e) {
     if (firecrawlKey) {
       try {
         return await firecrawlFetch(url, firecrawlKey);
-      } catch (e2: any) {
-        return failed(url, `fetch:${e?.message}; firecrawl:${e2?.message}`);
+      } catch (e2) {
+        return failed(url, `fetch:${(e as Error)?.message}; firecrawl:${(e2 as Error)?.message}`);
       }
     }
-    return failed(url, e?.message ?? "fetch_failed");
+    return failed(url, (e as Error)?.message ?? "fetch_failed");
   }
 }
 
@@ -239,7 +310,8 @@ function failed(url: string, error: string): ScrapedPage {
   return {
     url, ok: false, via: "failed", title: "", metaDescription: "",
     headings: [], wordCount: 0, hasPriceTable: false, hasFaq: false,
-    textSample: "", error,
+    textSample: "", contentMarkdown: "", contentWords: 0, linkDensity: 1,
+    boilerplateOnly: true, error,
   };
 }
 

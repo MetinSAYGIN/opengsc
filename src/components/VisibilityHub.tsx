@@ -1,0 +1,86 @@
+"use client";
+
+// The «Видимость» hub: the site tab formerly known as "AI Visibility" (deep-link key `aeo`
+// stays), now a shell of sub-tabs. T0 builds the shell; the panels are filled by the wave —
+// AI answers is the existing AeoTracker, Share of voice and Cited domains land with T7,
+// Mentions with T6. LLM Mentions (the DataForSEO index) already existed as BrandVisibility.
+
+import { useSyncExternalStore } from "react";
+import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { usePersistedState } from "@/lib/usePersistedState";
+import AeoTracker from "@/components/AeoTracker";
+import BrandVisibility from "@/components/BrandVisibility";
+import AiShareOfVoice from "@/components/visibility/AiShareOfVoice";
+import CitedDomains from "@/components/visibility/CitedDomains";
+import MentionsPanel from "@/components/visibility/MentionsPanel";
+import YandexAiPanel from "@/components/visibility/YandexAiPanel";
+import { hasMetricsKey } from "@/lib/seo/metricsClient";
+
+// Sub-tab vocabulary. Allow-listed so a stale or foreign ?vis= value falls back to "ai" the
+// same way the site page validates ?tab=. "llm" is guest-hidden (see below).
+const VIS_TABS = ["ai", "sov", "mentions", "llm", "yandex"] as const;
+type VisTab = typeof VIS_TABS[number];
+const isVisTab = (v: unknown): boolean => typeof v === "string" && (VIS_TABS as readonly string[]).includes(v);
+
+// Whether a Keys.so key is configured in this browser. Read through useSyncExternalStore so the
+// server pass (no localStorage) and the first client pass agree: false on the server, the real
+// answer once hydrated — no setState-in-effect, no hydration mismatch.
+const noop = () => () => {};
+const useKeyssoKey = () => useSyncExternalStore(noop, () => hasMetricsKey("keysso"), () => false);
+
+export default function VisibilityHub({
+  siteDbId, domain, readOnly = false,
+}: { siteDbId: string; domain: string; readOnly?: boolean }) {
+  const { t } = useLanguage();
+  // Deep-linkable sub-tab (?tab=aeo&vis=sov): read once on mount, mirrored back on change —
+  // same URL-param store the site page uses for `tab`, so both survive refresh and share.
+  const [vis, setVis] = usePersistedState<VisTab>(null, "ai", isVisTab, "vis");
+  // «Яндекс AI» only exists for users who connected Keys.so — everyone else sees the hub as before.
+  const keysso = useKeyssoKey();
+
+  // The guest (read-only share) view keeps only the analytic sub-tabs: mentions carry
+  // outreach actions T6 builds, LLM Mentions spends a DataForSEO key. Mirrors how the site
+  // page's TABS drop action-heavy tabs for guests.
+  const tabs: { key: VisTab; label: string }[] = [
+    { key: "ai", label: t("visTabAi") },
+    { key: "sov", label: t("visTabSov") },
+    ...(readOnly ? [] : [
+      { key: "mentions" as const, label: t("visTabMentions") },
+      { key: "llm" as const, label: t("visTabLlm") },
+      ...(keysso ? [{ key: "yandex" as const, label: t("visTabYandex") }] : []),
+    ]),
+  ];
+  const active: VisTab = tabs.some(item => item.key === vis) ? vis : "ai";
+
+  return (
+    // The tab container every other site tab owns at its root (RankTracker: 28px 32px,
+    // BacklinkProfile gets the same wrap from the page). Without it the pill row and the
+    // sub-tab cards hug the viewport edge while AeoTracker's own 32px inset sits crooked
+    // below them — the hub is the tab now, so the inset lives here once, and the panels
+    // render bare (AeoTracker's own padding is stripped for the same reason).
+    <div style={{ padding: "28px 32px", display: "flex", flexDirection: "column", gap: "12px", width: "100%", boxSizing: "border-box" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          {tabs.map(({ key, label }) => (
+            <button key={key} className={active === key ? "pill active" : "pill"} onClick={() => setVis(key)}
+              style={{ cursor: "pointer" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("visHubHint")}</div>
+      </div>
+
+      {active === "ai" && <AeoTracker siteDbId={siteDbId} domain={domain} />}
+      {active === "sov" && (
+        <>
+          <AiShareOfVoice siteDbId={siteDbId} domain={domain} readOnly={readOnly} />
+          <CitedDomains siteDbId={siteDbId} domain={domain} readOnly={readOnly} />
+        </>
+      )}
+      {active === "mentions" && <MentionsPanel siteDbId={siteDbId} domain={domain} readOnly={readOnly} />}
+      {active === "llm" && <BrandVisibility siteDbId={siteDbId} />}
+      {active === "yandex" && <YandexAiPanel siteDbId={siteDbId} />}
+    </div>
+  );
+}

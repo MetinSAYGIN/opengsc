@@ -4,19 +4,24 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, Code2, Copy, Download, ChevronDown, Pencil, Wand2, Check, X,
-  FileText, ListTree, Target, Hash, HelpCircle, ArrowUp, Loader2,
+  FileText, ListTree, Target, Hash, HelpCircle, ArrowUp, Loader2, Send,
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { readUrlParam, writeUrlParam } from "@/lib/urlParam";
 import { OutlineStructure, OutlineEntities } from "@/components/SeoRenderers";
 import SeoContentAnalysis from "@/components/SeoContentAnalysis";
 import SeoTextDetail from "@/components/SeoTextDetail";
 import SeoLandingDetail from "@/components/SeoLandingDetail";
 import SeoClusterDetail from "@/components/SeoClusterDetail";
-import { getHistoryItem, updateHistory, addHistory, HistoryItem } from "@/lib/seo/history";
+import PublishDialog from "@/components/publishing/PublishDialog";
+import { getHistoryItem, resolveHistoryItem, updateHistory, addHistory, HistoryItem } from "@/lib/seo/history";
 import { outlineToMarkdown, outlineToHtml, htmlDocument, outlineHeadings, outlineSummary } from "@/lib/seo/outlineFormat";
 import { getSeoGenCreds, getSerpCreds, getFirecrawlKey, getFactSourceCount, getHardRedact, loadPolicies, getActivePolicyName } from "@/lib/seo/keys";
 import { TONES, toneToPrompt } from "@/lib/seo/tones";
 import { LANGUAGES } from "@/lib/seo/regions";
+
+/** The translator hook hands back — the dictionary key union is not exported, so reuse it. */
+type Translate = ReturnType<typeof useLanguage>["t"];
 
 export default function TaskDetailPage() {
   const { t } = useLanguage();
@@ -26,15 +31,32 @@ export default function TaskDetailPage() {
 
   const [item, setItem] = useState<HistoryItem | null | undefined>(undefined);
   const [tab, setTab] = useState<"structure" | "entities">("structure");
+  // Deep link (?tab=entities): restore on mount, mirror on change. Validated against the union,
+  // so a stale param falls back to the default.
+  useEffect(() => {
+    const p = readUrlParam("tab");
+    if (p === "structure" || p === "entities") setTab(p);
+  }, []);
+  useEffect(() => { writeUrlParam("tab", tab); }, [tab]);
   const [showHtml, setShowHtml] = useState(false);
   const [dlOpen, setDlOpen] = useState(false);
   const [edit, setEdit] = useState(false);
   const [editText, setEditText] = useState("");
   const [copied, setCopied] = useState("");
   const [genOpen, setGenOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
   const topRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { setItem(getHistoryItem(id) || null); }, [id]);
+  // Cache-first: the local copy paints instantly; a record evicted from the cache (older than
+  // the newest 150) is fetched from the server, which keeps every record forever.
+  useEffect(() => {
+    let alive = true;
+    const local = getHistoryItem(id);
+    if (local) { setItem(local); return; }
+    setItem(undefined);
+    resolveHistoryItem(id).then(rec => { if (alive) setItem(rec); });
+    return () => { alive = false; };
+  }, [id]);
 
   useEffect(() => {
     if (item && item.type === "googlebot") {
@@ -63,7 +85,7 @@ export default function TaskDetailPage() {
     try {
       const blob = new Blob([html], { type: "text/html" });
       const txt = new Blob([plainText()], { type: "text/plain" });
-      (navigator.clipboard as any).write([new (window as any).ClipboardItem({ "text/html": blob, "text/plain": txt })]).then(() => flash("docs"));
+      navigator.clipboard.write([new ClipboardItem({ "text/html": blob, "text/plain": txt })]).then(() => flash("docs"));
     } catch { navigator.clipboard.writeText(plainText()).then(() => flash("docs")); }
   }
 
@@ -87,7 +109,7 @@ export default function TaskDetailPage() {
   function startEdit() { setEditText(isText ? plainText() : JSON.stringify(item!.data, null, 2)); setEdit(true); }
   function saveEdit() {
     if (!item) return;
-    let data: any = editText;
+    let data: unknown = editText;
     if (!isText) { try { data = JSON.parse(editText); } catch { return; } }
     updateHistory(item.id, data); setItem({ ...item, data }); setEdit(false);
   }
@@ -101,8 +123,35 @@ export default function TaskDetailPage() {
   );
 
   if (item.type === "googlebot") return <div style={{ padding: "40px", textAlign: "center", color: "var(--color-text-secondary)" }}><Loader2 size={20} className="spin" /></div>;
-  if (item.type === "text") return <SeoTextDetail item={item} />;
-  if (item.type === "landing") return <SeoLandingDetail item={item} />;
+  // Text and landing are the two record types that carry a publishable body, so they get the
+  // Publish action bar over the detail view. The dialog is given the local body as a fallback
+  // for the (rare) case where the server copy has not synced yet.
+  if (item.type === "text" || item.type === "landing") {
+    const fb = item.type === "text" && typeof item.data === "string"
+      ? item.data
+      : item.type === "landing" && item.data && typeof item.data === "object"
+        ? (typeof (item.data as { text?: unknown }).text === "string" && (item.data as { text?: unknown }).text
+          ? (item.data as { text: string }).text
+          : (item.data as { outline?: unknown }).outline ? outlineToMarkdown((item.data as { outline: unknown }).outline) : "")
+        : "";
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div className="panel" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
+          <span style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{t("publishDesc")}</span>
+          <button onClick={() => setPublishOpen(true)} style={btnGhost}><Send size={15} /> {t("publishHistoryAction")}</button>
+        </div>
+        {item.type === "text" ? <SeoTextDetail item={item} /> : <SeoLandingDetail item={item} />}
+        {publishOpen && (
+          <PublishDialog
+            historyId={item.id}
+            fallbackTitle={item.keyword}
+            fallbackMarkdown={fb || undefined}
+            onClose={() => setPublishOpen(false)}
+          />
+        )}
+      </div>
+    );
+  }
   if (item.type === "cluster") return <SeoClusterDetail item={item} />;
 
   return (
@@ -161,7 +210,7 @@ export default function TaskDetailPage() {
               {([["structure", t("seoTabContentStructure")], ["entities", t("seoTabEntityAnalysis")]] as const).map(([k, label]) => {
                 const on = tab === k;
                 return (
-                  <button key={k} onClick={() => setTab(k as any)} style={{ padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: on ? 700 : 500, cursor: "pointer", border: "none", background: on ? "var(--color-accent-purple)" : "transparent", color: on ? "#fff" : "var(--color-text-secondary)", boxShadow: on ? "0 1px 3px rgba(0,0,0,0.2)" : "none", transition: "all 0.15s" }}>{label}</button>
+                  <button key={k} onClick={() => setTab(k)} style={{ padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: on ? 700 : 500, cursor: "pointer", border: "none", background: on ? "var(--color-accent-purple)" : "transparent", color: on ? "#fff" : "var(--color-text-secondary)", boxShadow: on ? "0 1px 3px rgba(0,0,0,0.2)" : "none", transition: "all 0.15s" }}>{label}</button>
                 );
               })}
             </div>
@@ -232,7 +281,7 @@ function SidebarRow({ icon, label, value }: { icon: React.ReactNode; label: stri
   );
 }
 
-function HtmlModal({ title, html, t, onClose }: { title: string; html: string; t: any; onClose: () => void }) {
+function HtmlModal({ title, html, t, onClose }: { title: string; html: string; t: Translate; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const full = htmlDocument(title, html);
   return (
@@ -251,7 +300,7 @@ function HtmlModal({ title, html, t, onClose }: { title: string; html: string; t
   );
 }
 
-function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any; onClose: () => void; onDone: (rec: HistoryItem) => void }) {
+function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: Translate; onClose: () => void; onDone: (rec: HistoryItem) => void }) {
   const policies = loadPolicies();
   const [policyName, setPolicyName] = useState(getActivePolicyName());
   const [tone, setTone] = useState("");
@@ -274,13 +323,13 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
       const serp = getSerpCreds();
       const res = await fetch("/api/seo/text", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ outline: item.data, keyword: item.keyword, policy, language, tone: resolvedTone || undefined, sourceMode, includeToc, promptType, custom: promptType === "custom" ? (custom.trim() || undefined) : undefined, serpProvider: serp.provider, serpKey: serp.apiKey || undefined, firecrawlKey: getFirecrawlKey() || undefined, scrapeCount: getFactSourceCount(), hardRedact: getHardRedact(), aiProvider: provider, aiApiKey: apiKey, model: model || undefined }),
+        body: JSON.stringify({ outline: item.data, keyword: item.keyword, policy, language, tone: resolvedTone || undefined, sourceMode, includeToc, promptType, custom: promptType === "custom" ? (custom.trim() || undefined) : undefined, serpProvider: serp.provider, serpKey: serp.apiKey || undefined, serpBaseUrl: serp.baseUrl, firecrawlKey: getFirecrawlKey() || undefined, scrapeCount: getFactSourceCount(), hardRedact: getHardRedact(), aiProvider: provider, aiApiKey: apiKey, model: model || undefined }),
       });
       const data = await res.json();
       if (!res.ok) { setErr(data.error || t("seoErrText")); setLoading(false); return; }
       const rec = addHistory({ type: "text", keyword: item.keyword, data: data.text, meta: { outlineId: item.id, tone: tone || policy?.voice?.toneOfVoice || "" } });
       onDone(rec);
-    } catch (e: any) { setErr(String(e?.message ?? e)); setLoading(false); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); setLoading(false); }
   }
 
   const label: React.CSSProperties = { fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", display: "block", marginBottom: "6px", marginTop: "14px" };
@@ -306,7 +355,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
         <label style={label}>{t("seoGenTextTone")}</label>
         <select className="tool-input" value={tone} onChange={e => setTone(e.target.value)}>
           <option value="">{t("seoTonePolicyDefault")}</option>
-          {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as any)}</option>)}
+          {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as never)}</option>)}
         </select>
 
         <label style={label}>{t("seoGenTextLang")}</label>
@@ -315,7 +364,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
         </select>
 
         <label style={label}>{t("seoSourcesMode")}</label>
-        <select className="tool-input" value={sourceMode} onChange={e => setSourceMode(e.target.value as any)}>
+        <select className="tool-input" value={sourceMode} onChange={e => setSourceMode(e.target.value as "off" | "facts" | "cited")}>
           <option value="off">{t("seoSourcesOff")}</option>
           <option value="facts">{t("seoSourcesFacts")}</option>
           <option value="cited">{t("seoSourcesCited")}</option>
@@ -327,7 +376,7 @@ function GenTextModal({ item, t, onClose, onDone }: { item: HistoryItem; t: any;
           {([["service", t("seoPromptService")], ["custom", t("seoPromptCustom")]] as const).map(([v, l]) => (
             <label key={v} style={{ display: "flex", alignItems: "center", gap: "7px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer" }}>
               <input type="radio" checked={promptType === v} onChange={() => {
-                setPromptType(v as any);
+                setPromptType(v);
                 if (v === "custom" && !custom.trim()) setCustom(t("seoCustomPromptSkeleton"));
               }} /> {l}
             </label>

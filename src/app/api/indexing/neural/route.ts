@@ -1,14 +1,13 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { loggedFetch } from '@/lib/providerLog/log';
 
 const BASE = 'https://inderixingbot.com/api';
 
 // POST { urls: string[], queue?: "slow"|"fast"|"yandex", label?: string }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const user = await prisma.user.findUnique({
@@ -31,7 +30,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const res = await fetch(`${BASE}/v2/submissions`, {
+    const { res, call } = await loggedFetch(`${BASE}/v2/submissions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${user.neuralIndexerToken}`,
@@ -43,16 +42,29 @@ export async function POST(req: Request) {
         ...(label ? { label } : {}),
       }),
       signal: AbortSignal.timeout(15000),
-    });
+    }, { provider: 'neuralindexer' });
 
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
+      call.finish({
+        error: String(data?.error ?? data?.message ?? `HTTP ${res.status}`).slice(0, 300),
+        responseBody: data,
+      });
       return NextResponse.json(
         { error: data?.error ?? data?.message ?? `HTTP ${res.status}` },
         { status: res.status },
       );
     }
+
+    // `charged_amount` is NeuralIndexer's own figure for what this submission cost, in dollars,
+    // and it is the one field here that belongs in `costUsd`. `balance_usd` beside it is what is
+    // left on the account and is not a price. A cached submission reports its own charge, which
+    // may be zero — recorded as stated rather than assumed either way.
+    call.finish({
+      costUsd: typeof data?.charged_amount === 'number' ? data.charged_amount : null,
+      responseBody: data,
+    });
 
     // Persist submission status to SitemapUrl records if siteDbId provided
     if (siteDbId) {
@@ -85,15 +97,14 @@ export async function POST(req: Request) {
       balance: data.balance_usd ?? null,
       wasCached: data.was_cached ?? false,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Request failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message ?? 'Request failed' }, { status: 500 });
   }
 }
 
 // GET — current balance
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const user = await prisma.user.findUnique({
@@ -106,7 +117,8 @@ export async function GET() {
   }
 
   try {
-    const res = await fetch(
+    // Asking what is left is not an action, and NeuralIndexer bills for submissions and checks.
+    const res = await fetch( // providerLog-exempt: balance read, not a billed action
       `${BASE}/balance.php?api_key=${encodeURIComponent(user.neuralIndexerToken)}`,
       { signal: AbortSignal.timeout(8000) },
     );
@@ -116,7 +128,7 @@ export async function GET() {
       pricePerLink: data?.price_per_link ?? null,
       availableLinks: data?.available_links ?? null,
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'Request failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error)?.message ?? 'Request failed' }, { status: 500 });
   }
 }

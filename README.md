@@ -8,7 +8,7 @@
 
 Self-hosted on your own VPS. No subscriptions, no seat limits, no third party touching your data.
 
-[![Version 1.0](https://img.shields.io/badge/version-1.0-brightgreen)](https://github.com/fenjo26/opengsc/releases)
+[![Version 1.9.2](https://img.shields.io/badge/version-1.9.2-brightgreen)](https://github.com/fenjo26/opengsc/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue?logo=typescript)](https://www.typescriptlang.org/)
@@ -36,6 +36,24 @@ curl -fsSL https://raw.githubusercontent.com/fenjo26/opengsc/main/install.sh | s
 
 <br/>
 
+## 🌍 Supported languages
+
+OpenGSC's interface is available in **seven languages** — pick one from the language switcher on the login screen or in **Settings → Preferences**:
+
+| Code | Language | Native name |
+|------|----------|-------------|
+| `en` | English | English 🇬🇧 |
+| `ru` | Russian | Русский 🇷🇺 |
+| `uk` | Ukrainian | Українська 🇺🇦 |
+| `fr` | French | Français 🇫🇷 |
+| `es` | Spanish | Español 🇪🇸 |
+| `de` | German | Deutsch 🇩🇪 |
+| `zh` | Simplified Chinese | 简体中文 🇨🇳 |
+
+Telegram/Slack alerts and digests are sent in the same language you pick. SEO and Search Console terms that have no native equivalent (CTR, SEO, GSC, sitemap, canonical…) stay in English, the way practitioners use them.
+
+<br/>
+
 ## Why OpenGSC
 
 Tools like seogets.com charge **$19–$79/month** to show you the Google Search Console data you already own, aggregated across sites. OpenGSC gives you the same core analytics — clicks, impressions, CTR, position, striking-distance keywords, content decay, cannibalization — for the cost of a $5/month VPS, because it *is* the VPS: one install script, your own SQLite database, your own domain, your own Google OAuth app. Nothing about your Search Console data ever passes through a third-party server.
@@ -55,6 +73,20 @@ On top of that dashboard, OpenGSC ships two things most GSC tools don't: a full 
 
 **Trade-offs, honestly:** you need a VPS and a domain (Google OAuth won't work against a bare IP), you run your own updates (`git pull && npm run build && pm2 restart`), and there's no built-in team/white-label layer. If that's an acceptable trade for owning your data and never paying a subscription, read on.
 
+**Signing in:** identity and data are separate. You sign in with an email and a password —
+create the first account from the server console with `npm run create-owner -- --email you@example.com`
+— while Google OAuth stays what it should be: the grant that pulls Search Console and Analytics
+data in. The owner can also keep signing in with Google — after setting a password both work — while a
+Google account that is not the owner's is refused rather than quietly attached. Lost the password? `npm run set-password -- --email you@example.com`
+from the server.
+
+**Support contract:** OpenGSC is a single-workspace application. One owner connects the Google
+accounts and pays for every API key; team members are invited into that workspace with a role
+(viewer, editor or admin) and sign in with an email and a password rather than Google, so nobody's
+personal Search Console properties are pulled in. There is no multi-tenancy: one instance serves one
+workspace. SQLite is the only fully supported production database; the MySQL/MariaDB notes are an
+experimental porting guide with no promise of feature parity — see [`docs/TESTING-MYSQL.md`](docs/TESTING-MYSQL.md).
+
 <br/>
 
 ## 📑 Table of Contents
@@ -66,9 +98,24 @@ On top of that dashboard, OpenGSC ships two things most GSC tools don't: a full 
   - [Rank Tracker](#rank-tracker)
   - [AEO Tracker — AI Answer Engine Visibility](#aeo-tracker--ai-answer-engine-visibility)
   - [Backlinks Checker](#backlinks-checker)
+  - [Keyword Weights, Backlinks & Competitors](#keyword-weights-backlinks--competitors)
+  - [Demand — Keyword Research & Domain Overview](#demand--keyword-research--domain-overview)
   - [Site Health Checks](#site-health-checks)
   - [Indexing Status Tools](#indexing-status-tools)
+  - [Drops Catalogue — Expired Domain Funnel](#drops-catalogue--expired-domain-funnel-drops)
+  - [SERP Monitor — Whole-SERP Watching (`/serp-monitor`)](#serp-monitor--whole-serp-watching-serp-monitor)
+  - [Drops Activation — Reviving Acquired Domains](#drops-activation--reviving-acquired-domains-drops)
+  - [Footprints — Network Template Fingerprint](#footprints--network-template-fingerprint)
+  - [Backlink Toxicity, Disavow & Recovery](#backlink-toxicity-disavow--recovery)
+  - [Local SEO — Business Profile, NAP, Local Positions, GBP](#local-seo--business-profile-nap-local-positions-gbp)
+  - [Trend Radar](#trend-radar)
+  - [Publishing — Send Generated Posts to WordPress (`/publishing`)](#publishing--send-generated-posts-to-wordpress-publishing)
+  - [Client Reports — White-Label](#client-reports--white-label)
+  - [Audit Widget & Leads](#audit-widget--leads)
+  - [PWA & Push Notifications](#pwa--push-notifications)
+  - [Browser Extension](#browser-extension)
 - [🧠 AI SEO Content Suite (`/seo-tools`)](#-ai-seo-content-suite-seo-tools)
+  - Keyword Clustering · Outline Generator · Text Generator · Content Rewriter · **AI-Fingerprint Lab** · Googlebot View · Content Gap · Landing Builder · GEO Audit · Citations · Link Monitor · Editorial Policy · History
 - [🕸️ Private Indexer Network](#-private-indexer-network)
 - [Requirements](#requirements)
 - [Installation](#-installation)
@@ -98,6 +145,7 @@ On top of that dashboard, OpenGSC ships two things most GSC tools don't: a full 
 - **Tags, favorites, sorting, hiding** — organize hundreds of sites, remember your last sort order between sessions, pin the important projects, hide the dead ones.
 - **Quick engine site search** — next to each site name, a small badge opens a `site:domain.com` search in a new tab for instant manual indexing checks; it follows the active tab (**G** → Google, **b** → Bing, **Я** → Yandex).
 - **Portfolio SEO Analytics** — view aggregated Striking Distance keywords, Cannibalization, and Content Decay reports across your entire site network on the main dashboard.
+- **Uptime at a glance** — every site card carries a status dot (online / slow / offline) from the built-in uptime monitor; offline sites float into a "needs attention" group above everything else, and a status filter narrows the list. Free — the checks run from your own server.
 - **Privacy Blur** — one click blurs every account name, email, domain, and metric — safe to screen-share or screenshot.
 - **Ahrefs DR badges** — every site card (and the site detail header) shows the domain's Domain Rating, pulled from Ahrefs' free public endpoint and cached server-side for 7 days. No API key needed. *Domain Rating by [Ahrefs](https://ahrefs.com/).*
 - **CSV export** with selectable dimensions, and **right-click → open in new tab** on any site card.
@@ -111,7 +159,7 @@ On top of that dashboard, OpenGSC ships two things most GSC tools don't: a full 
 Every site gets its own deep-dive page with clicks/impressions/CTR/position trends, and four analyses that a stock GSC UI doesn't give you:
 
 - **Striking Distance Keywords** — queries ranking position 4–20 with real impression volume: your fastest wins to page 1.
-- **Keyword Cannibalization** — queries where multiple URLs on your own site compete against each other, with a clear winner/loser breakdown.
+- **Keyword Cannibalization** — the original exact-query winner/loser report plus a separate **Related Intent** mode that finds different query formulations splitting visibility across your pages. It explains ranking-URL overlap, page roles, position gaps and daily winner changes, then suggests what to review—never an automatic merge, canonical or redirect.
 - **Content Decay Map** — a heatmap of pages losing traffic over time, so you catch decay before it's a crisis.
 - **CTR Benchmark** — your actual click-through rate vs. industry-standard CTR curves by position, surfacing pages where a better title/meta could unlock clicks you're currently leaving on the table.
 
@@ -132,29 +180,73 @@ Link a GA4 property to any site (sessions, engagement, key events, revenue with 
 
 Track keyword rankings (country/language/device-aware) via your configured SERP provider (Serper, DataForSEO, or ScrapingRobot), checked on demand or daily, overlaid against real GSC average position, clicks, and impressions for the same query — so you can see whether a rank change actually moved traffic.
 
+A keyword can also carry a **city or coordinates** (`Thessaloniki, Greece` or `40.5197,22.9709`): the check runs geolocated, and the **local pack** place (the map three-pack) is tracked as its own number next to the organic position — it never leaks into `position`, so graphs, `bestPosition` and the rank-drop alert keep their meaning (see [Local SEO](#local-seo--business-profile-nap-local-positions-gbp)).
+
 ### AEO Tracker — AI Answer Engine Visibility
 
-"Answer Engine Optimization": tracks whether **your site gets cited when real questions are asked to AI assistants** — ChatGPT and Perplexity via live web-search citation matching, Claude and Grok via brand-mention detection — building a per-engine, per-question cited/not-cited history over time. Needs the API key(s) of whichever engines you want to track.
+"Answer Engine Optimization": tracks whether **your site gets cited when real questions are asked to AI assistants**. All five engines — ChatGPT, Perplexity, Claude, Grok and Gemini — are asked with **live web search on**, because an answer from a model's weights is not evidence about search visibility. Needs the API key(s) of whichever engines you want to track. Every brand mention in an answer also carries a **sentiment** (auto-assessment is off by default — it is a billed call on your key), and **Google AI Overviews** joins as a sixth engine: the question goes through Google's live SERP and the overview block's sources become the citations (your DataForSEO key or your A-Parser; an overview-less SERP is its own `no_overview` state, not "not cited").
+
+The check **shows its work**, which matters because you can always open ChatGPT in another tab and disagree with it. Expanding a question gives you the full answer the engine produced, every domain it cited with yours highlighted, your rank among them, the model that ran and whether a live search actually happened — so "not cited" is something you can read rather than a claim to take on faith. Verdicts are three-state: **cited** (linked), **mentioned** (named in the prose, no link) and absent. **"Cited instead of you"** counts the domains that came back across all your tracked questions — the pages your answer has to displace. Each of those domains is classified as it lands: **12 categories** (forums, social, video, developer, e-commerce, reviews, reference…) and **page types** (listicle, how-to, comparison, review…), plus a dedicated **Reddit & communities** cut with subreddits — so "who crowds us out of AI answers" gets a name instead of a domain list. The classifier is deterministic and free, and because it re-derives on read, editing your competitor list re-tags the whole stored history. The lists are editable per instance (Settings → Visibility: domain lists by category), a **Greek starter set ships built in** (Kathimerini, To Vima, Skroutz, Insomnia…), and an **"other: NN%"** chip warns when a third of citations go unclassified — the signal to extend the lists for your market.
+
+Per-site settings cover the model, country, city and answer language. Location is not decoration: answers to local questions are geolocated, so asking from the wrong country measures a market you don't sell in. Automatic daily checking is **off by default** — each question costs four billed calls on your own key, so a large portfolio never enrols itself.
+
+Underneath it sits a **second source** with a different job. The tracker asks *your* questions live on *your* keys today; **Brand visibility** reads DataForSEO's index of what models have actually been answering — including questions you never thought to track. It shows how often the brand comes up, in which questions, which of your pages get cited, and **share of voice against up to 9 competitors**, which the live tracker structurally cannot produce because it only ever asks on your own behalf. Matching by domain finds answers that linked to you; matching by brand name finds answers that named you without a link. The index covers ChatGPT and Google AI Overview and refreshes roughly monthly, so the two panels are kept side by side and labelled rather than merged — a zero here is not evidence of invisibility to Claude.
+
+The tab itself is **Visibility**, with four sub-tabs. **AI answers** is the live tracker above; **LLM Mentions** is the DataForSEO index just described. **Share of voice** replays the answers you already paid for against up to 10 competitors — how often each engine names you, your citation share, per-engine numbers and a weekly trend, plus question ideas mined from your own GSC data — and ranks **the domains AI actually cites for your questions**, each an outreach target one click away; adding a competitor recomputes the whole history with zero new AI calls. **Mentions** checks Google News, Wikipedia and Wikidata daily for your brand terms (free public sources, context words for ambiguous names): a mention without a link is the cheapest link-building lead there is — one click expands the news redirect, checks for a link and files the row into the Outreach Workspace.
 
 ### Backlinks Checker
 
-A curated backlink inventory per site with liveness checks (is the link still there?) and indexed-status checks via XML River, rolled up into total / alive / dead / indexed counts.
+A curated backlink inventory per site with liveness checks (is the link still there?) and indexed-status checks via XML River, rolled up into total / alive / dead / blocked / indexed counts. Liveness checks retry transient failures (5xx, rate limits, network drops) and distinguish a genuinely dead link from one a WAF/bot-protection layer refused to answer — so a Cloudflare 403 no longer reads as a dead backlink.
+
+### Keyword Weights, Backlinks & Competitors
+
+Search Console tells you how you are performing. It cannot tell you how much demand exists, how hard a keyword is to win, or who is winning instead of you. This module brings Ahrefs/Semrush/Majestic data in and crosses it with your GSC data — which is where the value is, because neither source has the other half.
+
+**DataForSEO** is the fifth backlink provider and the cheapest way to watch many client sites: pay-as-you-go ($0.024 per request + $0.000036 per row, no subscription), using the same DataForSEO credential as SERP and keyword demand. It fills the backlink profile (its own tab, a separate `Rank·DFS` column — DataForSEO's own 0–100 rank, not Ahrefs DR), the per-link export behind toxicity (with DataForSEO's spam score as an extra signal), a 12-month history backfill and a weekly new/lost table. An optional weekly auto-refresh keeps every site current inside your monthly cap; a small site costs about $0.05 a week.
+
+**Keys.so (Yandex / Runet)** is the fourth provider, for sites whose market is Yandex. It fills the backlink profile (its own tab, a separate `DR·KS` column in the merged table) and domain metrics from Keys.so's own link index, always labelled as such — its DR and referring-domain counts are not comparable with Ahrefs'. Keyword tools never run on it. It works with an official `api.keys.so` token or a GroupBuySEO key (`keysso-api.groupbuyseo.org`, one credit per request, ≈ $0.0002), and the settings screen checks the key for free and shows the remaining credits. With a Keys.so key, the Visibility tab also gains a «Yandex AI» view: the queries whose Yandex AI answer already cites your site, your place among its sources, and who is cited beside you (2 credits per refresh). It also adds a Yandex market to Competitors and Demand (Yandex positions on both sides of the gap, Wordstat volumes), Yandex Direct to the Ads tab, and Runet backlinks with anchors to the toxicity check.
+
+- **Keyword weights** in Striking Distance and Rank Tracker — search volume, KD, CPC, and a **Potential** column: what a keyword could bring near the top of page one minus what it brings now. Impressions are demand filtered through your current visibility; volume is the market itself.
+- **Competitors** — pull a competitor's keywords and the join with your GSC data splits every row into three verdicts: *within reach* (you rank in the top 30 — improve that page, the URL is right there), *wrong page* (impressions but nothing wins — intent mismatch), *no content* (write it).
+- **Backlink profile** — referring domains, live and lost, with stored history and a lost-link alert. Sits alongside the manual backlink list, which answers a different question: did the link *you* built survive.
+- **Demand check in Content Decay** — clicks falling with demand flat is a ranking problem; clicks falling *with* demand is the market, and no rewrite fixes that.
+- **Domain health in the Indexer** — DR and referring domains per network domain, before you build on a burnt drop.
+
+**None of it requires an API key.** A CSV export from Ahrefs or Semrush fills exactly the same cache the API does (`SEO Tools → Import metrics`) — the report type is detected from the column headers. If you have a browser subscription, your exports are already paid for; the API is for what should refresh without a human.
+
+When you do use an API key, every button prices itself before you press it, Keyword Difficulty is an opt-in checkbox (it roughly doubles the cost per keyword), and a monthly unit cap is enforced server-side. Nothing ever fetches on page load.
+
+Setup and cost details: **[docs/METRICS-SETUP.md](docs/METRICS-SETUP.md)**. How the layer works
+internally — provider routing, the price model, caching and where it is wired:
+**[docs/METRICS.md](docs/METRICS.md)**.
+
+### Demand — Keyword Research & Domain Overview
+
+Every other screen in OpenGSC starts from queries you already appear for. **Demand** starts from the market, and it is the only place that can return a keyword Search Console has never heard of. It runs on the DataForSEO key you may already have configured for SERP — no new provider, no new subscription.
+
+- **By keyword** — a seed goes to DataForSEO Labs and comes back as what people actually search, with volume, difficulty, CPC, intent and a 12-month trend sparkline. Then every row is answered by *your* GSC history: **within reach** (top 30 — improve that page, the URL is in the row), **wrong page** (you appear but nothing wins — intent mismatch), **no content** (write it). Ahrefs knows the first half of each row and Search Console knows the second; this is the only screen that holds both.
+- **By domain** — type any domain and get its estimated organic traffic, keyword count, the distribution of those keywords across position bands, the terms actually bringing the traffic, and the pages carrying them. Works on domains you do not own — a competitor, a client you have not onboarded, a drop you are thinking of buying. Passing one of your sites adds a comparison column instead of being required.
+- **Three discovery modes, one billed call.** `related` finds semantic neighbours, `suggestions` the long tail containing your seed, `ideas` the same meaning in different words. **Auto** walks them in order and stops at the first source with enough terms — it does not merge all three, because each one is a separate charge and the overlap is mostly duplicates.
+- **Everything is cached and priced up front.** Searches are kept for 14 days and domain overviews for 7, so returning to a question you already paid for costs nothing. Every button shows its price before you press it, refined "clickstream" volumes are an opt-in checkbox that says it doubles the cost, and a monthly cap is enforced server-side.
+- **Discovered keywords land in the shared metric cache**, so weights appear in Striking Distance and Rank Tracker for free — nobody pays twice for the same number.
+- **Agents can use it too**: `get_keyword_demand` (free, reads what has been researched) and `research_keywords` (paid, gated behind `confirm: true`), plus a ready-made `keyword-research` skill in [`.agents/skills/`](.agents/skills/).
+
+Without a DataForSEO key the tab still opens and shows whatever is already stored — the same "nothing is required" rule the rest of the app follows.
 
 ### Site Health Checks
 
-One panel per site combining SSL certificate inspection (expiry, issuer, grade), a **Google Safe Browsing** blacklist check, a **VirusTotal** reputation check, and **Core Web Vitals** via the PageSpeed Insights API (mobile) — the latter three need their own free API keys, configured once in Settings.
+One panel per site combining SSL certificate inspection (expiry, issuer, grade), a **Google Safe Browsing** blacklist check, a **VirusTotal** reputation check, and **Core Web Vitals** via the PageSpeed Insights API (mobile) — the latter three need their own free API keys, configured once in Settings. Next to it sits an optional **uptime monitor**: an HTTP check every 1–60 minutes from your own server, a status dot on the dashboard, 30-day latency history and an incident list, alerts only on up→down→up transitions — and never a false alarm when the server's own network dies (the checker proves its own uplink before confirming any outage). Details: [`docs/UPTIME.md`](docs/UPTIME.md).
 
 ### Site Audit — Built-in Crawler
 
-A free technical audit with **zero external APIs**: OpenGSC crawls your site from your own VPS (up to 500 pages, BFS from the root) and reports broken internal links, missing/too-long/duplicate titles, missing meta descriptions, H1 problems, `noindex` pages, canonical mismatches, thin content, images without alt, and slow responses — rolled up into a health score with a filterable per-page table. Runs as a background job in the site's **Audit** tab; results are kept as audit history.
+A free technical audit with **zero external APIs**: OpenGSC crawls your site from your own VPS (up to 500 pages, BFS from the root) and reports broken internal links, missing/too-long/duplicate titles, missing meta descriptions, H1 problems, `noindex` pages, canonical mismatches, thin content, images without alt, slow responses, and client-rendered (JS) pages where static-HTML signals can't be trusted — plus hreflang validation (return links, targets, x-default, `<html lang>` agreement), title/H1 alignment with the page's main GSC query, non-responsive viewports, internal links to redirects, and a mobile **PageSpeed sample** (one page per template, field data when Google has it) — rolled up into a severity-weighted health score (a critical error zeroes a page, each warning costs a few points, the site score is the page average) with a filterable per-page table. Informational findings and plain internal redirects never lower the score: heuristics don't get to fail a site. Each audit also runs an **AI Crawlability** check: whether AI crawlers (GPTBot, ClaudeBot, PerplexityBot, OAI-SearchBot, Google-Extended, CCBot, Bytespider) are blocked in your `robots.txt`, and whether `/llms.txt` exists — a root `Disallow` on GPTBot is a silent reason an answer engine never cites you, surfaced here as a fixable diagnosis rather than just the symptom. Runs as a background job in the site's **Audit** tab; results are kept as audit history and exportable as Markdown. The workspace-wide **Audits** page in the top navigation rolls every run across all sites into one history — pages, issue counts, health and regression verdicts per row, filterable by site/status/date, sortable by issues or regressions — and lists **never-audited** sites as a first-class state; every row opens that site's Audit tab.
 
-### Alerts & Digests — Telegram Notifications
+### Alerts & Digests — Notifications
 
-Bring your own Telegram bot (one-time @BotFather setup, token pasted in **Settings → Notifications**) and OpenGSC pushes what matters straight to your chat — free, no third-party service:
+Bring your own delivery — a Telegram bot (one-time @BotFather setup), a Slack webhook, Discord, Microsoft Teams, plain e-mail over SMTP, or an HMAC-signed generic webhook for your own automation — and OpenGSC pushes what matters to every configured channel, free, no third-party service. Each channel picks which event types it wants (alerts, digests, uptime, indexing, mentions); secrets never leave the server unmasked. Details: [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md).
 
-- **Alerts** (checked hourly, each event fires once): a tracked keyword fell N+ positions, a site's clicks dropped X%+ week-over-week, an SSL certificate is about to expire, a site audit came back with a low health score. Thresholds are configurable per rule.
+- **Alerts** (checked hourly, each event fires once): a tracked keyword fell N+ positions, a site's clicks dropped X%+ week-over-week, an SSL certificate is about to expire, a site audit came back with a low health score, a monitored site went down or came back, a traffic-carrying page left Google's index. Thresholds are configurable per rule.
 - **Digests** (the **Digest** tab): a portfolio report over all sites *or one tag* — so a site network you care about gets its own summary. The on-screen view is **rich and full** (explicit date range, portfolio KPIs, biggest gainers/losers by site, rising/falling queries, *all* striking-distance queries, sites needing attention, rank movements — each section with "show all" and CSV), while **Telegram receives a shorter capped summary** (4 000-char safe). **Google / Bing / Yandex tabs** split the report per engine (engine tabs reuse the cached engine portfolio). An optional **AI conclusion** (your own AI key) is written on top and is **on by default when any AI key is configured**. Preview on screen, send on demand, or schedule daily/weekly delivery.
-- A **Slack Incoming Webhook** can be connected alongside (or instead of) Telegram — alerts and digests go to every configured channel.
 
 ### Shared Dashboards — Read-Only Guest Links
 
@@ -162,18 +254,24 @@ Share a site's dashboard with a client without giving them an account: **site �
 
 ### MCP Server — Connect AI Agents
 
-OpenGSC ships a built-in **MCP (Model Context Protocol) server** at `/api/mcp`, so Claude Code, Claude Desktop, Cursor, Codex, or any MCP client can query your SEO data directly: sites, search performance, striking-distance keywords, cannibalization, rank tracking, AEO visibility, backlinks, Link Monitor mentions, site health, indexing status, audit results, and running arbitrary read-only SQL queries. Generate a token under **Settings → API & MCP**, then:
+OpenGSC ships a built-in **MCP (Model Context Protocol) server** at `/api/mcp` with **95 tools**, so Claude Code, Claude Desktop, Cursor, Codex, or any MCP client can work with your SEO data directly: sites, search performance, striking-distance keywords, cannibalization, content decay, CTR benchmarks, content groups, rank tracking and history, AEO visibility and share of voice vs competitors, GEO audits, brand mentions (Google News, Wikipedia, Wikidata), backlinks, Link Monitor mentions and the manual Outreach Workspace, stored Source Audit findings, keyword demand and difficulty, competitor gaps, site health, uptime status, indexing status with automatic index-check coverage on Google's free URL Inspection quota, audit results, GA4, Clarity, Bing/Yandex portfolios, the indexer network, SERP Monitor projects, markets, storms and domain catalogues, fired alerts, digests, generation history, meta-tag fitting, network footprints, backlink toxicity and the disavow file, the local business profile and NAP checks, trend radar, plagiarism and `site:` index checks, client reports and inbound leads, per-site AI context (project memory: business, goal, positioning, competitors, key pages, research log), self-publishing to WordPress with AI respin, local geo-grid scans, and arbitrary read-only SQL. Generate a token under **Settings → API & MCP**, then:
 
 ```bash
 claude mcp add --transport http opengsc https://your-domain.com/api/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
-All tools read from your instance's local store — agent traffic never spends your SERP/AI credits or Google quota. The repo also ships ready-made **agent skills** in [`.agents/skills/`](.agents/skills/) (performance review, link prospecting, AEO review, site triage) — copy them into your agent's skills folder for guided SEO workflows. Details: [`docs/MCP-SETUP.md`](docs/MCP-SETUP.md).
+Agents can also **optimize pages**, not just read about them. `get_optimization_brief` returns everything known about one URL in a single call — its queries, striking-distance keywords, CTR gaps, decay trend, cannibalization conflicts, audit issues and current content — the agent writes the new version itself, and `analyze_text` verifies it deterministically: uniqueness, heading-structure drift, and any number or brand that appears in the draft but not the source. No model is called for that check, so it costs nothing and always returns the same answer.
+
+Every tool declares what calling it costs, and `get_capabilities` reports the grouping: **local** (free and instant, 70 of the 95; four Outreach actions are explicitly marked as local writes), **quota** (calls Google on your own OAuth), **net** (fetches a page), and **paid** (spends your own credits). The twelve paid tools — the app's own Content Rewriter, the full article pipeline, keyword discovery, the plagiarism and `site:` index checks, the drops enrichments and AI history pass that spend Ahrefs/Majestic/AI units, publishing with AI respin, and geo-grid SERP scans — refuse to run without an explicit `confirm: true`, so an agent exploring the registry can never bill you by accident (`fit_meta` counts as local, but its optional `allow_llm` repair calls are gated by the same confirmation). The two AI ones are asynchronous: they return a job id and save each finished page as it completes, so a client timeout or a server restart can never discard work you have already paid for. Keyword discovery is synchronous because it does not need to be — it writes its result to the cache before returning, so an abandoned call still leaves a search that replays for free.
+
+The repo also ships ready-made **agent skills** in [`.agents/skills/`](.agents/skills/) (performance review, page optimization, article production, link prospecting, AEO review, site triage) — copy them into your agent's skills folder for guided SEO workflows. Details: [`docs/MCP-SETUP.md`](docs/MCP-SETUP.md).
 
 ### Indexing Status Tools
 
-Inside each site's "Indexing" tab: real sitemap discovery and sync (recursive, sitemap-index aware, up to 20k URLs), a searchable per-URL status table, genuine **Google URL Inspection API** checks through your own OAuth token, and three optional paid accelerators for URLs that need a push — **2index.ninja** submission, **NeuralIndexer** (queued slow/fast/Yandex indexing with balance/job polling), and **XML River** index-status verification. Each accelerator is opt-in and needs its own account/API key.
+Inside each site's "Indexing" tab: a persistent **Sitemap Inventory** (recursive sitemap indexes, gzip and image/video/news extensions, up to 20k URLs) with source sitemap, `lastmod`, first/last seen, added/changed/disappeared diff, explicit page-metadata verification and Site Audit coverage. A URL is only called disappeared after two complete syncs miss it; a failed or partial child-sitemap run never advances that state. The same table keeps genuine **Google URL Inspection API** checks through your own OAuth token and three optional paid accelerators for URLs that need a push — **2index.ninja** submission, **NeuralIndexer** (queued slow/fast/Yandex indexing with balance/job polling), and **XML River** index-status verification. Each accelerator is opt-in and needs its own account/API key. A separate, explicit “Audit from sitemap” action seeds the existing Site Audit crawler with active inventory URLs so orphan candidates can be found without merging the two tools.
+
+**Automatic index checks** spend Google's free URL Inspection quota for you — 2,000 inspections per property per day (resetting at midnight Pacific), previously reachable only by pressing the button. A scheduler works through a priority queue (never checked → changed → not indexed → indexed re-checks), pacing itself across the day, writing verdicts, a 90-day coverage chart and daily snapshots, and alerting when a traffic-carrying page drops out of the index. Manual checks, MCP `inspect_url` and the auto queue share one quota ledger, so automation can't starve the button. Details: [`docs/INDEX-AUTOCHECK.md`](docs/INDEX-AUTOCHECK.md).
 
 It also includes built-in free integrations:
 - **IndexNow Integration** — push new or updated URLs dynamically to the IndexNow API protocol in one click for instant crawler notification (supported by Bing, Yandex, etc.).
@@ -181,11 +279,106 @@ It also includes built-in free integrations:
 - **Yandex.Webmaster** — the same switcher shows the full live Yandex view: SQI (ИКС), pages in search/excluded, clicks/impressions chart, top queries with positions, and Yandex's own site diagnostics (FATAL/CRITICAL problems) — plus sitemap submission and quota-aware URL recrawl via your own OAuth token. The Sync button refreshes every connected engine at once. Setup: [`docs/SEARCH-ENGINES-SETUP.md`](docs/SEARCH-ENGINES-SETUP.md).
 - **Smart Sitemap URL inspection fallback** — if a newly added site has no Search Console traffic or ranking query history, the inspection tool automatically crawls and retrieves up to 20 URLs from the site's `sitemap.xml` (or custom sitemap location) to inspect them.
 
+### Drops Catalogue — Expired Domain Funnel (`/drops`)
+
+A working bench for expired domains: import, vet, watch — and buy only what is worth buying.
+
+- **Import from anywhere.** Paste a raw list or a CSV; rows reduce to their registrable apex and rejected junk is reported per reason. **Ahrefs exports are read by column** (headers, RFC 4180 quoting), and the file's own DR / referring-domain numbers land on the candidates at import, so those rows never need paid enrichment.
+- **The pipeline is visible.** Import → DNS pre-filter (delegated domains retire for free) → registry check (RDAP + WHOIS; a "free" verdict needs two agreeing sources) → free domains, shown as a stage strip with live counts. A zone with no registry (`.gr`) is a stage, not a weekly retry.
+- **Proxy pool for the registry stage** (optional): SOCKS5 carries WHOIS (port 43 is raw TCP), HTTP proxies carry RDAP, and politeness is held per (zone, proxy) pair — several proxies may query one zone at once, a single proxy still may not.
+- **Registrar APIs for dead zones.** `.gr` answers through easy.gr (`EASY_GR_USERNAME` / `EASY_GR_PASSWORD` — IP-allowlisted, never proxied), and the registry's own table turns a taken domain's expiry date into a future drop date that feeds the watch loop. Manual verdicts close the rest: export a zone, check it in any registrar panel, paste the answers back.
+- **Cheap enrichment before anyone spends.** Free DR with the panel's own monthly series (a fall of 5+ points is a penalty flag, not lost links), Wayback snapshots, Majestic TF/CF in one batched call (~$0.000002 per domain), and paid refdomains behind a confirm. An AI history pass reads the archived life of a domain and returns clean / topic-shift / spam-period verdicts.
+- **Hard vetoes — the buyable cut.** Four conditions mean "do not buy regardless of score": a spam period in the archived history, dead for over two years, a ≥5-point fall across the monthly DR series, or Trust Flow 20+ points below a DR of 20+ (a bought profile). A veto caps the score at 0, is stored on the row and shown as a red chip naming its own evidence — the «Без вето» filter (and `noVeto` on `drops_list`) is the "what can I actually buy" view.
+- **Work the list like a spreadsheet.** Free-range filters (DR, referring domains, Trust Flow), collapsible groups ("buy in October", "defer"), bulk actions over the whole filter rather than the visible page, a watch loop that re-checks taken domains and alerts once when one frees, and export to CSV under the current filter or as a plain domain list.
+- **Agent surface:** the same flows are exposed as MCP tools (`drops_list`, `drops_ingest`, `drops_check`, `drops_enrich_*`, `drops_groups`, `drops_watch`, …).
+
+<br/>
+
+
+### SERP Monitor — Whole-SERP Watching (`/serp-monitor`)
+
+A rank tracker tells you where *you* stand; the SERP Monitor tells you what the *whole market* did. Every check snapshots the **entire top-100** for each keyword of a project — one market = engine · country · language · device plus a keyword set — and diffs snapshots **by host**: who entered the top-100, who dropped out, who moved, with a noise threshold that grows with position so the tail does not shout.
+
+- **Storms, scored against your own baseline.** Each run's volatility is a robust z-score against the project's *own* history — flagging "storms" (z ≥ 3 plus ≥ 30% of keywords above their usual churn; the first 7 runs are calibration, not a clean bill). A storm sends one Telegram/Slack notification: the five most shaken keywords, the five hosts with the most entrances and exits — with a test button in project settings.
+- **Three tabs.** *Market* — leaders, host-level changes with positions, volatility, your own domains highlighted; click a keyword for its full SERP history and a side-by-side diff of any two snapshots. *Storms* — per-run volatility and the verdict. *Domains* — the newcomer catalogue: who holds how many keywords, new / young (RDAP/WHOIS registration age) / rising / falling / bounced tags, DR and referring-domain counts, CSV export.
+- **Honest failures.** Every snapshot is `ok` / `partial` / `failed`; a failed one (burned proxy, captcha) is recorded **as a failure with its reason and never enters a comparison** — one dead proxy cannot manufacture a fake mass exit. Partial answers are compared only down to the depth they actually returned.
+- **Runs on your own A-Parser.** The SERP source in v1 is your A-Parser (`SE::Google`, Google desktop), self-hosted and billed only in proxy traffic — a 944-keyword check costs the same as a 9-keyword one. A-Parser thereby becomes a SERP provider of the app in its own right, and a fallback SERP source for the Rank Tracker. Runs resume where a restart interrupted them.
+- **Agent surface:** `serpmon_projects`, `serpmon_market`, `serpmon_domains`, `serpmon_keyword_history`, `serpmon_run`, `serpmon_storms` MCP tools mirror the UI. See [docs/SERP-MONITOR.md](docs/SERP-MONITOR.md) for load sizing, snapshot statuses and retention. Requires `npx prisma db push` on deploy (the `Serp*` tables).
+
+<br/>
+
+
+
+### Drops Activation — Reviving Acquired Domains (`/drops`)
+
+The drops funnel ends at *acquired*; this tab is what happens next — from a freshly bought domain to one Google crawls and indexes again, with the one rule that matters burned in: **the indexer network links to donor pages, never to the asset**.
+
+- **Harvest → bundle → host.** The domain's legacy URL space comes from Wayback CDX (and GSC once the property exists); the bundle is `sitemap.xml`, `robots.txt`, the IndexNow key file, and an nginx snippet whose location order is the difference between "works" and "silently does nothing" (three files must sit **before** the catch-all 301, or IndexNow rejects the key without a word).
+- **Sitemap + GSC is the main channel.** Google reads sitemaps and Search Console, not IndexNow — add the property in GSC yourself (verification cannot be automated), then submit the sitemap from the tab through your own OAuth.
+- **IndexNow, honestly scoped** to Bing/Yandex, pushed in 10,000-URL batches.
+- **Donor accelerator:** doorways from the indexer network enqueue **donor** URLs only. A doorway qualifies by confirmed Google crawl — at least 1,000 hits over 30 days, recomputed from live stats on every run, never a stored list.
+- **Measure by uploading the access log:** paste the nginx log of the asset host and the parser counts Googlebot hits (total, 7-day window, last seen) onto the asset — garbage lines are skipped, never an error.
+
+Runbook with the nginx ordering trap, doorway numbers and the footprint rule: [docs/DROPS-ACTIVATION.md](docs/DROPS-ACTIVATION.md). Requires `npx prisma db push` on deploy (the `Drop*` activation tables).
+
+<br/>
+
+
+### Footprints — Network Template Fingerprint
+
+The same title template with a slot name swapped in, standing on four sites of your portfolio, is a footprint: visible to a manual check and linkable by an algorithm. The `/footprint` report reads only your local data — zero external calls, free — and lists the title/H1/meta-description templates shared across your sites, with the sites carrying each one. The found templates become a guard in the Outline generator (banned from being reproduced in new content), and SEO Tools gains a **Hreflang generator**: the `<link rel="alternate">` block, the sitemap `xhtml:link` variant and the HTTP-header variant from a URL+language list. Doc: [`docs/FOOTPRINT.md`](docs/FOOTPRINT.md). MCP: `get_footprints`.
+
+### Backlink Toxicity, Disavow & Recovery
+
+Three questions about your own link profile: which donors are toxic **for this site** — the score knows the site's own niche, so a gambling site's casino anchors are not toxic while pharma and adult are; what goes into the Google Disavow file — only links you marked by hand, never automatic, each with its reason as a comment; and which lost link to win back first — a recovery list ranked by value. Free: local math over the rows you imported; deep checks are plain HTTP from your own server. Doc: [`docs/BACKLINK-TOXICITY.md`](docs/BACKLINK-TOXICITY.md). MCP: `get_backlink_toxicity`, `get_disavow_file`.
+
+### Local SEO — Business Profile, NAP, Local Positions, GBP
+
+The **Local** menu is the source of truth for everything local. The business profile (schema.org type, address, E.164 phone, hours, coordinates, service areas; "fill from site" parses the homepage's JSON-LD and meta) feeds a free **NAP check** against your own site (homepage + contact pages + footer; phones compared by digits, addresses by folded-string similarity), weekly **citation checks** against the directories you list, and a **LocalBusiness JSON-LD generator** validated against Google's requirements and diffed against what the site actually serves. Service areas hand over to the Outline generator as local landing briefs (keyword + "NAP and map are mandatory" note, by link).
+
+**Google Business Profile**: separate OAuth scope, reviews synced every 6 hours with replies from the UI, scheduled posts, photos by public URL. GBP API access is granted by Google upon request — until approved (quota 0) the card says exactly that instead of erroring. Local positions in the Rank Tracker are covered under [Rank Tracker](#rank-tracker). Doc: [`docs/LOCAL-SEO.md`](docs/LOCAL-SEO.md). MCP: `get_local_profile`, `check_nap`.
+
+**Geo-grid scans**: the Local-Falcon question — how far does the map pack actually reach? One keyword, N×N coordinate points (3×3 / 5×5 / 7×7, your radius) around the business, each point a real SERP check with the pack matched against your profile's name. The grid renders green (top 3) / yellow (4–10) / red (not found) with each cell printing its number, average position and in-pack share underneath. Cost is stated before the button: `gridSize²` queries on your configured SERP provider — free on a personal A-Parser, metered elsewhere. Centre defaults to the profile's coordinates; a profile without them asks instead of guessing. MCP: `local_grid_scans`, `local_grid_scan_run`. Scans you repeat become **presets**: a saved point + radius + grid + **answer language** (default is the profile country's language — but tourists search in their own, so EN/RU/DE overrides are one click) + an optional cron schedule, with per-preset dynamics (avg position and in-pack share across its scans). Missed scheduler ticks are skipped, never back-filled — a run costs gridSize² queries. MCP: `local_grid_presets`, `local_grid_preset_create/_delete/_run`.
+
+### Trend Radar
+
+Traffic comes in waves: a new slot, a provider release, a law change — whoever writes the page first collects the impressions. The Trend Radar catches these waves with two free sources no paid trends API has: your own Search Console (rising queries, 7 days vs 28) and Google autocomplete (what people start typing, per seed; up to 20 seeds per site). A line in the digest, CSV export, and the `get_trends` MCP tool. Doc: [`docs/TRENDS.md`](docs/TRENDS.md).
+
+### Magic Links — Buy Posts from Striking Distance (`/magiclinks`)
+
+The striking-distance table has a **Buy** button: query and URL are filled in for you, and the paid post goes out through one of two connected services — **FieldLink** or **369Team** (articles priced by volume tier with a +30% bonus per row, or homepage links at a flat price with a +20% bonus and optional surrounding text). The buy window quotes before it charges (FieldLink prices server-side and re-checks the amount at the pay boundary — a moved price is a 409, never a surprise deduction), preselects the provider with the larger balance, and a selection of rows becomes one order. Every row's anchor is editable, with one-click presets (exact / diluted / URL / domain) — a batch of identical exact-match commercial anchors is an over-optimization footprint, so the default is a deliberate choice, not a habit. The purchase ledger marks already-bought query+URL pairs back in striking, feeds `/magiclinks` (progress, indexing state, CSV of publication URLs), and lands on the site's traffic chart and annotations timeline as one purple marker per order — with the same before/after figures every annotation gets, so "did the links work" is answered by your own Search Console data. Tokens live in Settings → SEO Tools; purchases are deliberately absent from MCP (an agent with a key must not be able to spend your balance). Client code adapted from [gsc-hub](https://github.com/izzipizzy/gsc-hub) (MIT), without its affiliate tags.
+
+### Publishing — Send Generated Posts to WordPress (`/publishing`)
+
+The other half of the Magic links coin: there you pay somebody else to place posts, here you publish your own. A generated article (text/landing in SEO Tools history) goes straight to the site's WordPress over the REST API with an **application password** — no OAuth app, no plugin. One click on a history row opens the publish window: pick connections, optionally **adapt for the platform (AI)** — the respin task, its own cheap slot in Settings → SEO Tools, one call per platform that changes tone and length while facts, structure and links stay pinned — and publish.
+
+Every successful publish **joins the backlink pipeline as a donor**: a `SiteBacklink` row with `source: "self"`, riding the same placement checker, event history and toxicity pass as a bought placement. Target resolution is honest — the explicit URL you give it, else the first money-site link in the post, else the site root. Publishing is footprint-aware by construction. Every connection is typed — **own satellite / money site / external platform** — and **respin is only allowed for external platforms**: own satellites each get their own post (own topic, own angle), because one canonical text respun across your network hands Google a ready-made footprint. At send time a **uniqueness gate** compares the post against every published post in the instance (the same trigram engine as `analyze_text`; textual near-duplicates block, paraphrases honestly pass — the UI says so); **publications spread over a configurable jitter window** instead of going out as one batch, and a deferred post that hits the gate fires an alert, not just a status change. A pre-publish review shows the **anchor distribution across the network** and warns on shared title skeletons or hour-clustering. Thresholds are calibrated from your own data (`npx tsx src/lib/publish/calibrate.ts`) and documented in the code. MCP: `publish_list_connections`, `publish_post` (items-per-satellite, spread windows, gate results), `publish_list_posts`.
+
+### Client Reports — White-Label
+
+Per-site client reports: toggle the sections (summary, traffic, queries, pages, positions, local positions, indexing, audit, uptime, backlinks, AI visibility, reviews, work done, next steps), brand them (company name, accent color, logo) — and every send **freezes an HTML snapshot** (plus PDF when the server has a browser) that never re-renders: not when branding changes, not when data changes. Scheduled weekly/monthly delivery by e-mail over the workspace SMTP channel, or a client-facing link (`/share/report/<token>`) that can be rotated or revoked. MCP: `list_reports`. Doc: [`docs/REPORTS.md`](docs/REPORTS.md).
+
+### Audit Widget & Leads
+
+An embeddable "check your website" iframe for your agency site: the visitor types a domain, gets a score and the top problems from the same audit rules, and leaves an e-mail — you receive a **lead with the findings attached**, the material for the first letter, and a one-click **proposal document** drafted from the audit. The public contour is rate-limited per IP, Turnstile-gated, SSRF-guarded (private addresses refused, `allowPrivate: false`) and stores only a salted IP hash. MCP: `list_leads`. Doc: [`docs/LEADS.md`](docs/LEADS.md). A won lead can become a tracker campaign in a connected [Orbitra](https://orbitra.link) instance in one click.
+
+### PWA & Push Notifications
+
+OpenGSC installs on the phone as an app and keeps the last dashboard data readable offline. **Web Push** becomes a notification channel in its own right: VAPID keys in Settings, a per-device event filter, and every alert, digest, uptime and lead event already flows to it — no Telegram needed. Push requires HTTPS; on `http://` the UI explains why instead of showing the button. Doc: [`docs/PWA.md`](docs/PWA.md).
+
+### Browser Extension
+
+Chrome/Edge (MV3), installed unpacked — no store, by design: it talks to your self-hosted instance and there is nothing for a store to sign. **"This page in OpenGSC"** shows, for any portfolio URL, its clicks/impressions/position, top queries, index status, audit issues and ranks; a **quick audit** runs inside the extension on the tab's DOM (title/description lengths, H1, canonical, robots, hreflang, JSON-LD validity, Open Graph, link count, images without alt — nothing leaves the browser); **"Send to OpenGSC"** routes by context: a portfolio URL becomes an index-check priority, a foreign URL an Outreach prospect, selected text opens the outline pre-filled, a table selection downloads CSV. Token-authenticated API (401 without one) and an extension-ID allowlist on your side. Doc: [`docs/EXTENSION.md`](docs/EXTENSION.md).
+
 <br/>
 
 ## 🧠 AI SEO Content Suite (`/seo-tools`)
 
 A full competitor-research-to-published-article pipeline, plus AI-search-visibility auditing — all under one settings screen for your AI/SERP/scraping keys. Everything here is optional and needs **your own** API key (Anthropic, Z.AI, OpenAI, Gemini, OpenRouter, Kimi/Moonshot, kie.ai, or any custom OpenAI-compatible endpoint) — pay-per-use at cost, no markup. Each provider card in Settings lets you pick the exact model from a live list fetched from the provider's API.
+
+**Which model runs where is yours to decide, and visible while you decide it.** Every AI job in the suite is a named *task* — article structure, body text, landing copy, content analysis, editorial policy, and the short utility passes whose output is parsed rather than read. Each one can take its own provider and model, chosen from your account's live model list, or inherit the suite-wide default. The header of every tool names the model that will actually run and expands to show each task it performs, what that task does, and **which settings level the value came from** — so an override that appears not to have taken can be diagnosed from the screen instead of by reading the source. Nothing is pinned to a model id inside the code: defaults are expressed as an intention (best available / everyday / cheap) and resolved against what your account currently offers, so they don't quietly go a generation stale when a provider ships something new.
+
+**Generated meta tags fit the audit's limits by code, not by prompt.** LLMs don't count characters reliably, so titles and descriptions are measured in code against the same limits the audit enforces: fitting options are preferred at the outline stage, the text and rewrite pipelines trim deterministically with the keyword protected, and only a residual case goes to an optional AI repair (max two calls, confirmed, priced). Existing records show a per-field length plaque with a one-click fit button; audit findings get "suggest fixed meta"; agents get `fit_meta`.
 
 <div align="center">
 <img src="screenshot/seo%20tools.png" alt="SEO Tools suite" width="80%" />
@@ -222,13 +415,38 @@ Optional: a **Casino RAG** toggle grounds igaming-niche outlines (slots, casino 
 Takes any outline from History and writes the complete article as a background job (close the tab, come back later). Long outlines are written in small chunks (3–5 sections per model call, run in parallel) rather than one giant prompt — this keeps prose quality consistent instead of degrading into bullet-point sludge halfway through a 3,000-word article. Supports tone/persona, an editorial Policy, a table of contents, and three source-grounding modes: off, facts-only (real numbers, no competitor names/links), or cited (real numbers with inline source links, rate-limited to one link per 1-2 paragraphs).
 
 A **volume guard** keeps the final word count within your target (±15%): expand thin drafts, iteratively trim bloated ones — and it runs as the *very last* step, after fact-checking, so a fact-correction pass can never silently re-inflate an article that was already trimmed to length. Failures surface a real reason (e.g. a provider's content-policy rejection) instead of a bare "generation failed."
+
+Optional **sampling controls** (both off by default, so existing runs are unchanged): a **temperature** field — warned above 1.2 and flagged red at 1.5, where output degrades into nonsense — and a **ban-markers** toggle that injects the vocabulary from your AI-Fingerprint model as forbidden words. Because chunks are separate model calls, the temperature is nudged per chunk by a small deterministic offset, so the finished article isn't the product of one uniform sampling pass. On the Outline step temperature is capped at 0.8 and the parse-retry drops to 0 — outlines must return valid JSON, and sampling randomness is exactly what breaks that.
+
+Every finished article also passes through an **invisible-marks scrub** (on by default; Settings → SEO Tools): zero-width characters, bidi controls, soft hyphens, exotic spaces, private-use and control code points a model can leave behind. Invisible to readers — but the cheapest possible marker for any scanner, findable with a plain grep. Legitimate uses are preserved (emoji ZWJ sequences, ZWNJ in Arabic/Indic scripts, subdivision-flag tag characters), curly quotes are straightened only in Latin-quote text, and whatever was removed is counted in the article's diagnostics. Scoped honestly at output hygiene, not anti-detection.
 </details>
 
 <details open>
 <summary><b>Content Rewriter</b> — refresh & de-duplicate pages into unique variants</summary>
 <br/>
 
-Paste text or a **page URL** (auto-scraped) and get **N unique variants** (1–5) that keep the exact meaning, facts, numbers, entities, and links while rewording everything — same format in, same format out (HTML→HTML, Markdown→Markdown). Each variant shows a **uniqueness score** (word-trigram similarity vs. the source) and a word count, with copy / download. Optional target **language** and **tone**, and a **"mask AI patterns"** toggle that strips common machine tells (em-dashes, "furthermore", "it is important to note", unicode bullets…) for a more natural, human read. Runs on **your own** multi-provider AI (Anthropic / OpenAI / Kimi / …). Wired into **Content Decay**: every decaying page has a one-click **Rewrite** action that opens the tool with its URL prefilled — spot a page losing traffic, refresh it in seconds. Built for large affiliate networks where duplicate content across sites is a real risk.
+Paste text or a **page URL** (auto-scraped) and get **N unique variants** (1–5) that keep the exact meaning, facts, numbers, entities, and links while rewording everything — same format in, same format out (HTML→HTML, Markdown→Markdown). Each variant shows a **uniqueness score** (word-trigram similarity vs. the source), a word count, and — when a fingerprint model is trained — an **AI score**, with copy / download. Optional target **language**, **tone**, **temperature**, and a **ban-markers** toggle that forbids the AI-leaning vocabulary from your fingerprint model. A **"mask AI patterns"** toggle strips common machine tells (em-dashes, "furthermore", "it is important to note", unicode bullets…) — scoped honestly at readability for a human editor, not as anti-detection: substituting phrases in a finished text does not move a statistical detector. Every variant is also stripped of **invisible characters** (zero-width spaces, bidi controls, soft hyphens) before anything downstream sees it, with a badge counting what was removed.
+
+Every variant is checked for **fact drift** — a deterministic diff of numbers, amounts, percentages and identifier-shaped names (RTP, MegaWays, iPhone) between source and rewrite. Values that **appeared** but weren't in the source are flagged red (an invented number is what ships and gets published); values that were **dropped** are flagged amber. Currencies are normalized, so `$50`, `50 USD` and `50 долларов` count as the same amount and locale digit separators never register as a false alarm. No model call, no cost. It verifies values, not claims — and says so.
+
+Runs on **your own** multi-provider AI (Anthropic / OpenAI / Kimi / …). Wired into **Content Decay**: every decaying page has a one-click **Rewrite** action that opens the tool with its URL prefilled — spot a page losing traffic, refresh it in seconds. Built for large affiliate networks where duplicate content across sites is a real risk.
+</details>
+
+<details open>
+<summary><b>AI-Fingerprint Lab</b> — measure how machine-written your text reads, and fix it at the source</summary>
+<br/>
+
+Modern statistical AI detectors don't read style — they score the **token frequency distribution over ~300-word windows**. That makes the signal reproducible locally, so this tool trains a bag-of-words discriminator **on your own two corpora**: competitor pages pulled from the SERP as the human reference, your own generation History as the machine reference. No third-party detector API, no subscription, no text leaving your server. Pure TypeScript, zero dependencies, works in any alphabet.
+
+Three tabs:
+
+- **Analyze** — score any text or a saved article: an averaged score, a **per-window heatmap** (an average hides a piece that's half clean and half obvious), the **marker vocabulary** that actually moved the score, and the human-leaning words your text never uses. A **Humanize** action rewrites the text with those markers banned, scores three variants, and shows the before → after delta. The tab also **scans pasted text for hidden characters** — zero-width spaces, bidi controls, soft hyphens a model may have left — and cleans them in one click.
+- **Corpus** — harvest the human reference by keyword or URL list, train, and keep several named models. A model is bound to its niche and language, so train one per niche; the UI reports a held-out **separation** score so a weak model is visibly weak rather than quietly wrong.
+- **Bench** — run the same prompt across your configured models and temperatures and rank the results. This is the point of the tool: model choice dominates every prompt-side trick, and published model comparisons go stale within months, so the useful move is measuring the models *you* hold keys for.
+
+The score is the least interesting output. The **marker list is the payload**: exporting it bans that vocabulary at generation time, which is where a word list actually changes anything — reworking a finished text barely moves a statistical detector, and the tool says so, in context, when a rewrite underdelivers.
+
+Two safeguards, because this vocabulary goes straight into a generation prompt. Words used by **40%+ of competitor pages** are treated as niche terminology and never suggested — banning terms the whole niche uses doesn't make text human, it makes the model talk around words the article needs. And the full list is **reviewable before it applies**: click any word to keep it allowed, and the exclusion sticks to that model across retraining.
 </details>
 
 <details open>
@@ -253,6 +471,13 @@ The same SERP → select → scrape research flow as Outline, aimed at conversio
 </details>
 
 <details open>
+<summary><b>Hreflang Generator</b> — cluster annotations from a URL list</summary>
+<br/>
+
+Paste URLs with their languages and get the ready-to-paste <code>&lt;link rel="alternate"&gt;</code> block, the sitemap <code>xhtml:link</code> variant and the HTTP-header variant. Part of the footprints tooling — see <a href="docs/FOOTPRINT.md">docs/FOOTPRINT.md</a>.
+</details>
+
+<details open>
 <summary><b>GEO Audit</b> — Generative Engine Optimization</summary>
 <br/>
 
@@ -267,24 +492,57 @@ Not to be confused with GEO's AI-citation tracking — this tracks classic web-w
 </details>
 
 <details open>
+<summary><b>Plagiarism Check & <code>site:</code> Index Estimation</b> — exact-quote verification on the open web</summary>
+<br/>
+
+Paste text (or open it straight from a finished article — the "Check plagiarism" button in its toolbar) and OpenGSC picks exact-quote fragments, runs them as exact queries through your configured SERP provider, and reports which sources carry them. The sibling <code>site:</code> tool estimates indexation for sites that are not in Search Console at all — up to 200 URLs per call, handy for drop domains. Both bill your own key one query at a time, the price is shown before the run, and a provider failure is an error — never a quiet empty result. MCP: <code>check_plagiarism</code>, <code>serp_index_check</code>. Doc: <a href="docs/PLAGIARISM.md">docs/PLAGIARISM.md</a>.
+</details>
+
+<details open>
 <summary><b>Link Monitor</b> — competitor backlink watchlist (Ahrefs API)</summary>
 <br/>
 
-Watch any set of competitor brand domains and pull their **fresh quality backlinks** through your own Ahrefs API v3 key, filtered the way link-building pros do (the [detailed.com](https://detailed.com/ai-backlinks-api/) workflow): in-content links only, live, DR ≥ 50 (configurable), first seen within the last 3 months, one per referring domain. The report surfaces **multi-linker domains** — sites that link to two or more of your watched brands, i.e. your highest-probability outreach targets — plus an AI insights pass over the data: which content types earn links, in what context authors mention the brands, anchor patterns, and concrete content/PR opportunities. Not to be confused with the per-site **Backlinks Checker** above, which tracks *your own* curated link inventory.
+Watch any set of competitor brand domains and pull their **fresh quality backlinks** through your own Ahrefs API v3 key, filtered the way link-building pros do (the [detailed.com](https://detailed.com/ai-backlinks-api/) workflow): in-content links only, live, DR ≥ 50 (configurable), first seen within the last 3 months, one per referring domain. The report surfaces **multi-linker domains** — sites that link to two or more of your watched brands, i.e. your highest-probability outreach targets — plus an AI insights pass over the data: which content types earn links, in what context authors mention the brands, anchor patterns, and concrete content/PR opportunities. Save any result into the built-in **Outreach Workspace** to track campaigns, evidence, contacts, follow-ups, stage history, conversion and the backlink eventually won. OpenGSC can prepare a localized pitch draft, but never sends it automatically. Not to be confused with the per-site **Backlinks Checker** above, which tracks *your own* curated link inventory.
+</details>
+
+<details open>
+<summary><b>Competitor Crawler</b> — X-ray any site on the internet, and find out who else owns it</summary>
+<br/>
+
+Point it at a competitor and get their homepage judged by the same rule registry your own audits use, plus what the site is built with (CMS, framework, WordPress theme and plugin slugs, exposed usernames, a reachable `xmlrpc.php`), where it runs (A/AAAA, nameservers, MX, CDN), how big it is (sitemap URL count, hreflang languages), and whether AI crawlers are allowed in.
+
+Then the part a single-site checker cannot do. Every scan records the identity signals a site leaks — **GA4, Universal Analytics, Tag Manager, AdSense, Yandex Metrica, Meta Pixel, Hotjar, Clarity, nameservers, IPs** — and matches each new scan against every earlier one. An analytics property or an ads publisher id is billed to one person, so an overlap there is reported as **strong** evidence that two domains share an owner; a shared nameserver or IP only means a shared host and is marked **weak**. Redirect targets are stored as well, which is how a dropped domain merged into another gives itself away. Build up a scan history and a private network stops being invisible.
+
+One page per scan, plus the paths every site publishes anyway (robots.txt, sitemap, llms.txt). Nothing is brute-forced and no credential is tried — the WordPress paths are requested only when the page already looks like WordPress.
+</details>
+
+<details open>
+<summary><b>Content Operations & Source Audit</b> — review drafts, ship PRs, check code before deployment</summary>
+<br/>
+
+*New in 1.4.0 — the first release where OpenGSC writes to a system outside itself. Connect a scratch repository first and watch one item go through end to end.*
+
+Move an existing draft through an explicit idea → approval → review workflow, preview a deterministic diff, and create a GitHub branch and pull request only after confirmation. OpenGSC never writes to the base branch and never auto-merges. The same connected repository has a separate, **read-only Source Audit** tab: choose a branch and run bounded Next.js SEO, performance, correctness, security and architecture checks against its immutable commit snapshot. Up to 80 files / 4 MB are inspected in memory; source bodies and secret values are not stored, and any safety-limit truncation is visible in the report.
+
+Source Audit checks repository code before deployment. It does **not** replace or merge data with the runtime **Site Audit**, **AI Visibility**, or **SEO Tools → GEO** — those remain separate tools with their own settings, reports and logic.
+
+After the merge the loop actually closes. A merged pull request is not a deployment, so OpenGSC fetches the target URL itself and starts measuring only on a real HTTP 200 — then links the page into **Indexing** and, when the item has a keyword, into the **Rank Tracker**. Outcome windows open on the live date and close at **7, 30 and 90 days**, each captured once from your own Search Console rows against a 28-day baseline, with the reporting lag accounted for: an empty row means *not measured yet*, never zero traffic. Nothing is auto-submitted to a paid indexer, and nothing is merged for you.
 </details>
 
 <details open>
 <summary><b>Editorial Policy</b> — one style guide, applied everywhere</summary>
 <br/>
 
-Define — or have AI draft, grounded in your own brand pages — a reusable editorial policy: brand description and values, audience profile, voice/tone/formality, structural rules (headings, paragraph length, lists vs. tables), quality bar (citation style, E-E-A-T notes, fact-checking behavior), and hard restrictions (banned words/topics, compliance rules like "never fabricate a license — leave a placeholder instead"). Save up to 10, mark one active, and it's applied automatically across Outline, Text, and Landing generation.
+Define — or have AI draft, grounded in your own brand pages — a reusable editorial policy: brand description and values, audience profile, voice/tone/formality, structural rules (headings, paragraph length, lists vs. tables), quality bar (citation style, E-E-A-T notes, fact-checking behavior), and hard restrictions (banned words/topics, compliance rules like "never fabricate a license — leave a placeholder instead"). Save up to 10, mark one active, and it's applied automatically across Outline, Text, and Landing generation. The AI-Fingerprint Lab can push its marker vocabulary straight into a policy's banned-words list.
+
+One thing these prompts deliberately **do not** contain: instructions on *how* to write ("sound natural", "vary your sentence length", "avoid AI clichés"). A/B testing shows such directives backfire — the model applies them as formal rules, which narrows its output distribution and makes the text read *more* machine-typical, not less. Naming concrete words to avoid carries none of that failure mode, which is why the banned-word list is the mechanism here.
 </details>
 
 <details open>
 <summary><b>History</b> — every generation, resumable</summary>
 <br/>
 
-A unified log across Cluster, Outline, Text, Analysis, and Landing runs. Generation jobs run server-side and fire-and-forget, so you can close the tab; History polls for completed jobs, auto-imports them, and auto-fails anything stuck "processing" for more than 20 minutes so nothing spins forever. History — along with your API keys, provider/model choices, and Editorial Policies — is **automatically backed up server-side**, so clearing browser data or switching browsers no longer loses your generations or settings: everything is restored on the next page load.
+A unified log across Cluster, Outline, Text, Analysis, and Landing runs. Generation jobs run server-side and fire-and-forget, so you can close the tab; History polls for completed jobs, auto-imports them, and auto-fails anything stuck "processing" for more than 20 minutes so nothing spins forever. When an AI-Fingerprint model is active, every stored article carries its **AI score** right in the list, so you can see which generations read machine-written without opening them. History — along with your API keys, provider/model choices, and Editorial Policies — is **automatically backed up server-side**, so clearing browser data or switching browsers no longer loses your generations or settings: everything is restored on the next page load.
 </details>
 
 <br/>
@@ -313,11 +571,14 @@ A self-hosted **doorway-domain network** for operators who need pages indexed fa
 |---|---|---|
 | **OS** | Ubuntu 22.04 LTS | Ubuntu 22.04 / 24.04 LTS |
 | **CPU** | 1 vCPU | 2 vCPU |
-| **RAM** | 1 GB | 2 GB |
+| **RAM** | 1 GB + swap (see below) | 2 GB |
 | **Disk** | 10 GB SSD | 20 GB SSD |
 | **Domain** | **Required** | With SSL (Let's Encrypt) |
+| **Node.js** | 22 LTS | 24 LTS (installed for you) |
 
 > Node.js, PM2, Nginx, and every dependency are installed **automatically** by the script — nothing to set up by hand.
+
+> 💡 **Why swap on a small VPS:** the production build (Turbopack) peaks at ~2.4 GB of memory — on a 2 GB box with no swap the kernel kills `next build` with a bare `Killed` ([#21](https://github.com/fenjo26/OpenGSC/issues/21)). Running the app needs far less than building it. `install.sh` and `update.sh` check for this themselves: when RAM + swap combined is under ~3 GB, they create a 4 GB swapfile before building (2 GB when disk is tight; inside containers, where swap can't be enabled, they warn and continue). Updating by hand (`git pull && npm run build && pm2 restart`) needs the same swap — add it once: `fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`.
 
 > ⚠️ **A domain is required.** Google OAuth does not work against a bare IP address. Point a domain at your server's IP before installing.
 
@@ -354,7 +615,7 @@ Every step below is a direct link that opens exactly the right page in Google Cl
 curl -fsSL https://raw.githubusercontent.com/fenjo26/opengsc/main/install.sh | sudo bash
 ```
 
-The script clones the repo into `/root/opengsc`, then asks for: your domain, whether to install Nginx (recommended), whether to set up SSL via Let's Encrypt (recommended), an email for the SSL cert, and your Google Client ID/Secret. It then automatically installs Node.js 20 LTS, installs PM2 and runs the app as a managed service, configures Nginx as a reverse proxy, issues an SSL certificate via Certbot, and configures the UFW firewall (ports 22/80/443).
+The script clones the repo into `/root/opengsc`, then asks for: your domain, whether to install Nginx (recommended), whether to set up SSL via Let's Encrypt (recommended), an email for the SSL cert, and your Google Client ID/Secret. It then automatically installs Node.js 24 LTS, installs PM2 and runs the app as a managed service, configures Nginx as a reverse proxy, issues an SSL certificate via Certbot, and configures the UFW firewall (ports 22/80/443).
 
 ### 3. Open it
 
@@ -377,8 +638,8 @@ Sign in with Google — the **first account becomes the dashboard owner**. Add m
 git clone https://github.com/fenjo26/opengsc.git
 cd opengsc
 
-# Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+# Node.js 24 (Active LTS — Node 20 reached end of life in April 2026)
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo bash -
 sudo apt-get install -y nodejs
 
 # PM2
@@ -411,9 +672,15 @@ pm2 startup
 |---|---|---|
 | `DATABASE_URL` | Path to the SQLite database | `file:/root/opengsc/data/prod.db` |
 | `NEXTAUTH_SECRET` | Random secret used to encrypt sessions | `openssl rand -base64 32` |
+| `CONTENT_OPS_SECRET` | Optional stable key for Content Operations GitHub-token encryption; falls back to `NEXTAUTH_SECRET` | `openssl rand -base64 32` |
+| `OPENGSC_ALLOW_PRIVATE_TARGETS` | Optional. Allows owner-driven audits of localhost/LAN targets, which are blocked by default as SSRF protection. The public Free SEO Checker ignores it | `1` |
+| `EASY_GR_USERNAME` | Optional. easy.gr registrar account — enables availability checks for `.gr` (a zone with no RDAP/WHOIS). Calls go direct, never through the proxy pool, because the service is IP-allowlisted | `user@example.gr` |
+| `EASY_GR_PASSWORD` | Password for the same easy.gr account | `…` |
 | `NEXTAUTH_URL` | The app's full URL, including domain | `https://your-domain.com` |
 | `GOOGLE_CLIENT_ID` | From Google Cloud Console | `123...apps.googleusercontent.com` |
 | `GOOGLE_CLIENT_SECRET` | From Google Cloud Console | `GOCSPX-...` |
+| `OPENGSC_OWNER_EMAIL` | Optional. Only these Google addresses (comma-separated) may become the owner of a fresh instance. Unset: the first Google sign-in becomes the owner | `you@gmail.com` |
+| `OPENGSC_ALLOW_GOOGLE_LOGIN` | Optional. Once the owner has a password, Google is no longer a login — only a way to connect GSC/GA accounts from Settings. `true` reopens it (e.g. after a lost password) | `true` |
 
 > `NEXTAUTH_URL` must **exactly match** the Authorized redirect URI in Google Console, down to `http://` vs `https://`. A mismatch causes `redirect_uri_mismatch`.
 
@@ -421,6 +688,10 @@ Generate a secret:
 ```bash
 openssl rand -base64 32
 ```
+
+If Content Operations is connected to GitHub, keep `CONTENT_OPS_SECRET` (or the fallback
+`NEXTAUTH_SECRET`) stable across restarts and upgrades. Repository tokens are encrypted with it;
+the token is never returned by the API or exposed to MCP.
 
 <br/>
 
@@ -441,11 +712,27 @@ pm2 status             # status of all processes
 
 ```bash
 cd /root/opengsc
-git pull            # or: bash update.sh  (does everything below in one step)
-npm install
+bash update.sh
+```
+`update.sh` is the same script the UI button runs: it backs up the SQLite database first (before touching the working tree), fetches and hard-resets to `origin/main`, installs deps with `--include=dev` (plain `npm install` silently skips Tailwind/TypeScript when `NODE_ENV=production`, which PM2 sets — the build then fails on the first stylesheet), pushes the Prisma schema, builds, and restarts PM2.
+
+**If the update hangs or fails (UI or SSH):** the SQLite backup step has a hard 10-minute ceiling — a normal backup finishes in well under a second (`VACUUM INTO` on the live db), so if it's stuck there for minutes, the database has likely grown large because `IndexerLog` (raw indexer/crawler request logs) is never rolled up automatically. Roll it up by hand before retrying:
+```bash
+cd /root/opengsc
+node scripts/rollup-logs.ts
+```
+⚠️ This permanently deletes all raw `IndexerLog` rows except the latest 5,000 (the aggregated daily stats in `IndexerDailyStat` are kept, so charts aren't affected).
+
+If `update.sh` itself is unavailable, the equivalent steps by hand are:
+```bash
+cd /root/opengsc
+git fetch origin
+node scripts/backup-sqlite.mjs   # back up before touching the working tree
+git reset --hard origin/main
+npm i --include=dev
 npx prisma db push
 npm run build
-pm2 restart opengsc
+pm2 restart opengsc --update-env
 ```
 
 <br/>
@@ -544,6 +831,8 @@ src/
     login/page.tsx
     settings/page.tsx            # Global settings — Google accounts, AI/SERP/API keys
     seo-tools/                   # AI SEO Content Suite
+      demand/page.tsx            # Demand — keyword research + domain overview (DataForSEO)
+      competitors/page.tsx       # Competitor keyword gap vs your own GSC data
       cluster/page.tsx           # Keyword Clustering (SERP URL-overlap)
       outline/page.tsx           # Outline Generator
       text/page.tsx              # Text Generator
@@ -579,7 +868,8 @@ src/
       indexing/                  # Sitemap sync/inspection + 2index.ninja / NeuralIndexer / XML River
       indexer/                   # Doorway domains, queue, dictionary, stats, logs, webhook
       seo/                       # Outline, text, analysis, landing, geo, citations, policy,
-                                  # background jobs, images, keyword data, model lists
+                                  # background jobs, images, keyword data, model lists,
+                                  # aidetect/ (fingerprint corpus harvest + model bench probe)
   lib/
     auth.ts                      # NextAuth configuration
     prisma.ts                    # Prisma client
@@ -589,13 +879,19 @@ src/
       prompts.ts                 # All LLM prompt builders
       rag.ts                     # Casino RAG knowledge base lookups
       serp.ts / scrape.ts        # SERP + competitor scraping providers
+      aidetect.ts                # Local AI-fingerprint classifier (bag-of-words, no LLM, no deps)
+      aidetectStore.ts           # Trained models + per-model ban-list edits (localStorage)
+      factDrift.ts               # Deterministic number/identifier diff for rewrites
       history.ts / jobs.ts       # Client-side History + server-side background jobs
     PrivacyContext.tsx / ThemeContext.tsx / LayoutContext.tsx
   components/
     StrikingDistanceKeywords.tsx / KeywordCannibalization.tsx / ContentDecayMap.tsx / CtrBenchmark.tsx
     RankTracker.tsx / AeoTracker.tsx / ClarityPanel.tsx / SiteSettingsTab.tsx
   lib/
-    mcp/tools.ts                 # MCP tool registry (read-only, Prisma-backed)
+    mcp/shared.ts                # MCP helpers: site resolution, key lookup, paid-tool gate
+    mcp/tools.ts                 # MCP tool registry — GSC core + the flattened MCP_TOOLS array
+    mcp/toolsData.ts             # MCP tools: decay, CTR, GEO, indexer, digests, alerts, GA4…
+    mcp/toolsOptimize.ts         # MCP tools: optimization brief, text analysis, rewrite
     audit/crawler.ts             # Site Audit crawler (BFS, regex extraction, issue detection)
 prisma/
   schema.prisma                  # Full data model
@@ -616,15 +912,31 @@ docs/
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the app is built: the background job system, the multi-pass SEO generation pipeline, the multi-provider LLM abstraction, the MCP server, the audit crawler, the indexer's cloaking/verification mechanism, and the full data model.
 - **[docs/GA4-SETUP.md](docs/GA4-SETUP.md)** — connecting Google Analytics 4, step by step.
+- **[docs/METRICS-SETUP.md](docs/METRICS-SETUP.md)** — keyword weights, backlink profiles and the competitor gap: importing exports for free, configuring an Ahrefs/Semrush/Majestic key, and what each action costs.
+- **[docs/METRICS.md](docs/METRICS.md)** — the metrics layer from the inside: three-layer routing (cache → reseller API → live), the unit price model, the two caches and how conflicts are resolved, and where it is wired in the UI.
 - **[docs/MCP-SETUP.md](docs/MCP-SETUP.md)** — connecting AI agents (Claude Code, Claude Desktop, Cursor, Codex) to your instance.
 - **[docs/SEARCH-ENGINES-SETUP.md](docs/SEARCH-ENGINES-SETUP.md)** — Bing Webmaster, Yandex.Webmaster and IndexNow: getting the keys/tokens and what data each engine provides (site + portfolio dashboards, digests, and the site-search badge).
 - **[docs/GOOGLEBOT-VIEW-SPEC.md](docs/GOOGLEBOT-VIEW-SPEC.md)** — the Googlebot View cloaking/PBN inspector: how the multi-UA fetch, redirect-chain walk, and cloaking diff work.
+- **[docs/PRODUCT-ROADMAP.md](docs/PRODUCT-ROADMAP.md)** — prioritized product and engineering plan: product truth, durable jobs, verified audits and the OSS ideas worth adapting.
+- **[docs/RESPONSIBLE-USE.md](docs/RESPONSIBLE-USE.md)** — Private Indexer and reseller API risks, in English and Russian.
+- **[docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md)** — the version, migration, tag and GitHub Release gate.
 - **[docs/DOCKER-SETUP.md](docs/DOCKER-SETUP.md)** — running OpenGSC with Docker instead of the VPS installer.
 - **[docs/INDEXER-SETUP.md](docs/INDEXER-SETUP.md)** — deploying and operating the private indexer network.
+- **[docs/FOOTPRINT.md](docs/FOOTPRINT.md)** — the network footprint report and the hreflang generator.
+- **[docs/BACKLINK-TOXICITY.md](docs/BACKLINK-TOXICITY.md)** — backlink toxicity with your own niche, the disavow file, lost-link recovery.
+- **[docs/LOCAL-SEO.md](docs/LOCAL-SEO.md)** — local positions and the local pack in Rank Tracker; business profile, NAP, citations, LocalBusiness schema and Google Business Profile.
+- **[docs/TRENDS.md](docs/TRENDS.md)** — trend radar: rising GSC queries and Google autocomplete hints.
+- **[docs/PLAGIARISM.md](docs/PLAGIARISM.md)** — exact-quote plagiarism checks and `site:` index estimation.
+- **[docs/REPORTS.md](docs/REPORTS.md)** — white-label client reports: snapshots, PDF, schedule, client links.
+- **[docs/LEADS.md](docs/LEADS.md)** — the embeddable audit widget, inbound leads and proposals.
+- **[docs/PWA.md](docs/PWA.md)** — installing OpenGSC as an app and web-push notifications.
+- **[docs/EXTENSION.md](docs/EXTENSION.md)** — the Chrome/Edge browser extension.
 
 <br/>
 
 ## Disclaimer
+
+The **Get key** button on the Ahrefs, Semrush and Majestic cards in Settings is a referral link to a reseller. Saying so here rather than leaving you to notice the `affiliate_key` in the URL: it is the only referral link in the project, it does not change how anything works, and nothing in OpenGSC depends on that reseller. The official API hosts are the defaults, the base-URL field accepts any gateway, and the whole metrics module works with no API key at all through CSV import. Note also that reselling Ahrefs/Semrush/Majestic API access is against those vendors' terms of service and can be withdrawn without notice — that risk is yours to weigh.
 
 The **Private Indexer Network** implements doorway pages and user-agent/DNS-based cloaking — techniques that sit outside the webmaster guidelines of Google, Bing, and Yandex, and can result in penalties up to and including deindexing for domains that use them. This module is provided as infrastructure tooling for users who understand and accept that risk; it is **not** enabled or required for any other part of OpenGSC. You are solely responsible for how you use it and for compliance with the terms of service of any search engine, hosting provider, or jurisdiction that applies to you. See also [opengsc.org/disclaimer](https://opengsc.org/disclaimer/).
 

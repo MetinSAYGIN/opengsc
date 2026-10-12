@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import { fetchLLM } from "@/lib/llm";
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as any)?.id as string | undefined;
+    const userId = await workspaceUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const words = await prisma.indexerDictionary.findMany({
@@ -16,19 +14,18 @@ export async function GET(req: Request) {
     });
 
     return NextResponse.json(words.map(w => w.word));
-  } catch (e: any) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as any)?.id as string | undefined;
+    const userId = await workspaceUserId("write");
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
-    const { action, words, niche, aiProvider, aiApiKey } = body;
+    const { action, words, niche, aiProvider, aiApiKey, model, aiBaseUrl } = body;
 
     if (action === "generate") {
       if (!niche) {
@@ -39,7 +36,7 @@ export async function POST(req: Request) {
 
       if (aiProvider && aiApiKey) {
         const prompt = `Generate exactly 80 simple, single-word or short 2-word SEO keywords (no commas in phrases, no line numbers, no formatting) related to the topic "${niche}". Output them as a plain list, one keyword per line. Do not write any introduction or explanation. Output only the words themselves.`;
-        const result = await fetchLLM(prompt, aiProvider, aiApiKey, 1500);
+        const result = await fetchLLM(prompt, aiProvider, aiApiKey, 1500, model, aiBaseUrl);
         if (result) {
           generatedWords = result
             .split("\n")
@@ -72,7 +69,7 @@ export async function POST(req: Request) {
             },
           });
           added.push(entry.word);
-        } catch (e) {
+        } catch {
           // ignore duplicates
         }
       }
@@ -99,22 +96,21 @@ export async function POST(req: Request) {
           },
         });
         added.push(entry.word);
-      } catch (err) {
+      } catch {
         // Ignore duplicates
       }
     }
 
     return NextResponse.json({ success: true, count: added.length });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[Indexer Dictionary Error]", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE() {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as any)?.id as string | undefined;
+    const userId = await workspaceUserId("write");
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     // Clear entire dictionary for this user
@@ -123,7 +119,7 @@ export async function DELETE(req: Request) {
     });
 
     return NextResponse.json({ success: true });
-  } catch (e: any) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

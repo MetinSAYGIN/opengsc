@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { GitFork, Download, Info, RefreshCw, AlertCircle, Sparkles } from "lucide-react";
+import { GitFork, Download, Info, RefreshCw, AlertCircle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 interface DomainNode {
@@ -23,7 +23,7 @@ export default function IndexerLinksPage() {
       const res = await fetch("/api/indexer/domains");
       if (res.ok) {
         const d = await res.json();
-        setDomains(d.map((x: any) => ({ id: x.id, domain: x.domain, pages: x.pagesCount })));
+        setDomains(d.map((x: { id: string; domain: string; pagesCount: number }) => ({ id: x.id, domain: x.domain, pages: x.pagesCount })));
       }
     } catch (e) {
       console.error(e);
@@ -188,7 +188,7 @@ export default function IndexerLinksPage() {
           ].map(top => (
             <div
               key={top.id}
-              onClick={() => setTopology(top.id as any)}
+              onClick={() => setTopology(top.id as "mesh" | "ring" | "pyramid")}
               style={{
                 border: "1px solid var(--color-border)",
                 borderRadius: "10px",
@@ -266,7 +266,7 @@ export default function IndexerLinksPage() {
 
         {loading ? (
           <div style={{ height: "300px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-text-secondary)" }}>
-            <RefreshCw size={20} className="animate-spin" style={{ marginRight: "8px" }} />
+            <RefreshCw size={20} className="spin" style={{ marginRight: "8px" }} />
             {t("linksCalculating")}
           </div>
         ) : domains.length === 0 ? (

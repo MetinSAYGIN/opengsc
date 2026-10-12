@@ -3,25 +3,36 @@
 // this single confirmed endpoint and compute the summary ourselves (robust).
 // Docs: https://docs.dataforseo.com/v3/content_analysis/search/live/
 
-export type Polarity = "positive" | "neutral" | "negative";
-export const EMOTIONS = ["anger", "happiness", "love", "sadness", "share", "fun"] as const;
-export type Emotion = typeof EMOTIONS[number];
+import { loggedFetch, type CallHandle } from "@/lib/providerLog/log";
 
-export interface Citation {
-  url: string;
-  domain: string;
-  title: string;
-  snippet: string;
-  polarity: Polarity;
-  emotions: Record<Emotion, number>;
-  topEmotion?: Emotion;
-  date: string;
-  score: number;
-}
+// The shapes and the emotion list live next door because the Citations page needs them in the
+// browser, and this module — since its DataForSEO call became a logged one — reaches the Prisma
+// client. Re-exported here so every existing server-side import is unchanged.
+export * from "./contentAnalysisShapes";
+import { EMOTIONS, type Citation, type Emotion, type Polarity } from "./contentAnalysisShapes";
 
 function dfsAuth(cred: string): string {
   const c = (cred || "").trim();
   return c.includes(":") ? Buffer.from(c).toString("base64") : c;
+}
+
+/** One DataForSEO Content Analysis mention item, as this parser reads it. */
+interface DfsMentionItem {
+  url?: string;
+  domain?: string;
+  main_domain?: string;
+  fetch_time?: string;
+  score?: number | string;
+  content_info?: {
+    main_title?: string;
+    title?: string;
+    snippet?: string;
+    highlighted_text?: string;
+    date_published?: string;
+    group_date?: string;
+    connotation_types?: Record<string, number>;
+    sentiment_connotations?: Record<string, number>;
+  };
 }
 
 function maxKey<T extends string>(obj: Record<string, number> | undefined, keys: readonly T[]): T | undefined {
@@ -45,28 +56,45 @@ export async function runContentSearch(
   }];
 
   let res: Response;
+  let call: CallHandle;
   try {
-    res = await fetch("https://api.dataforseo.com/v3/content_analysis/search/live", {
+    ({ res, call } = await loggedFetch("https://api.dataforseo.com/v3/content_analysis/search/live", {
       method: "POST",
       headers: { Authorization: `Basic ${dfsAuth(credential)}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(45000),
-    });
-  } catch (e: any) {
-    return { total: 0, items: [], error: `сеть DataForSEO: ${e?.cause?.code || e?.cause?.message || e?.message || "fetch failed"}` };
+    }, { provider: "dataforseo" }));
+  } catch (e) {
+    return { total: 0, items: [], error: `сеть DataForSEO: ${(e as { cause?: { code?: string; message?: string } })?.cause?.code || (e as { cause?: { code?: string; message?: string } })?.cause?.message || (e as Error)?.message || "fetch failed"}` };
   }
-  if (!res.ok) return { total: 0, items: [], error: `dataforseo ${res.status}: ${(await res.text()).slice(0, 200)}` };
+  if (!res.ok) {
+    const error = `dataforseo ${res.status}: ${(await res.text()).slice(0, 200)}`;
+    call.finish({ error });
+    return { total: 0, items: [], error };
+  }
   const data = await res.json();
-  if (data?.status_code && data.status_code !== 20000) return { total: 0, items: [], error: `dataforseo ${data.status_code}: ${data.status_message}` };
+  // DataForSEO states what the request cost, in dollars, in the envelope. Read, never computed,
+  // and read before the status checks: a task that failed inside a 200 was still charged for.
+  const costUsd = Number.isFinite(Number(data?.cost)) ? Number(data.cost) : null;
+  if (data?.status_code && data.status_code !== 20000) {
+    const error = `dataforseo ${data.status_code}: ${data.status_message}`;
+    call.finish({ error, costUsd });
+    return { total: 0, items: [], error };
+  }
   const taskObj = data?.tasks?.[0];
-  if (taskObj?.status_code && taskObj.status_code !== 20000) return { total: 0, items: [], error: `dataforseo task ${taskObj.status_code}: ${taskObj.status_message}` };
+  if (taskObj?.status_code && taskObj.status_code !== 20000) {
+    const error = `dataforseo task ${taskObj.status_code}: ${taskObj.status_message}`;
+    call.finish({ error, costUsd });
+    return { total: 0, items: [], error };
+  }
+  call.finish({ costUsd });
 
   const result = taskObj?.result?.[0] ?? {};
   const total: number = result.total_count ?? (result.items?.length ?? 0);
-  const items: Citation[] = (result.items ?? []).map((it: any) => {
-    const ci = it.content_info ?? {};
-    const ct = ci.connotation_types ?? {};
-    const sc = ci.sentiment_connotations ?? {};
+  const items: Citation[] = (result.items ?? []).map((it: DfsMentionItem) => {
+    const ci: NonNullable<DfsMentionItem["content_info"]> = it.content_info ?? {};
+    const ct: Record<string, number> = ci.connotation_types ?? {};
+    const sc: Record<string, number> = ci.sentiment_connotations ?? {};
     const emotions = Object.fromEntries(EMOTIONS.map(e => [e, Number(sc[e] ?? 0)])) as Record<Emotion, number>;
     const polarity = (maxKey(ct, ["positive", "neutral", "negative"] as const) ?? "neutral") as Polarity;
     return {

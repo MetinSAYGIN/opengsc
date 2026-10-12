@@ -22,6 +22,31 @@ Search Console / Analytics / Ads-adjacent Google APIs on the user's behalf. Ther
 multi-tenant user system — this is designed to be one operator's personal dashboard across
 multiple Google identities, not a multi-customer SaaS.
 
+**Workspace and roles.** Every table is scoped by `userId`, and that still means the owner. Team
+members do not own rows: `getWorkspace()` in `src/lib/team/workspace.ts` resolves a request to
+`{ ownerId, actorId, role }`, and route handlers call `workspaceUserId(capability)` instead of
+reading the session, so the hundreds of existing queries are unchanged while gaining an access
+rule. The permission table lives in `src/lib/team/roles.ts` — pure, unit-tested, and importable by
+client components to hide controls, though the server checks it again because a hidden button is
+not a permission system. Two boundaries carry the design: spending the owner's API credits requires
+`admin`, and anything that can lock the owner out or expose credentials is owner-only.
+
+**Identity is not Google.** Accounts authenticate through the Credentials provider; the owner is
+created from the console (`scripts/create-owner.mjs`) and recovered the same way
+(`scripts/set-password.mjs`). Google OAuth exists to attach an `Account` row — the grant behind
+Search Console and Analytics reads — and linking one requires an active owner session. Google may
+still be used to sign in while the owner has no password, which is the bootstrap state of a fresh
+install and of every instance created before this release; `googleLoginStillAllowed()` in
+`src/lib/auth.ts` encodes that as a state rather than a setting, so there is no migration flag and
+no window in which an instance has no way in.
+
+Membership is read on every request rather than cached in the JWT. Sessions last 30 days and cannot
+be revoked, so a cached role would keep a suspended member working for a month; one indexed lookup
+buys immediate suspension. Members authenticate through a Credentials provider with bcrypt — never
+Google, because an employee's Google account carries their own Search Console properties and those
+must not enter someone else's workspace. `Membership` rows exist only for members; the owner is the
+user carrying `isOwner`, resolved lazily from the first user on instances that predate the column.
+
 Background work (AI generation jobs, cron-style sync) does **not** use a queue broker. It uses two
 lightweight patterns instead:
 
@@ -33,10 +58,18 @@ lightweight patterns instead:
   `clarity-cron`, `rank-cron`) run `setInterval`-based sync loops started once at process boot,
   living entirely inside the same PM2 process.
 
-This keeps the deployment story to "one process, one file database" at the cost of jobs not
-surviving a process restart mid-flight — which is why `GET /api/seo/jobs` auto-fails anything
-stuck in `processing` for more than 20 minutes (see `src/app/api/seo/jobs/route.ts`): a restart
-mid-job would otherwise leave a phantom row "processing" forever.
+This keeps the deployment story to "one process, one file database" at the cost of work in flight
+not surviving a process restart. A dedicated `heartbeatAt` now distinguishes a slow provider call
+from a lost task. Paid SEO work silent for 20 minutes is marked `interrupted/error` and is never
+replayed automatically, because an uncertain retry could bill the owner twice. Free Site Audit
+crawls follow a different policy: an owner list read claims a stale run and restarts it from a clean
+partial-page set with the stored crawl options.
+
+Every updater run now creates a consistent SQLite backup with `better-sqlite3` before `prisma db
+push` and verifies the copy with `PRAGMA integrity_check`. Backups are stored beside the active
+database under `backups/`; schema changes never start if this backup step fails. Background rows
+also carry additive lifecycle fields (`stage`, `progress`, `attempt`, `heartbeatAt`, `checkpoint`)
+while keeping the legacy `processing/completed/error` statuses and response fields intact.
 
 ## 2. Data model
 
@@ -46,10 +79,10 @@ mid-job would otherwise leave a phantom row "processing" forever.
 |---|---|
 | Auth | `Account`, `Session`, `User`, `VerificationToken` |
 | GSC core | `Site`, `SitemapUrl`, `IndexingOperation`, `DailyMetric`, `PageInspection`, `PageInspectionHistory` |
-| Growth tools | `TrackedKeyword`, `RankCheck` (Rank Tracker), `TrackedQuestion`, `AeoCheck` (AEO Tracker), `Backlink`, `ContentGroup`, `TopicCluster`, `LinkWatchBrand`, `LinkMention` (Link Monitor), `DrCache` (Ahrefs DR cache) |
+| Growth tools | `TrackedKeyword`, `RankCheck` (Rank Tracker), `TrackedQuestion`, `AeoCheck` (AEO Tracker), `Backlink`, `ContentGroup`, `TopicCluster`, `LinkWatchBrand`, `LinkMention` (Link Monitor), `OutreachCampaign`, `OutreachProspect`, `OutreachStageEvent`, `DrCache` (Ahrefs DR cache) |
 | Integrations | `ClaritySnapshot`, `SiteHealth` |
 | Indexer | `IndexerDomain`, `IndexerLog`, `IndexerQueue`, `IndexerDictionary` |
-| SEO Tools | `SeoJob`, `SeoHistory`, `GeoAudit`, `RagSlot`, `RagCasino` |
+| SEO Tools | `SeoJob`, `SeoHistory`, `GeoAudit`, `RagSlot`, `RagCasino`, `ContentRepository`, `ContentOperation`, `ContentOperationEvent`, `SourceAuditRun` |
 | Site Audit | `SiteAudit`, `SiteAuditPage` (built-in crawler) |
 | Search engines | `EnginePortfolioCache` (cached live Bing/Yandex portfolio per `userId`+`engine`+`period`) |
 | Notifications | `AlertEvent` (fired alerts, dedupe), `Digest` (digest history) |
@@ -80,6 +113,85 @@ respect Ahrefs' per-minute rate limits — and offers an LLM insights pass over 
 via `fetchLLM`. Both features (and the history/keys sync above) are written with raw SQL
 (`$queryRawUnsafe`) so they degrade gracefully — returning empty results instead of crashing — on
 a database that hasn't run `prisma db push` yet.
+
+**Outreach Workspace** extends Link Monitor without changing its fetch or scoring logic. A saved
+prospect gets an immutable evidence snapshot, optional campaign/contact/follow-up fields, a stage
+history and an optional link to the owner's existing `Backlink` row. The workspace never sends
+mail: its localized pitch is a deterministic draft for manual review/copy. All writes are scoped
+by `userId`; campaign and backlink ownership are checked server-side. These models intentionally
+have no relationship to `GeoAudit`, `AeoCheck` or the Site Audit crawler.
+
+**Cannibalization** keeps its original exact-query algorithm and API response as the default.
+`mode=related` is an additive deterministic path in `lib/cannibalization/relatedIntent.ts`: it
+builds candidate pairs through inverted indexes over normalized query tokens and observed GSC
+ranking URLs, then scores lexical similarity, URL overlap, significant competing-page share,
+position distance and day-to-day dominant-URL changes. This avoids a portfolio-wide O(n²) scan.
+The result includes inferred query intent and page roles plus review-only actions (`merge_review`,
+`differentiate`, `canonical_review`, `internal_linking`). It calls no LLM or live SERP provider and
+never performs any of those actions. CJK queries gain deterministic character bigrams rather than
+requiring a language-model tokenizer.
+
+**Sitemap Inventory** is an additive layer on the existing `SitemapUrl` indexing table, not a new
+audit product. A sync keeps source sitemap, raw/valid `lastmod`, extension counts, first/last seen
+and a per-run change state while preserving every Google/XML River/2index/Neural field. Sitemap
+indexes are bounded to 50 children, depth 3 and 20,000 unique URLs; raw `.gz` bodies and
+image/video/news namespaces are understood. A failed root returns an error, and a failed child
+makes the run `partial`. Crucially, only a complete run advances negative evidence: the first miss
+becomes `pending_missing`, the second consecutive complete miss becomes `missing`, and neither a
+network error nor a partial tree changes unseen rows. Page-metadata verification is a separate,
+explicit action capped at 50 URLs; it stores a normalized SHA-256 fingerprint and small response
+facts, never page content. This lets a changed `lastmod` with unchanged observed content be marked
+as suspicious.
+
+The “Audit from sitemap” button only sets `seedFromSitemap` on a normal `SiteAudit` run. The audit
+still uses its own models, rule registry, history and screen; active inventory URLs merely augment
+the BFS frontier, and a seeded page with no observed internal inbound link is reported as an orphan
+candidate. AI Visibility and SEO Tools → GEO remain completely unrelated to this path.
+
+These columns are applied by the normal updater's backup + `prisma db push` sequence. The change is
+additive and preserves old `SitemapUrl` rows; rollback means restoring the updater's pre-change
+SQLite backup rather than manually dropping columns from a live database.
+
+**Competitor Crawler** (`src/lib/scanner/`, `/crawler`) scans one page of any domain through the
+SSRF-safe fetcher and judges it with the shared audit rule registry, so a finding means the same
+thing here as in Site Audit. Beyond the page it reads platform markers, WordPress asset slugs and
+the public `wp-json` user list, DNS (A/AAAA/NS/MX) and CDN headers, and the robots/sitemap/llms.txt
+trio. Scans live in `SiteScan`, deliberately not in `Site`: the sites table is the operator's own
+portfolio and a competitor scanned once must not enter portfolio counts, digests or alerts.
+
+The cross-scan part is the reason the table stores a separate `fingerprints` column. Analytics,
+tag-manager, ads and heatmap identifiers are extracted per scan and compared against every earlier
+scan by the same owner; `fingerprintStrength()` splits them into signals billed to a person (strong)
+and signals shared by every customer of a host (weak), and the UI never presents the weak ones as a
+conclusion. Extraction is pure and unit-tested in `fingerprints.test.ts`, so the part that decides
+whether two domains belong together has no network or database in it.
+
+**Source Audit** is a repository-code checker inside Content Operations, not another runtime site
+audit. It reads a user-selected GitHub branch through fixed tree/blob API paths, with hard limits
+of 80 files, 256 KiB per file, 4 MiB total and five concurrent blob reads. Source contents exist
+only for the duration of the in-memory analysis. `SourceAuditRun` stores the immutable commit SHA,
+framework, progress, bounded findings and severity counters; it stores neither file bodies nor
+secret values. Oversized files, GitHub-truncated trees and local scan limits make the report
+explicitly `truncated` instead of silently complete.
+
+**Post-deploy outcome** (`src/lib/contentOps/outcome.ts`, arithmetic in `outcomeMath.ts`) answers the
+question the workflow otherwise drops: did the published page do anything? `POST
+/api/content-ops/{id}/outcome` verifies the target URL with the SSRF-safe fetcher, and only a real
+200 moves the operation to `measuring`. It then upserts the URL into `SitemapUrl` so the Indexing
+tab sees it, upserts a `TrackedKeyword` when the item has one, and stores a 28-day baseline. Windows
+close at 7, 30 and 90 days and are captured on the next list request rather than by a timer — a
+couple of local aggregates over `DailyMetric`, plus the closest `RankCheck`, with a three-day settle
+for Search Console's reporting lag. Checkpoints are append-only, and the operation reaches
+`completed` when day 90 lands. No paid indexer submission and no merge is ever automatic; the
+`siteId`/`trackedKeywordId` columns are deliberately plain scalars so deleting a site or keyword
+cannot cascade into the editorial audit trail.
+
+Rules live in the independent `src/lib/sourceAudit/rules.ts` registry and currently target Next.js
+SEO, performance, correctness, security and architecture patterns. The implementation uses the
+installed Next.js 16 documentation as its behavioral source and copies no Svelte-specific rules.
+The job is read-only and fire-and-forget; heartbeats let the next list request mark a run stale
+after ten minutes as `interrupted`, but it is not retried automatically. Site Audit, AI Visibility
+and SEO Tools → GEO keep independent models, state, API and UI and do not consume Source Audit rows.
 
 ## 3. The SEO generation pipeline (`src/lib/seo/generate.ts`)
 
@@ -162,7 +274,14 @@ has been a real source of bugs:
 ### 3.3 Multi-provider LLM client (`src/lib/llm.ts`)
 
 `fetchLLM()` (and `fetchLLMDetailed()`, which also returns the provider's raw error) is the single
-call surface used everywhere in `generate.ts`. It normalizes seven providers (Anthropic, Z.AI,
+call surface used everywhere in `generate.ts`. `temperature` is an optional trailing parameter and
+is **omitted from the request body when undefined**, keeping the wire format byte-identical to the
+pre-temperature version for every existing caller — this runs in production. `supportsTemperature()`
+reports which targets reject an explicit temperature (OpenAI gpt-5.x / o-series and kie's Codex pin
+sampling internally and answer 400), so callers can grey the control out and the bench can label a
+row "ignored" instead of silently claiming to have tested a value it never sent. `clampTemp()`
+absorbs the range difference between providers (Anthropic and Gemini cap at 1.0, the
+OpenAI-compatible family at 2.0) so one UI slider stays honest across all of them. It normalizes seven providers (Anthropic, Z.AI,
 OpenAI, Gemini, OpenRouter, kie.ai's Responses-API-shaped "Codex" endpoint, and any custom
 OpenAI-compatible endpoint) behind one signature, retries `429`/`408`/`5xx` up to 3 times with
 backoff + jitter (a `429` is routine when a pipeline stage fires several parallel calls at once —
@@ -173,6 +292,46 @@ rejection (a real, fairly common occurrence for edgier niches like gambling/fina
 readably in History instead of a bare `generation_failed` that sends you spelunking through
 `pm2 logs`.
 
+### 3.3a Who picks the model (`src/lib/seo/aiTasks.ts`, `models.ts`, `keys.ts`)
+
+Three separate questions, deliberately answered in three places.
+
+**Which task is running?** `AI_TASKS` in `aiTasks.ts` is the registry — `outline`, `text`,
+`landing`, `analysis`, `policy`, `utility` — each with a description, a default *tier* (never a
+model id), and `PATH_TASKS` mapping tool routes to the tasks they run. Both surfaces render it:
+Settings → SEO Tools builds its per-task table from the list, and the SEO Tools header names the
+tasks the current page will run. They used to be written out separately and drifted — the
+settings table offered four tasks while `getTaskCreds` read five, so `seoTaskModel_landing` was
+readable but not writable and the Landing tool ignored a setting the user believed they had made.
+The Links tool ran on `analysis` without saying so anywhere.
+
+**Which provider and model win?** `resolveTaskCreds()` in `keys.ts` walks
+`seoTaskProvider_<task>` → `seoProvider` → `aiProvider` for the provider, and
+`seoTaskModel_<task>` → `seoModel` → `aiModel_<provider>` for the model, and returns the winning
+*level* alongside the value (`providerFrom` / `modelFrom`). That extra field is the point: a
+three-deep fallback chain that only reports its result cannot be debugged from the UI, and a user
+whose per-task model appeared not to take had no way to tell a failed save from an override.
+
+**Which model id when nothing was chosen?** `lib/providerDefaults.ts` — one table, chat and
+vision, for every provider. These ids used to be written inline at each call site and aged
+separately: `lib/llm.ts` had moved to `gpt-5.6-luna` / `gemini-3-flash` / `kimi-k3` while
+`/api/gsc/branded` and `/api/gsc/setup`, which had grown private forks of the same client, were
+still asking for `gpt-4o-mini`, `gemini-1.5-flash` and `claude-3.5-haiku`. Nothing failed — stale
+ids keep resolving — so the drift was invisible until all four implementations were read side by
+side. Both forks are now deleted in favour of `fetchLLM`, which also gains them retries, the full
+nine-provider list and real error detail. `custom` deliberately has **no** default: it is an
+arbitrary OpenAI-compatible gateway, and the old fallback sent it an OpenAI model id, producing a
+404 that read as the user's own server being broken.
+
+**Which model id, concretely?** `models.ts` never names one. It ranks whatever `/v1/models`
+returned for the user's own key — newest generation first, then by size tier, previews last — and
+`defaultModel(list, tier)` resolves a *tier* into an id from that ranking. `resolveModel()` keeps
+a stored choice if the account still offers it and replaces it if the provider retired it.
+Hardcoded ids are the fallback for "no key, nothing to list", and nothing depends on them being
+current. The reason for all this: a literal `"gpt-5"` (or `"gpt-4o-mini"`) goes stale *silently* —
+the id keeps resolving, the call keeps succeeding, and the tool quietly runs a generation behind
+whatever the user is comparing it against.
+
 ### 3.4 GEO Audit
 
 Unlike the rest of the suite, GEO Audit doesn't use a SERP+scrape pipeline at all. It sends the
@@ -181,6 +340,44 @@ enabled** (OpenAI's Responses API `web_search` tool, or kie.ai's equivalent) and
 search trace and citations out of the response — the "ground truth" is literally what the AI
 already searched and cited, which is the whole point: it's measuring AI-search visibility, not
 simulating it.
+
+The audit runs in two stages on two different models. Stage 1 (search) uses the model picked on
+the page — deep browsing is the whole job, so it defaults to the best the account offers. Stage 2
+turns the search trace into structured JSON and runs on the `utility` task (§3.3a), because
+paying flagship rates to emit JSON is waste. Stage 2 used to be pinned to a literal
+`"gpt-4o-mini"` inside `geo.ts`: invisible on the settings screen, unchangeable, and destined to
+break when the model is retired.
+
+### 3.4a AEO Tracker / AI Visibility (`src/lib/seo/aeo.ts`)
+
+The site-level counterpart to the GEO Audit: instead of profiling a niche, it asks tracked
+real-user questions and records whether *this* site is cited. All four engines are asked to
+search the live web — OpenAI Responses API with the hosted `web_search` tool, Perplexity `sonar`,
+Anthropic's `web_search` server tool, xAI Live Search — because an answer from weights is not
+evidence about search visibility.
+
+Three properties of the check matter more than the engine list:
+
+- **The search is forced, not suggested.** With `tool_choice: "auto"` a small model usually skips
+  the search entirely and answers from memory, producing zero citations — which the tracker then
+  recorded as "not cited" for sites that ChatGPT visibly cites in the browser. A four-step attempt
+  ladder drops `search_context_size`, then `user_location`, then `include`/`instructions` in turn,
+  so an account without the newest surface degrades instead of erroring; `401`/`403`/`429` abort
+  the ladder rather than burning four calls on a dead key.
+- **Location is part of the question.** Browser answers to local-intent queries are geolocated.
+  Asking from nowhere in particular and comparing the result to a geolocated browser answer
+  compares two different webs. Country falls back to `Site.market`, and clearing it back to "no
+  location" stays expressible — that is a different question to ask, not an unset value to guess.
+- **The evidence is kept.** `AeoCheck` stores the full answer, every citation, the model, whether
+  a search actually ran, and our rank among the cited domains. A bare boolean could not be argued
+  with: when it disagreed with the browser there was nothing to inspect, so the only available
+  conclusion was that the tool was broken.
+
+Verdicts are three-state — `cited` (a link to us), `mentioned` (named in the prose, no link),
+`absent` — and brand terms derived from the domain feed only the weaker verdict, never a claimed
+citation. Background checking is opt-in per site (`Site.aeoAuto`, default off): each question
+costs four billed calls with live search on the user's own key, so a large portfolio must not
+enrol itself.
 
 ### 3.5 Content Rewriter (`src/lib/seo/rewrite.ts`)
 
@@ -194,6 +391,57 @@ stack (no OpenAI-only dependency): **`maskAIPatterns()`** strips common machine 
 **`uniquenessPct()`** scores each variant as `1 − word-trigram Jaccard similarity` against the source.
 It writes nothing to the database — results are returned inline and copied/downloaded client-side. The
 Content Decay map deep-links each decaying page here with `?url=` prefilled.
+
+### 3.6 AI-Fingerprint Lab (`src/lib/seo/aidetect.ts`)
+
+The only part of the suite that runs **no LLM at all**. Statistical AI detectors score the token
+frequency distribution over ~300-word windows and average them — shuffling an AI text into
+word-salad barely moves its score, because order carries almost no signal and presence carries all
+of it. That makes the discriminator reproducible locally, and both corpora already exist in the
+product: competitor pages via `scrapeMany` (human reference) and `SeoHistory` articles (machine
+reference). Training is Naive Bayes over log-odds with Laplace smoothing; every 5th document is held
+out to calibrate the 0-100 scale, so the score isn't fitted on the windows it grades. Training and
+scoring both run **in the browser** — it is arithmetic over a token map — and only the corpus
+harvest needs a server round-trip (`/api/seo/aidetect/harvest`), because it needs the SERP key and
+cross-origin fetch. Models live in `localStorage` (`aidetectStore.ts`), capped at 6000 tokens.
+
+Three correctness constraints that are easy to get wrong and were each caught by a test:
+
+- **Format leak.** The two corpora arrive in different shapes — scraped competitors are plain text,
+  our own articles are Markdown with a fenced meta block. Without `normalizeForCorpus()` the model
+  learns "`##` means AI", reports near-perfect separation on a leak, and emits a marker list made of
+  punctuation. The regression test feeds identical vocabulary in both formats and asserts the model
+  *fails* to separate them.
+- **Homoglyphs.** NFKC does not merge Cyrillic "а" into Latin "a" — they stay distinct code points.
+  Real detectors fold confusables, so `foldConfusables()` does too, but only for **mixed-script
+  tokens** and always toward the token's dominant script; a blanket map would mangle genuine Russian
+  or Greek prose into Latin nonsense.
+- **Domain vocabulary.** A word can be necessary to the niche *and* overused by the model, earning a
+  high log-odds weight and landing in the ban list. Banning it makes the model circumlocute around
+  required terminology. `humanDf` (share of competitor documents containing the token) gates this:
+  at ≥40% the word is niche terminology and is never suggested, whatever its ratio.
+
+The score is not the deliverable — `suggestBannedCandidates()` is. Its output reaches generation
+through `bannedWordsBlock()` in `prompts.ts`, wired into `buildOutlinePrompt`, both branches of
+`buildTextPrompt`, and `buildSectionTextPrompt`. That block deliberately contains **no instruction
+about how to write**: A/B evidence shows directives like "sound natural" or "vary sentence length"
+backfire, because the model follows them as formal rules and narrows its own output distribution.
+Naming concrete words carries no such failure mode. The candidate list is reviewable in the UI
+before it can affect an article, with exclusions stored per model in `aidetectStore`.
+
+### 3.7 Fact drift (`src/lib/seo/factDrift.ts`)
+
+Any rewrite can silently change a number or drop a brand, and that is the failure that costs money:
+an article that reads beautifully and states the wrong price. Asking users to "verify the facts" is
+not protection, since the point of a rewrite tool is that nobody rereads 2000 words. So the two
+classes of fact that are checkable without a model are diffed deterministically — numeric values
+(with currencies canonicalized, so `$50` = `50 USD` = `50 долларов`, and locale digit separators
+never fire a false alarm) and identifier-shaped tokens (ALL-CAPS or internal-caps only; ordinary
+capitalized words are excluded because sentence-initial capitals cannot be told from proper nouns
+cheaply across languages). Values that **appeared** outrank values that were **dropped** — an
+invented number ships. Computed server-side in `rewrite.ts` because in URL mode the client never
+sees the scraped source. The humanize action also uses it as a tiebreaker: a variant that invented a
+fact loses to one that didn't, even with a better score.
 
 ## 4. Search engines (Google · Bing · Yandex)
 
@@ -266,40 +514,177 @@ body (the spec allows this in place of an SSE stream), so the endpoint needs no 
 state and survives process restarts trivially. Authentication is a per-user bearer token
 (`User.mcpToken`, managed in **Settings → API & MCP** via `/api/settings/mcp-token`).
 
-The tool registry lives in `src/lib/mcp/tools.ts`. Two rules keep it safe and cheap:
+Authentication is the token in an `Authorization: Bearer` header, or — because one important
+client cannot send one — in a `?token=` query parameter. Claude Desktop's *Add custom
+connector* dialog offers a URL and, behind Advanced settings, OAuth Client ID and Client
+Secret; there is no header field, so a token pasted there is interpreted as an OAuth client
+id and the connector fails silently. The query parameter is the only way those users can
+connect at all. The header always wins when both are present, and the cost — a token in the
+access log, where a header would not be — is stated in the setup docs rather than hidden.
 
-1. **Read-only** — no tool mutates user-visible state (the one exception: `inspect_url`
-   refreshes the `PageInspection` cache with what it just fetched, which only makes the
-   Indexing tab fresher).
-2. **Local-first, never paid** — the default tools read what the app has already synced
-   (`DailyMetric`, `TrackedKeyword`, `LinkMention`, `SiteAuditPage`, …). Exactly two tools,
-   explicitly labeled LIVE in their descriptions (`query_gsc_live`, `inspect_url`), call
-   Google's own APIs through the user's stored OAuth token — free but quota-limited, and the
-   `initialize` instructions tell agents to prefer the local tools. Nothing ever calls a paid
-   provider (SERP/AI/Ahrefs), so an agent hammering the endpoint can't burn credits.
+Two paths must also stay clear of the login redirect for a client to get that far.
+`/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` are
+probed before connecting, to discover whether the server wants OAuth. Nothing serves them
+here, so 404 is the correct answer and means "no OAuth". Behind `withAuth` they answered 307
+to the HTML login page instead, which a client can read as an OAuth server that exists,
+sending it into a flow this server cannot finish — and the connector then fails with nothing
+useful in the error.
+
+**The endpoint must be excluded from the NextAuth request gate, and this is not optional.**
+`src/proxy.ts` matches everything outside `/login` and `/api/auth`, so without an
+explicit exclusion `withAuth` answers an agent's POST with a 307 to `/api/auth/signin` and
+the client receives the HTML login page instead of JSON-RPC — the route's own Bearer check
+never runs. The check is not skipped, only relocated: `/api/mcp` validates `User.mcpToken`
+itself and returns a JSON-RPC 401 when it is absent or wrong.
+
+That relocation used to be forced rather than chosen: the file was `src/middleware.ts`, and
+middleware runs on the Edge runtime, where Prisma cannot. Next.js 16 renamed the convention to
+`proxy` and fixed its runtime to Node.js — not configurable — so the technical obstacle is gone
+and the token check *could* live in the gate now. It still shouldn't. The gate runs on every
+request to every path; putting a database lookup there to serve one endpoint would spend a query
+on every page load to save one inside `/api/mcp`. The exclusion list stays where it is.
+
+The tool registry is split across seven files for readability and flattened into one
+`MCP_TOOLS` array at the bottom of `src/lib/mcp/tools.ts`: the GSC core (`tools.ts`), the
+remaining read surfaces (`toolsData.ts` — decay, CTR benchmark, content groups, rank history,
+GEO audits, generations, engine portfolios, GA4, Clarity, indexer, digests, alerts), and the
+metrics, demand, page-optimization, Outreach and Source Audit contours (`toolsMetrics.ts`,
+`toolsDemand.ts`, `toolsOptimize.ts`, `toolsOutreach.ts`, `toolsSourceAudit.ts`). Shared helpers live in `shared.ts` so no file imports
+another's registry. A duplicate tool name throws at module load, since `findTool`
+would otherwise silently shadow one and the symptom ("that tool ignores half its arguments")
+points nowhere near the cause.
+
+Two rules keep it safe and predictable:
+
+1. **Mutations are explicit** — read tools remain read-only, while every local or paid action that
+   changes state overrides `readOnly`/`idempotent` protocol annotations. The Outreach mutations
+   only update local workspace rows and explicitly state that they do not send mail. Existing
+   exceptions remain deliberate: `inspect_url` refreshes the `PageInspection` cache, and paid
+   generation tools create their own job rows.
+2. **Every tool declares what it costs** — `McpTool.cost` is one of `local` (reads the local
+   database), `quota` (calls Google on the user's OAuth: free, quota-limited), `net` (fetches
+   a third-party page), or `paid` (spends the user's own AI credits). `tools/list` maps this
+   onto the protocol's own `annotations` (`readOnlyHint`, `openWorldHint`, `idempotentHint`)
+   plus a `_meta.cost` field, `get_capabilities` returns the tools grouped by tier, and the
+   `initialize` instructions explain the tiers so an agent chooses before it calls.
+
+The `paid` tier is a deliberate relaxation of what this section previously promised
+("nothing ever calls a paid provider"). Two tools hold it: `start_rewrite_job` and
+`start_generation_job`. They exist because the web UI can do things an agent cannot
+reproduce — the outline pipeline's MAP/REDUCE fact grounding, Casino RAG, fact-scrub, the
+user's editorial policy and banned-word list — and withholding them made the MCP a strictly
+worse OpenGSC than the browser tab next to it. Three things keep the relaxation honest:
+
+- **`assertConfirmed()`** (`shared.ts`) refuses to run either tool without an explicit
+  `confirm: true`, and the refusal text tells the agent to ask the human rather than retry
+  with the flag set. Some MCP clients auto-approve tool calls; an agent exploring the
+  registry must not be able to bill the owner for a call it made to see what came back.
+- **The free path is named in their own descriptions.** An MCP client is itself a language
+  model: paying a second one to write text the first could have written is money for nothing.
+  The intended flow is `get_optimization_brief` (everything known about one URL in a single
+  call) → the agent writes → `analyze_text` (uniqueness, fact drift and heading-structure
+  check, deterministic, no model). `start_rewrite_job` is for when the user wants the app's
+  pipeline specifically.
+- **Keys come from the server-side mirror** (`User.seoSettings`, resolved by
+  `resolveAiCreds()`) — the same snapshot digest-cron and rank-cron already use, since an
+  MCP request has no browser and therefore no localStorage.
+
+**Both paid tools are asynchronous, and this is load-bearing rather than a nicety.** They
+return a job id and run `genByType` / `runRewriteBatch` fire-and-forget, reusing the `SeoJob`
+pattern from §1. A synchronous version does not merely time out — it loses paid work. One
+page rewrite is a fetch, then a model call producing up to 8000 tokens, then a scoped repair
+pass when the value audit fails; the per-call ceiling in `lib/llm.ts` is 280 seconds and MCP
+clients abandon a tool call after 30–60. When the client gives up the server does not: the
+call completes, the credits are spent, and the result returns to a caller that is no longer
+listening, so it is written nowhere. An early version of `rewrite_content` was synchronous
+and did exactly this — roughly thirty minutes of wall time produced four usable pages and
+paid for every abandoned attempt in between.
+
+`runRewriteBatch` (`src/lib/seo/rewriteBatch.ts`) therefore persists **per page**, not at the
+end: each result is written into the job row the moment that page finishes, so a timeout, a
+closed client or a PM2 restart costs at most the page in flight. It also never throws — a
+failure on one URL is recorded against that URL and the batch continues, since aborting would
+discard the remaining pages over a problem that may be specific to one page. A batch with any
+success is `completed` with a `failed` count; only a batch where nothing succeeded is `error`.
+
+Two ordering hazards around the staleness sweep, both fixed here:
+
+- **A long job is not a dead job.** The 20-minute sweep assumes silence means the process
+  restarted, but nothing wrote to the row while a pipeline worked, so a large article could
+  pass the mark while perfectly healthy and be reported as failed. `withSeoJobHeartbeat()` in
+  `src/lib/jobs/lifecycle.ts` touches the dedicated heartbeat every 60 seconds, making silence mean
+  what it was always supposed to mean. The rewrite batch also advances heartbeat/progress whenever
+  it saves a page, so completed paid work remains retrievable even if the next page is interrupted.
+- **A rewrite job is not the browser's to collect.** The History page imports every completed
+  `SeoJob` into `localStorage` and then *deletes the server row* (`importJob`,
+  `src/lib/seo/jobs.ts`). A rewrite batch is owned by the agent that started it and polled
+  from the server, so an open OpenGSC tab would have filed it under a type History cannot
+  render and destroyed the agent's results — pages the user had already paid for. `importJob`
+  now imports only the types History owns (`IMPORTABLE_TYPES`) and leaves the rest alone.
+
+`get_generation_job` polls either kind, applies the same staleness sweep as the UI, and for a
+rewrite batch reports progress plus the pages finished so far — omitting the rewritten text
+unless asked, since twenty articles inlined into a tool result is not a readable answer.
 
 Tool-level failures (bad site name, empty data) are returned as MCP tool results with
 `isError: true` rather than JSON-RPC protocol errors — agents can read the message and
-self-correct (e.g. call `list_sites` after a "site not found"). Adding a tool = adding one
-object to `MCP_TOOLS` (name, description, JSON schema, handler); `tools/list` and
-`tools/call` pick it up automatically. Ready-made agent skills that orchestrate these tools
-ship in `.agents/skills/`.
+self-correct (e.g. call `list_sites` after a "site not found"). Tools reading tables that may
+predate a migration degrade to an empty result plus a note rather than throwing. Adding a
+tool = adding one object to the relevant array (name, description, `cost`, JSON schema,
+handler); `tools/list` and `tools/call` pick it up automatically. Two convenience GETs sit
+outside the protocol purely for debugging a connection — `GET /api/mcp` reports whether the
+token was accepted, `GET /api/mcp/tools` returns the registry as plain JSON — because the
+first thing anyone does with a failing endpoint is open it in a browser, and a bare 405 there
+cannot distinguish a wrong token from a wrong URL. Ready-made agent skills that orchestrate
+these tools ship in `.agents/skills/`.
 
 ## 7. Site Audit crawler (`src/lib/audit/crawler.ts`)
 
-A deliberately dependency-free technical audit: plain `fetch` + regex extraction, no headless
-browser — the audited signals (status codes, titles/meta, H1s, canonicals, `noindex`, link
-graph, word counts) all live in raw HTML. The crawler BFS-walks same-host pages from the site
-root (≤500 pages, 4 workers, manual-redirect mode so 3xx chains are visible, a politeness
-delay per request), then a **second pass** computes issues that need the whole crawl map:
-broken internal links (a link is "broken" if its target was crawled and returned ≥400) and
-duplicate titles. Results land in `SiteAuditPage` rows plus a JSON summary (issue counts +
-health score) on `SiteAudit`.
+A deliberately dependency-free technical audit: plain `fetch` + deterministic HTML/header
+extraction, no headless browser. The executable 30-rule registry in `rules.ts` is the single
+source for crawler evaluation, UI labels/severity, exports, verification and MCP. Alongside the
+original status/title/meta/H1/canonical/link/content checks it covers redirect chains/loops,
+conflicting robots directives, missing/invalid canonicals, viewport/language, invalid JSON-LD,
+incomplete Organization/Person and social metadata, mixed content and root security headers.
+`pageSignals.ts` owns parsing so attribute order and JSON-LD edge cases are unit-tested outside a
+live crawl.
+
+The crawler BFS-walks same-host pages from the site root (≤500 pages, 4 workers,
+manual-redirect mode so 3xx chains are visible, a politeness delay per request), then a **second
+pass** computes issues that need the whole crawl map: broken internal links, duplicate titles and
+redirect traces. Results land in `SiteAuditPage` rows plus a JSON summary on `SiteAudit`.
+The health score (`healthScore.ts`, v2 since issue #30) is scored per page and averaged: a page
+with any critical finding scores 0, otherwise it loses 8 points per distinct scored warning, never
+going below 40. Informational and `affectsScore: false` checks remain visible but cost nothing, and a
+single-hop redirect to the same site (http→https, www↔apex, trailing slash) is left out of the
+average because it is not a page. v1 counted the share of pages with any scored finding, so one
+missing alt weighed as much as a 404 and a small site with minor template warnings scored 0. Stored
+audits are rescored once at boot (`scoreBackfill.ts`) from their page rows, keeping the old value as
+`healthScoreV1`; v2 is never below v1 on the same rows, so the rescoring cannot fire a low-score alert.
+
+This registry belongs only to runtime **Site Audit**. It imports no `AeoCheck`/AI Visibility or
+`GeoAudit` data and does not change those products' settings, APIs or screens. The AI-crawler card
+below is a separate robots-access observation made during Site Audit, not a merge with either
+visibility product.
+
+One site-wide check rides along on every audit outside the per-page issue model:
+
+- **AI Crawlability** (`src/lib/audit/aiCrawl.ts`) — fetches `/robots.txt` and `/llms.txt` once
+  and reports, per AI crawler (GPTBot, ClaudeBot, PerplexityBot, OAI-SearchBot, Google-Extended,
+  CCBot, Bytespider), whether the bot is allowed/blocked/unknown under a root `Disallow: /`. A
+  root block on GPTBot is a silent reason an answer engine never cites the site; this surfaces it
+  as a fixable lever rather than just the GEO/AEO symptom ("not cited"). Stored in the audit
+  summary's `aiCrawlability` key (free-form JSON, no migration) and rendered as its own card.
+The per-page **`js_rendered` issue** flags a near-empty JS app shell (low text word count + ≤1
+internal link + a SPA marker or a large bundled script). On such pages `thin_content` and
+`h1_missing` are suppressed because they describe the empty raw shell, not the rendered DOM. The
+flag is informational and does not lower health.
 
 Runs as the same fire-and-forget job pattern as `SeoJob` (§1): `POST /api/audit` creates the
-row and calls `runAudit()` without awaiting; the client polls `GET /api/audit?siteId=`, and
-rows stuck `running` for >30 min are auto-failed on the next list read. One running audit per
-site is enforced at start.
+row and calls `runAudit()` without awaiting; the client polls `GET /api/audit?siteId=`. A run with
+no heartbeat for five minutes is atomically claimed and restarted on the next owner list read;
+partial pages are cleared first so duplicate rows cannot leak into the result. One running audit
+per site is enforced at start.
 
 ## 8. Notifications (alerts + digests)
 

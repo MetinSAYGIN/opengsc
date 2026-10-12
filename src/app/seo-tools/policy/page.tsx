@@ -6,11 +6,19 @@ import {
   Sparkles, FileText, Type, Shield, Ban, Loader2, X, HelpCircle, Copy, Download,
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
-import { EditorialPolicy, DEFAULT_POLICY, renderPolicy, toExportJson, normalizePolicy } from "@/lib/seo/policy";
+import { readUrlParam, writeUrlParam } from "@/lib/urlParam";
+import { EditorialPolicy, PolicyElements, DEFAULT_POLICY, renderPolicy, toExportJson, normalizePolicy } from "@/lib/seo/policy";
 import { loadPolicies, savePolicies, getActivePolicyName, setActivePolicyName, getTaskCreds, getFirecrawlKey } from "@/lib/seo/keys";
 import { TONES } from "@/lib/seo/tones";
 
 const MAX_POLICIES = 10;
+
+// The i18n translator and its key union, derived from the provider's exported shape so the
+// preset arrays below cannot drift from the dictionary.
+type TFunc = ReturnType<typeof useLanguage>["t"];
+type TKey = Parameters<TFunc>[0];
+// The draft-mutator passed down to the wizard steps (see `up` in PolicyPage).
+type UpFn = (fn: (d: EditorialPolicy) => void) => void;
 
 // ─── Option card (single choice) ───────────────────────────────────────────────
 function OptionCard({ active, title, sub, onClick }: { active: boolean; title: string; sub?: string; onClick: () => void }) {
@@ -33,7 +41,7 @@ function CardGrid({ children }: { children: React.ReactNode }) {
 
 // Single-choice group with presets + an "Other" card that reveals a free-text field,
 // so any parameter can hold a custom value (matches the reference's flexibility).
-function ChoiceGroup({ value, presets, onChange, t }: { value: string; presets: string[][]; onChange: (v: string) => void; t: any }) {
+function ChoiceGroup({ value, presets, onChange, t }: { value: string; presets: [string, TKey, TKey?][]; onChange: (v: string) => void; t: TFunc }) {
   const isCustom = !!value && !presets.some(p => p[0] === value);
   const [open, setOpen] = useState(isCustom);
   return (
@@ -93,6 +101,12 @@ const STEPS = [
   { key: "restrictions", icon: Ban, label: "seoRestrictions", sub: "seoRestrictionsTabSub" },
 ] as const;
 
+const CheckRow = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
+  <label style={{ display: "flex", alignItems: "center", gap: "9px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", padding: "4px 0" }}>
+    <input type="checkbox" checked={on} onChange={onToggle} /> {label}
+  </label>
+);
+
 export default function PolicyPage() {
   const { t } = useLanguage();
   const [policies, setPolicies] = useState<EditorialPolicy[]>([DEFAULT_POLICY]);
@@ -100,6 +114,22 @@ export default function PolicyPage() {
   const [view, setView] = useState<"hub" | "editor">("hub");
   const [draft, setDraft] = useState<EditorialPolicy>(DEFAULT_POLICY);
   const [step, setStep] = useState(0);
+  // Deep link (?view=editor&step=2): restore on mount, mirror on change. The step only means
+  // something inside the editor — the hub carries no step param, and restoring one without the
+  // editor open would be a URL that describes nothing. Validated against STEPS bounds.
+  useEffect(() => {
+    const v = readUrlParam("view");
+    if (v !== "hub" && v !== "editor") return;
+    setView(v);
+    if (v === "editor") {
+      const s = Number(readUrlParam("step"));
+      if (Number.isInteger(s) && s >= 0 && s < STEPS.length) setStep(s);
+    }
+  }, []);
+  useEffect(() => {
+    writeUrlParam("view", view);
+    writeUrlParam("step", view === "editor" ? String(step) : null);
+  }, [view, step]);
   const [saved, setSaved] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [showJson, setShowJson] = useState(false);
@@ -163,7 +193,7 @@ export default function PolicyPage() {
       const p = normalizePolicy({ ...data.policy, name: data.policy?.name || form.brandName.slice(0, 40), createdAt: Date.now() });
       setGenLoading(false); setGenOpen(false);
       openEditor(p);
-    } catch (e: any) { setGenErr(String(e?.message ?? e)); setGenLoading(false); }
+    } catch (e) { setGenErr(String((e as Error)?.message ?? e)); setGenLoading(false); }
   }
 
   const up = (fn: (d: EditorialPolicy) => void) => setDraft(d => { const n = structuredClone(d); fn(n); return n; });
@@ -303,8 +333,8 @@ export default function PolicyPage() {
               }}>
                 <Icon size={16} color={on ? "var(--color-accent-purple)" : "var(--color-text-secondary)"} />
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: "13px", fontWeight: on ? 700 : 500, color: on ? "var(--color-text-primary)" : "var(--color-text-secondary)" }}>{t(s.label as any)}</div>
-                  <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t(s.sub as any)}</div>
+                  <div style={{ fontSize: "13px", fontWeight: on ? 700 : 500, color: on ? "var(--color-text-primary)" : "var(--color-text-secondary)" }}>{t(s.label)}</div>
+                  <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t(s.sub)}</div>
                 </div>
               </button>
             );
@@ -316,8 +346,8 @@ export default function PolicyPage() {
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "18px" }}>
             <StepIcon size={19} color="var(--color-accent-purple)" />
             <div>
-              <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t(STEPS[step].label as any)}</div>
-              <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t(STEPS[step].sub as any)}</div>
+              <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t(STEPS[step].label)}</div>
+              <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t(STEPS[step].sub)}</div>
             </div>
           </div>
 
@@ -349,15 +379,15 @@ export default function PolicyPage() {
 }
 
 // ─── Steps ──────────────────────────────────────────────────────────────────────
-function BasicsStep({ draft, up, t }: any) {
-  const EXP = [
+function BasicsStep({ draft, up, t }: { draft: EditorialPolicy; up: UpFn; t: TFunc }) {
+  const EXP: [string, TKey, TKey][] = [
     ["beginner", "seoExpBeginner", "seoExpBeginnerSub"],
     ["intermediate", "seoExpIntermediate", "seoExpIntermediateSub"],
     ["expert", "seoExpExpert", "seoExpExpertSub"],
   ];
-  const setB = (k: string, v: any) => up((d: any) => { (d.brand ||= {})[k] = v; });
-  const setA = (k: string, v: any) => up((d: any) => { (d.audience ||= {})[k] = v; });
-  const setV = (k: string, v: any) => up((d: any) => { (d.voice ||= {})[k] = v; });
+  const setB = <K extends keyof EditorialPolicy["brand"]>(k: K, v: EditorialPolicy["brand"][K]) => up(d => { (d.brand ||= {} as EditorialPolicy["brand"])[k] = v; });
+  const setA = (k: keyof EditorialPolicy["audience"], v: string) => up(d => { (d.audience ||= {} as EditorialPolicy["audience"])[k] = v; });
+  const setV = (k: Exclude<keyof EditorialPolicy["voice"], "formalityLevel">, v: string) => up(d => { (d.voice ||= {} as EditorialPolicy["voice"])[k] = v; });
   return (
     <div>
       <FieldLabel>{t("seoBrand")}</FieldLabel>
@@ -389,22 +419,22 @@ function BasicsStep({ draft, up, t }: any) {
         <input className="tool-input" placeholder={t("seoAuthorPersonaPh")} value={draft.voice?.authorPersona || ""} onChange={e => setV("authorPersona", e.target.value)} /></div>
       <CardGrid>
         {TONES.map((tn) => (
-          <OptionCard key={tn.value} active={(draft.voice?.toneOfVoice || "expert") === tn.value} title={t(tn.labelKey as any)}
-            onClick={() => up((d: any) => { (d.voice ||= {}).toneOfVoice = tn.value; d.voice.formalityLevel = tn.formality; })} />
+          <OptionCard key={tn.value} active={(draft.voice?.toneOfVoice || "expert") === tn.value} title={t(tn.labelKey as TKey)}
+            onClick={() => up(d => { (d.voice ||= {} as EditorialPolicy["voice"]).toneOfVoice = tn.value; d.voice.formalityLevel = tn.formality; })} />
         ))}
       </CardGrid>
     </div>
   );
 }
 
-function FormattingStep({ draft, up, t }: any) {
+function FormattingStep({ draft, up, t }: { draft: EditorialPolicy; up: UpFn; t: TFunc }) {
   const s = draft.structure || {};
-  const setS = (k: string, v: any) => up((d: any) => { (d.structure ||= {})[k] = v; });
-  const setEl = (k: string, v: boolean) => up((d: any) => { ((d.structure ||= {}).elements ||= {})[k] = v; });
+  const setS = (k: Exclude<keyof EditorialPolicy["structure"], "elements">, v: string) => up(d => { (d.structure ||= {} as EditorialPolicy["structure"])[k] = v; });
+  const setEl = (k: keyof PolicyElements, v: PolicyElements[keyof PolicyElements]) => up(d => { ((d.structure ||= {} as EditorialPolicy["structure"]).elements ||= {} as PolicyElements)[k] = v; });
   const el = s.elements || {};
-  const HS = [["questions", "seoHsQuestions", "seoHsQuestionsEx"], ["statements", "seoHsStatements", "seoHsStatementsEx"], ["how-to", "seoHsHowto", "seoHsHowtoEx"], ["mixed", "seoHsMixed", "seoHsMixedEx"]];
-  const HC = [["sentence", "seoHcSentence", "seoHcSentenceEx"], ["title", "seoHcTitle", "seoHcTitleEx"], ["upper", "seoHcUpper", "seoHcUpperEx"]];
-  const PL = [["short", "seoPlShort", "seoPlShortEx"], ["medium", "seoPlMedium", "seoPlMediumEx"], ["long", "seoPlLong", "seoPlLongEx"]];
+  const HS: [string, TKey, TKey][] = [["questions", "seoHsQuestions", "seoHsQuestionsEx"], ["statements", "seoHsStatements", "seoHsStatementsEx"], ["how-to", "seoHsHowto", "seoHsHowtoEx"], ["mixed", "seoHsMixed", "seoHsMixedEx"]];
+  const HC: [string, TKey, TKey][] = [["sentence", "seoHcSentence", "seoHcSentenceEx"], ["title", "seoHcTitle", "seoHcTitleEx"], ["upper", "seoHcUpper", "seoHcUpperEx"]];
+  const PL: [string, TKey, TKey][] = [["short", "seoPlShort", "seoPlShortEx"], ["medium", "seoPlMedium", "seoPlMediumEx"], ["long", "seoPlLong", "seoPlLongEx"]];
   return (
     <div>
       <FieldLabel>{t("seoHeadingStyle")}</FieldLabel>
@@ -434,10 +464,10 @@ function FormattingStep({ draft, up, t }: any) {
   );
 }
 
-function QualityStep({ draft, up, t }: any) {
+function QualityStep({ draft, up, t }: { draft: EditorialPolicy; up: UpFn; t: TFunc }) {
   const q = draft.quality || {};
-  const setQ = (k: string, v: any) => up((d: any) => { (d.quality ||= {})[k] = v; });
-  const CS = [["inline", "seoCsInline", "seoCsInlineEx"], ["footnotes", "seoCsFootnotes", "seoCsFootnotesEx"], ["none", "seoCsNone", "seoCsNoneEx"]];
+  const setQ = <K extends keyof EditorialPolicy["quality"]>(k: K, v: EditorialPolicy["quality"][K]) => up(d => { (d.quality ||= {} as EditorialPolicy["quality"])[k] = v; });
+  const CS: [string, TKey, TKey][] = [["inline", "seoCsInline", "seoCsInlineEx"], ["footnotes", "seoCsFootnotes", "seoCsFootnotesEx"], ["none", "seoCsNone", "seoCsNoneEx"]];
   return (
     <div>
       <div style={{ padding: "12px 14px", borderRadius: "10px", background: "rgba(255,159,10,0.06)", border: "1px solid rgba(255,159,10,0.2)", marginBottom: "18px" }}>
@@ -462,9 +492,9 @@ function QualityStep({ draft, up, t }: any) {
   );
 }
 
-function RestrictionsStep({ draft, up, t }: any) {
+function RestrictionsStep({ draft, up, t }: { draft: EditorialPolicy; up: UpFn; t: TFunc }) {
   const r = draft.restrictions || {};
-  const setR = (k: string, v: any) => up((d: any) => { (d.restrictions ||= {})[k] = v; });
+  const setR = (k: keyof EditorialPolicy["restrictions"], v: string) => up(d => { (d.restrictions ||= {} as EditorialPolicy["restrictions"])[k] = v; });
   return (
     <div>
       <label className="tool-field-label">{t("seoBannedWords")}</label>
@@ -496,7 +526,13 @@ function CreateCard({ icon, title, sub, onClick, disabled }: { icon: React.React
   );
 }
 
-function GenModal({ loading, err, t, onClose, onGenerate }: any) {
+function GenModal({ loading, err, t, onClose, onGenerate }: {
+  loading: boolean;
+  err: string;
+  t: TFunc;
+  onClose: () => void;
+  onGenerate: (form: { brandName: string; brandUrl: string; sourceUrls: string[]; brandDescription: string; competitorUrls: string[]; sampleText: string }) => void;
+}) {
   const [brandName, setBrandName] = useState("");
   const [brandUrl, setBrandUrl] = useState("");
   const [useUrls, setUseUrls] = useState(false);
@@ -518,11 +554,6 @@ function GenModal({ loading, err, t, onClose, onGenerate }: any) {
   });
 
   const lbl: React.CSSProperties = { fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", display: "block", marginBottom: "6px" };
-  const Check = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
-    <label style={{ display: "flex", alignItems: "center", gap: "9px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", padding: "4px 0" }}>
-      <input type="checkbox" checked={on} onChange={onToggle} /> {label}
-    </label>
-  );
   const groupBox: React.CSSProperties = { border: "1px solid var(--color-border)", borderRadius: "10px", padding: "12px 14px" };
 
   return (
@@ -541,17 +572,17 @@ function GenModal({ loading, err, t, onClose, onGenerate }: any) {
 
         <div style={{ ...groupBox, marginBottom: "12px" }}>
           <div className="tool-section-label" style={{ marginBottom: "6px" }}>{t("seoGenAiSources")}</div>
-          <Check on={useUrls} onToggle={() => setUseUrls(v => !v)} label={t("seoGenAiAddUrls")} />
+          <CheckRow on={useUrls} onToggle={() => setUseUrls(v => !v)} label={t("seoGenAiAddUrls")} />
           {useUrls && <textarea className="tool-input" style={{ minHeight: "56px", resize: "vertical", margin: "6px 0 4px" }} value={sourceUrls} onChange={e => setSourceUrls(e.target.value)} placeholder={t("seoGenAiUrlsPh")} />}
-          <Check on={useDesc} onToggle={() => setUseDesc(v => !v)} label={t("seoGenAiAddDesc")} />
+          <CheckRow on={useDesc} onToggle={() => setUseDesc(v => !v)} label={t("seoGenAiAddDesc")} />
           {useDesc && <textarea className="tool-input" style={{ minHeight: "64px", resize: "vertical", marginTop: "6px" }} value={brandDescription} onChange={e => setBrandDescription(e.target.value)} placeholder={t("seoGenAiDescPh")} />}
         </div>
 
         <div style={{ ...groupBox, marginBottom: "14px" }}>
           <div className="tool-section-label" style={{ marginBottom: "6px" }}>{t("seoGenAiStyleSources")}</div>
-          <Check on={useComp} onToggle={() => setUseComp(v => !v)} label={t("seoGenAiAnalyzeComp")} />
+          <CheckRow on={useComp} onToggle={() => setUseComp(v => !v)} label={t("seoGenAiAnalyzeComp")} />
           {useComp && <textarea className="tool-input" style={{ minHeight: "56px", resize: "vertical", margin: "6px 0 4px" }} value={competitorUrls} onChange={e => setCompetitorUrls(e.target.value)} placeholder={t("seoGenAiCompPh")} />}
-          <Check on={useSample} onToggle={() => setUseSample(v => !v)} label={t("seoGenAiAddSample")} />
+          <CheckRow on={useSample} onToggle={() => setUseSample(v => !v)} label={t("seoGenAiAddSample")} />
           {useSample && <textarea className="tool-input" style={{ minHeight: "80px", resize: "vertical", marginTop: "6px" }} value={sampleText} onChange={e => setSampleText(e.target.value)} placeholder={t("seoGenAiSamplePh")} />}
         </div>
 
@@ -567,7 +598,7 @@ function GenModal({ loading, err, t, onClose, onGenerate }: any) {
   );
 }
 
-function JsonExportPanel({ draft, t }: { draft: EditorialPolicy; t: any }) {
+function JsonExportPanel({ draft, t }: { draft: EditorialPolicy; t: TFunc }) {
   const [copied, setCopied] = useState(false);
   const json = JSON.stringify(toExportJson(draft), null, 2);
   const copy = () => navigator.clipboard.writeText(json).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1800); });

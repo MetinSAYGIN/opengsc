@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Globe, Settings, Trash2, Copy, Check, Eye, EyeOff, AlertCircle, RefreshCw, Code } from "lucide-react";
+import { Plus, Globe, Trash2, Copy, Check, Eye, EyeOff, AlertCircle, RefreshCw } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import DomainHealthChip from "@/components/DomainHealthChip";
 
 interface IndexerDomain {
   id: string;
@@ -95,8 +96,8 @@ export default function IndexerDomainsPage() {
       } else {
         setErrorMsg(data.error || "Failed to add domain.");
       }
-    } catch (err: any) {
-      setErrorMsg(err.message);
+    } catch (err) {
+      setErrorMsg((err as Error).message);
     } finally {
       setSubmitting(false);
     }
@@ -111,8 +112,8 @@ export default function IndexerDomainsPage() {
       if (res.ok) {
         fetchDomains();
       }
-    } catch (e: any) {
-      setErrorMsg(e.message);
+    } catch (e) {
+      setErrorMsg((e as Error).message);
     }
   };
 
@@ -314,8 +315,8 @@ export default function IndexerDomainsPage() {
           >
             {submitting ? (
               <>
-                <RefreshCw size={14} className="animate-spin" />
-                Adding Domain...
+                <RefreshCw size={14} className="spin" />
+                {t("idxDomainAdding")}
               </>
             ) : (
               <>
@@ -342,9 +343,9 @@ export default function IndexerDomainsPage() {
         </h3>
 
         {loading ? (
-          <div style={{ padding: "40px 0", textAlign: "center", color: "var(--color-text-secondary)" }}>
-            <RefreshCw size={18} className="animate-spin" style={{ margin: "0 auto 12px" }} />
-            Loading active domains...
+          <div style={{ padding: "40px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", color: "var(--color-text-secondary)" }}>
+            <RefreshCw size={18} className="spin" />
+            <span>{t("idxDomainsLoading")}</span>
           </div>
         ) : domains.length === 0 ? (
           <div style={{
@@ -402,8 +403,11 @@ export default function IndexerDomainsPage() {
                         <h4 style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>
                           {dom.domain}
                         </h4>
-                        <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "11px", color: "var(--color-text-secondary)", flexWrap: "wrap" }}>
                           Template: {dom.template.toUpperCase()}
+                          {/* A dropped domain with no live link profile is worth nothing, and
+                              that is cheaper to learn here than after a network points at it. */}
+                          <DomainHealthChip domain={dom.domain} compact />
                         </span>
                       </div>
                     </div>

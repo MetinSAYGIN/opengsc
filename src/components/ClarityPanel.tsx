@@ -9,12 +9,13 @@ import {
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-import type { ClarityMetric, PageRow } from "@/lib/clarityParse";
+import type { ClarityMetric, ClarityMetricBlock, PageRow } from "@/lib/clarityParse";
 
 interface Snapshot {
   fetchedAt: string;
   periodDays: number;
-  data: { traffic: any[]; ux: any[]; fetchedWith: { days: number } };
+  // The UX dimension is only ever stringified back out here, so its element shape stays unopened.
+  data: { traffic: ClarityMetricBlock[]; ux: unknown[]; fetchedWith: { days: number } };
 }
 
 // Aggregated view across collected snapshots (computed server-side).
@@ -364,10 +365,12 @@ Use relevant emoji as accents (🎯 🔴 ⚠️ ✅ 🖱️ 📊 📉 💰). Do 
 
 Summary metrics (aggregated over ${view.daysCovered} day(s)): ${JSON.stringify(view.metrics)}. Top problem pages: ${JSON.stringify(view.pages)}. Raw per-URL data (latest day): ${raw}`;
 
+      const model = localStorage.getItem(`aiModel_${provider}`) || undefined;
+      const baseUrl = localStorage.getItem(`aiBaseUrl_${provider}`) || undefined;
       const res = await fetch("/api/gsc/ai-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, aiProvider: provider, aiApiKey: apiKey }),
+        body: JSON.stringify({ prompt, aiProvider: provider, aiApiKey: apiKey, model, aiBaseUrl: baseUrl }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

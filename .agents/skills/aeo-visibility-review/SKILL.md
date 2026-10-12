@@ -18,6 +18,8 @@ Tell the user where they stand in AI search: which tracked questions cite/mentio
 - `get_aeo_visibility`: tracked questions with the latest per-engine cited/not-cited state. Engines using live web search (ChatGPT, Perplexity) signal citation; Claude/Grok signal brand mention.
 - `get_search_performance` (`dimension=query`): questions people already find the site with in Google — candidates to add to AEO tracking.
 - `get_striking_distance`: pages close to page 1 often correlate with citability — sources AI search tends to pick up.
+- `get_geo_audits`: stored GEO audit reports. Where AEO tracks the same questions over time, these are one-off deep audits of a single query — they name which competitors AI search cited and why, which is the "what does a citable source look like here" evidence the scoreboard lacks.
+- `fetch_page_content`: pull a page that *did* get cited and read what makes it quotable — direct answers up top, named entities, data points, visible dates.
 
 ## Workflow
 
@@ -38,3 +40,20 @@ Tell the user where they stand in AI search: which tracked questions cite/mentio
 - An unchecked engine is "no data", not "not cited".
 - Engine coverage differs (citation vs mention detection) — do not compare raw counts across engines as if equivalent.
 - Do not promise citation outcomes; frame as probability-raising moves.
+
+## Site context — read first, free
+
+`get_site_context` is this skill's step zero. It returns the site's shared memory — business
+overview, current goal, positioning, writing preferences, the competitor list, key pages and
+the research log — and grounds every decision below in what the operator already told us.
+
+1. Call it before any other tool. If it errors or comes back empty, continue without it; never
+   block the workflow on missing context.
+2. This skill especially needs: `positioning`, `competitors`. If a needed section is
+   empty, do a minimal inline fill — ask the user (or infer from the site and confirm), write
+   it back with `update_site_context`, then continue. Never front-load a full interview.
+3. Before any PAID tool, check the research log: if the same research ran within the last 30
+   days, reuse that result and say so instead of re-buying it.
+4. On finish, write back what is durable — new or corrected key pages, competitors the work
+   revealed, positioning facts the user stated — and append a research-log entry if the
+   session spent paid units (`appendResearchLog`).

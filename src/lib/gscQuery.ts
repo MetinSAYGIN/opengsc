@@ -78,6 +78,35 @@ export async function queryGsc(accounts: GscAccount[], siteUrl: string, opts: Gs
   return [];
 }
 
+/** Like queryGsc, but tells "Google answered with no rows" ([]) apart from "no linked account
+ *  could query this property" (null). Callers that would otherwise fall back to a different
+ *  data source — or show a misleading zero — need that distinction (issue #27). */
+export async function queryGscStrict(accounts: GscAccount[], siteUrl: string, opts: GscQueryOpts) {
+  for (const account of accounts) {
+    try {
+      const oauth2 = makeOAuth2(account);
+      const wm = google.webmasters({ version: 'v3', auth: oauth2 });
+      const res = await wm.searchanalytics.query({
+        siteUrl,
+        requestBody: {
+          startDate: opts.startDate,
+          endDate: opts.endDate,
+          dimensions: opts.dimensions,
+          rowLimit: opts.rowLimit ?? 250,
+          dataState: 'all',
+          ...(opts.filters?.length
+            ? { dimensionFilterGroups: [{ filters: opts.filters }] }
+            : {}),
+        },
+      });
+      return res.data.rows ?? [];
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export function isoDaysAgo(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);

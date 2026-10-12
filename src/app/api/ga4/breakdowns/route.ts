@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { verifyAuthOrShare } from '@/lib/authShare';
 import { google } from 'googleapis';
 import { makeOAuth2, dateWindows, type GoogleAccount } from '@/lib/ga4';
+import { daysParam } from '@/lib/periodWindow';
 
 type Row = { label: string; value: number; sub?: number };
+
+/** runReport/runRealtimeReport rows, read only through their value slots. */
+type Ga4Value = { value?: string | null };
+type Ga4ReportRow = { dimensionValues?: Ga4Value[]; metricValues?: Ga4Value[] };
+type Ga4Report = { data?: { rows?: Ga4ReportRow[] | null } | null } | null | undefined;
 
 const num = (v: string | null | undefined) => {
   const n = Number(v);
@@ -15,8 +19,8 @@ const num = (v: string | null | undefined) => {
 
 // Map runReport rows → [{ label, value, sub }] using the first dimension as the
 // label, the first metric as the value and the (optional) second metric as sub.
-function mapRows(res: any): Row[] {
-  return (res?.data?.rows ?? []).map((r: any) => ({
+function mapRows(res: Ga4Report): Row[] {
+  return (res?.data?.rows ?? []).map((r) => ({
     label: r.dimensionValues?.[0]?.value ?? '',
     value: num(r.metricValues?.[0]?.value),
     sub: r.metricValues?.[1] ? num(r.metricValues?.[1]?.value) : undefined,
@@ -36,7 +40,7 @@ export async function GET(req: Request) {
   if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { userId, site } = auth;
 
-  const propertyId = (site as any).ga4PropertyId as string | null;
+  const propertyId = site.ga4PropertyId;
   if (!propertyId) return NextResponse.json({ linked: false });
 
   const accounts = (await prisma.account.findMany({
@@ -44,7 +48,7 @@ export async function GET(req: Request) {
     select: { id: true, access_token: true, refresh_token: true, expires_at: true },
   })) as GoogleAccount[];
 
-  const w = dateWindows(period);
+  const w = dateWindows(period, daysParam(searchParams.get('days')));
   const property = `properties/${propertyId}`;
   const dateRanges = [{ startDate: w.start, endDate: w.end }];
 
@@ -98,8 +102,8 @@ export async function GET(req: Request) {
         events: mapRows(val(events)),
         realtime: { activeUsers: rtTotal, byCountry: rtRows },
       });
-    } catch (err: any) {
-      lastError = err?.message ?? 'error';
+    } catch (err) {
+      lastError = (err as Error)?.message ?? 'error';
       continue;
     }
   }

@@ -5,13 +5,20 @@
 // pick the finished task up later from History. Completed jobs are imported into the
 // local (localStorage) History so the existing detail/render pages work unchanged.
 
-import { addHistory, loadHistory, HistoryItem, HistoryType } from "@/lib/seo/history";
+import { addHistory, loadHistory, flushHistoryDirty, patchHistory, HistoryItem, HistoryType } from "@/lib/seo/history";
+import { textDiagnostics } from "@/lib/seo/historyShared";
 
 export interface SeoJobRec {
   id: string;
   type: HistoryType;
   keyword: string;
   status: "processing" | "completed" | "error";
+  stage?: string;
+  progress?: number;
+  attempt?: number;
+  heartbeatAt?: string | null;
+  checkpoint?: string | null;
+  resumable?: boolean;
   result?: string | null;
   error?: string | null;
   meta?: string | null;
@@ -19,7 +26,17 @@ export interface SeoJobRec {
   updatedAt: string;
 }
 
-export async function startJob(type: HistoryType | "outline_auto", payload: any, meta?: any): Promise<{ jobId?: string; error?: string }> {
+/**
+ * The POST body of a generation job — the shape varies by tool, and only the keyword is read
+ * here (top-level, or nested in an outline when the Text generator posts `outline.data`).
+ */
+interface StartJobPayload {
+  keyword?: unknown;
+  outline?: { meta?: { keyword?: unknown } } | null;
+  [field: string]: unknown;
+}
+
+export async function startJob(type: HistoryType | "outline_auto", payload: StartJobPayload, meta?: unknown): Promise<{ jobId?: string; error?: string }> {
   try {
     const keyword = payload?.keyword || payload?.outline?.meta?.keyword || "";
     const res = await fetch("/api/seo/jobs", {
@@ -29,7 +46,7 @@ export async function startJob(type: HistoryType | "outline_auto", payload: any,
     const d = await res.json();
     if (!res.ok) return { error: d.error || "job_failed" };
     return { jobId: d.jobId };
-  } catch (e: any) { return { error: String(e?.message ?? e) }; }
+  } catch (e) { return { error: String((e as Error)?.message ?? e) }; }
 }
 
 export async function getJob(id: string): Promise<SeoJobRec | null> {
@@ -61,7 +78,18 @@ export async function clearFailedJobs(): Promise<number> {
   } catch { return 0; }
 }
 
-function safeParse(s?: string | null): any { if (!s) return undefined; try { return JSON.parse(s); } catch { return undefined; } }
+/** Parsed job JSON — a text job's result carries the article under `text`; meta is spread as-is. */
+function safeParse(s?: string | null): { text?: unknown } | undefined { if (!s) return undefined; try { return JSON.parse(s); } catch { return undefined; } }
+
+// Job types this browser History owns, and may therefore consume and delete server-side.
+//
+// The History page imports every completed job it finds, so anything NOT listed here is
+// left alone deliberately. `rewrite` batches are started over MCP by an agent that polls
+// the server row for its results — if an open OpenGSC tab imported one, it would file it
+// under a type History cannot render AND delete the server copy, so the agent's next poll
+// would report the job missing and pages the user had already paid for would be gone.
+// A job whose owner is not this browser is not this browser's to collect.
+const IMPORTABLE_TYPES = new Set(["outline", "outline_auto", "text", "analysis", "landing", "cluster"]);
 
 // Map a completed job's result into a local History item, then drop the server copy.
 // Always removes the server job afterwards (even if unparseable) to avoid re-import loops.
@@ -71,22 +99,50 @@ function safeParse(s?: string | null): any { if (!s) return undefined; try { ret
 const importing = new Set<string>();
 export async function importJob(job: SeoJobRec): Promise<HistoryItem | null> {
   if (job.status !== "completed") return null;
+  if (!IMPORTABLE_TYPES.has(String(job.type))) return null;
   if (importing.has(job.id)) return null;
   importing.add(job.id);
   try {
-    const existing = loadHistory().find(h => h.meta?.jobId === job.id);
-    if (existing) { await deleteJob(job.id); return existing; }
+    // Match by id too: the server files completed jobs into SeoHistory under the job id, so a
+    // record synced from the server is this very job already adopted.
+    const existing = loadHistory().find(h => h.id === job.id || h.meta?.jobId === job.id);
+    if (existing) {
+      // An adopted server row can predate the diagnostics enrichment — fill it in without
+      // touching data (the local copy may already carry user edits).
+      if (!existing.meta?.diagnostics) {
+        const result0 = safeParse(job.result);
+        const diag0 = textDiagnostics(result0);
+        if (diag0 && String(job.type) === "text") {
+          patchHistory(existing.id, { meta: { ...existing.meta, diagnostics: diag0 } });
+          return { ...existing, meta: { ...existing.meta, diagnostics: diag0 } };
+        }
+      }
+      await deleteJob(job.id);
+      return existing;
+    }
     const result = safeParse(job.result);
     let rec: HistoryItem | null = null;
     if (result != null) {
       const data = job.type === "text" ? (result.text ?? result) : result;
+      // A text record keeps only the article string, so the generator's own findings have to be
+      // carried across explicitly or they are lost the moment the job is imported.
+      const diag = job.type === "text" ? textDiagnostics(result) : null;
       const createdAt = Date.parse(job.createdAt || "") || undefined;
-      // outline_auto (batch SERP→scrape→outline) lands in history as a regular outline.
+      // outline_auto (batch SERP→scrape→outline) lands in history as a regular outline. The
+      // record id IS the job id, so the server's own saveJobToHistory row and this local one
+      // are the same record everywhere.
       const htype = (String(job.type) === "outline_auto" ? "outline" : job.type) as HistoryItem["type"];
       rec = addHistory({
+        id: job.id,
         type: htype, keyword: job.keyword || "—", data, createdAt,
-        meta: { ...(safeParse(job.meta) || {}), jobId: job.id },
+        meta: {
+          ...(safeParse(job.meta) || {}), jobId: job.id,
+          ...(diag ? { diagnostics: diag } : {}),
+        },
       });
+      // Push before dropping the server job row: for jobs completed before the server-side
+      // history write shipped, this debounce-to-immediate flush is the only SeoHistory copy.
+      await flushHistoryDirty();
     }
     await deleteJob(job.id);
     return rec;

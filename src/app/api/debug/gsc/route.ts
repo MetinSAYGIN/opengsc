@@ -1,16 +1,38 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
 
+// Free-form per-step diagnostics this debug endpoint prints — each step records what it has.
+type DebugStep = Record<string, unknown>;
+
+// The per-account diagnostic the route assembles step by step (later steps attach their own
+// optional findings onto the base record).
+interface AccountDebug {
+  accountId: string;
+  providerAccountId: string;
+  userId: string;
+  userEmail: string | null;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  tokenExpiresAt: string | null;
+  tokenExpired: boolean | null;
+  steps: DebugStep[];
+  googleEmail?: string | null;
+  googleName?: string | null;
+  gscSiteCount?: number;
+  gscSites?: { siteUrl?: string | null; permissionLevel?: string | null }[];
+  sitesInDb?: number;
+  sitesNotInDb?: string[];
+}
+
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
+    const workspaceId = await workspaceUserId("manageSecrets");
+  if (!workspaceId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const results: any[] = [];
+  const results: AccountDebug[] = [];
 
   const accounts = await prisma.account.findMany({
     where: { provider: 'google' },
@@ -18,7 +40,7 @@ export async function GET() {
   });
 
   for (const account of accounts) {
-    const info: any = {
+    const info: AccountDebug = {
       accountId:        account.id,
       providerAccountId: account.providerAccountId,
       userId:           account.user.id,
@@ -31,7 +53,7 @@ export async function GET() {
       tokenExpired:     account.expires_at
         ? account.expires_at * 1000 < Date.now()
         : null,
-      steps: [] as any[],
+      steps: [] as DebugStep[],
     };
 
     // Step 1: try to get user email via OAuth2
@@ -47,11 +69,9 @@ export async function GET() {
       });
 
       // Attempt token refresh first
-      let refreshed = false;
       try {
         const { credentials } = await oauth2.refreshAccessToken();
         oauth2.setCredentials(credentials);
-        refreshed = true;
         info.steps.push({ step: 'token_refresh', status: 'ok', newExpiry: credentials.expiry_date });
 
         // Save refreshed token
@@ -65,8 +85,8 @@ export async function GET() {
               : account.expires_at,
           },
         });
-      } catch (e: any) {
-        info.steps.push({ step: 'token_refresh', status: 'failed', error: e.message });
+      } catch (e) {
+        info.steps.push({ step: 'token_refresh', status: 'failed', error: (e as Error).message });
       }
 
       // Step 2: get account email
@@ -76,8 +96,8 @@ export async function GET() {
         info.googleEmail   = me.data.email;
         info.googleName    = me.data.name;
         info.steps.push({ step: 'userinfo', status: 'ok', email: me.data.email });
-      } catch (e: any) {
-        info.steps.push({ step: 'userinfo', status: 'failed', error: e.message });
+      } catch (e) {
+        info.steps.push({ step: 'userinfo', status: 'failed', error: (e as Error).message });
       }
 
       // Step 3: list GSC sites
@@ -136,19 +156,19 @@ export async function GET() {
               rowCount: rows.length,
               sample:   rows.slice(0, 2),
             });
-          } catch (e: any) {
-            info.steps.push({ step: 'sample_query', status: 'failed', site: testSite, error: e.message });
+          } catch (e) {
+            info.steps.push({ step: 'sample_query', status: 'failed', site: testSite, error: (e as Error).message });
           }
         }
 
-      } catch (e: any) {
+      } catch (e) {
         info.gscSiteCount = 0;
         info.gscSites = [];
-        info.steps.push({ step: 'list_gsc_sites', status: 'failed', error: e.message });
+        info.steps.push({ step: 'list_gsc_sites', status: 'failed', error: (e as Error).message });
       }
 
-    } catch (e: any) {
-      info.steps.push({ step: 'oauth2_init', status: 'failed', error: e.message });
+    } catch (e) {
+      info.steps.push({ step: 'oauth2_init', status: 'failed', error: (e as Error).message });
     }
 
     results.push(info);

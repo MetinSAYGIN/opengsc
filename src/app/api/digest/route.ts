@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
+import type { Capability } from "@/lib/team/roles";
 import { prisma } from "@/lib/prisma";
 import { buildDigestData, renderDigestMarkdown, aiSummary, getDigestSettings, saveDigestSettings, DEFAULT_DIGEST_SETTINGS } from "@/lib/digest";
 import { buildEngineRows, configuredEngines } from "@/lib/digestEngines";
-import { notifyUser } from "@/lib/notify";
+import { notifyUserDetailed, deliverableChannels } from "@/lib/notify";
+import { normalizeLang } from "@/lib/notifyI18n";
 
 const hasTag = (tagsField: string | null, tag: string): boolean => {
   if (!tagsField) return false;
@@ -15,19 +16,18 @@ const hasTag = (tagsField: string | null, tag: string): boolean => {
 // Digest tab API.
 // GET                 → { digests (history), settings, tags (all site tags for the picker) }
 // POST { action }     → "preview" {tag,days,ai} — build without sending
-//                     → "send"    {tag,days,ai} — build + deliver to Telegram + save
+//                     → "send"    {tag,days,ai} — build + deliver to every channel taking "digest" + save
 //                     → "settings" {settings}   — save the schedule
 
-async function uid(): Promise<string | null> {
-  const session = await getServerSession(authOptions);
-  return ((session?.user as any)?.id as string) || null;
+async function uid(capability: Capability = "read"): Promise<string | null> {
+return workspaceUserId(capability);
 }
 
 export async function GET() {
   const userId = await uid();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let digests: any[] = [];
+  let digests: Awaited<ReturnType<typeof prisma.digest.findMany>> = [];
   try {
     digests = await prisma.digest.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, take: 20 });
   } catch { /* not migrated */ }
@@ -41,27 +41,24 @@ export async function GET() {
     if (!s.tags) continue;
     try {
       const arr = JSON.parse(s.tags);
-      if (Array.isArray(arr)) { arr.forEach((t: any) => tags.add(String(t))); continue; }
+      if (Array.isArray(arr)) { arr.forEach((t: unknown) => tags.add(String(t))); continue; }
     } catch { /* comma fallback */ }
     s.tags.split(",").map(x => x.trim()).filter(Boolean).forEach(t => tags.add(t));
   }
 
-  // Telegram connected? (drives UI hints)
-  // "telegram" flag historically gates the Send button — true when ANY channel works.
-  let telegram = false;
-  try {
-    const rows: any[] = await prisma.$queryRawUnsafe(
-      `SELECT telegramBotToken, telegramChatId, slackWebhook FROM "User" WHERE id = ?`, userId);
-    telegram = !!((rows?.[0]?.telegramBotToken && rows?.[0]?.telegramChatId) || rows?.[0]?.slackWebhook);
-  } catch { /* not migrated */ }
+  // Any channel that takes "digest" events (Telegram, Slack, e-mail, Discord, Teams, webhook,
+  // push)? The `telegram` field name is historical — the page gates "Send" on it; `channels`
+  // lists which ones, for the hint text. Issue #25: it used to look at Telegram/Slack only.
+  const channels = await deliverableChannels(userId, "digest").catch(() => []);
+  const telegram = channels.length > 0;
 
   const engines = await configuredEngines(userId).catch(() => ({ bing: false, yandex: false }));
 
-  return NextResponse.json({ digests, settings, tags: [...tags].sort(), telegram, engines });
+  return NextResponse.json({ digests, settings, tags: [...tags].sort(), telegram, channels, engines });
 }
 
 export async function POST(req: Request) {
-  const userId = await uid();
+  const userId = await uid("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const b = await req.json().catch(() => ({}));
   const action = String(b.action ?? "");
@@ -69,12 +66,14 @@ export async function POST(req: Request) {
   const rawDays = parseInt(String(b.days ?? 7), 10) || 7;
   const days = rawDays === 0 ? 0 : Math.min(3650, Math.max(1, rawDays));
   const ai = !!b.ai;
-  const lang = (b.lang === "ru" || b.lang === "uk" ? b.lang : "en") as "en" | "ru" | "uk";
+  const lang = normalizeLang(b.lang);
 
   // Live per-engine rows for the page's Bing/Yandex tabs (lazy-loaded on tab click).
   if (action === "engine") {
     const engine = b.engine === "yandex" ? "yandex" : "bing";
-    const allSites = await prisma.site.findMany({ where: { userId }, select: { id: true, url: true, tags: true } });
+    // Same portfolio-wide rule as buildDigestData: hidden and archived sites are shelved, and
+    // their rows would only overstate the per-engine totals.
+    const allSites = await prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null }, select: { id: true, url: true, tags: true } });
     const sites = tag ? allSites.filter(s => hasTag(s.tags, tag)) : allSites;
     const rows = await buildEngineRows(userId, engine, sites, days || 28, 120).catch(() => []);
     const clicks = rows.reduce((s, r) => s + r.clicks, 0), impr = rows.reduce((s, r) => s + r.impr, 0);
@@ -94,10 +93,13 @@ export async function POST(req: Request) {
     }
     let sent = false;
     if (action === "send") {
-      sent = await notifyUser(userId, full);
+      const deliveries = await notifyUserDetailed(userId, full, { event: "digest" });
+      const okChannels = deliveries.filter(d => d.ok).map(d => d.channel);
+      sent = okChannels.length > 0;
       try {
-        await prisma.digest.create({ data: { userId, tag, days, content: full, sentTo: sent ? "telegram" : null } });
+        await prisma.digest.create({ data: { userId, tag, days, content: full, sentTo: sent ? okChannels.join(", ") : null } });
       } catch { /* not migrated */ }
+      // Error key kept for API compatibility; it now means "no channel delivered it".
       if (!sent) return NextResponse.json({ content: full, data, ai: aiText, sent, error: "telegram_not_connected" });
     }
     return NextResponse.json({ content: full, data, ai: aiText, sent });
@@ -120,7 +122,7 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const userId = await uid();
+  const userId = await uid("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id") ?? "";

@@ -1,14 +1,17 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
+import PasswordChangeGate from "@/components/PasswordChangeGate";
 import { useSession, signOut } from "next-auth/react";
-import { useState, useEffect, Suspense } from "react";
-import { Settings, LogOut, Sparkles, Globe, Newspaper, LayoutDashboard, TrendingUp, Anchor, BarChart2 } from "lucide-react";
+import { useState, useEffect, useRef, Suspense } from "react";
+import { LogOut, Sparkles, Globe, Newspaper, LayoutDashboard, TrendingUp, Anchor, BarChart2, Radar, Server, ClipboardCheck, Menu, Boxes, Waves, FileText, Inbox, ChevronDown, Link2, Send } from "lucide-react";
 import { usePrivacy } from "@/lib/PrivacyContext";
 import { useTheme } from "@/lib/ThemeContext";
 import { useLayout } from "@/lib/LayoutContext";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { aparserConfiguredLocally, isAparserConfigured, resetAparserConfiguredCache } from "@/lib/seo/aparserConfigured";
 import UpdateBanner from "@/components/UpdateBanner";
+import SchemaBanner from "@/components/SchemaBanner";
 
 // ─── Popup menu helpers ───────────────────────────────────────────────────────
 function MenuItem({ icon, label, onClick }: { icon: string; label: string; onClick?: () => void }) {
@@ -60,37 +63,48 @@ function VersionInfo() {
   );
 }
 
-function ToggleItem({ icon, label, defaultOn = false }: { icon: string; label: string; defaultOn?: boolean }) {
-  const [on, setOn] = useState(defaultOn);
-  return (
-    <button onClick={() => setOn(o => !o)} className="menu-item" style={{
-      display: "flex", alignItems: "center", gap: "10px",
-      padding: "9px 16px", fontSize: "13px", color: "var(--color-text-secondary)",
-      width: "100%", background: "transparent", border: "none", cursor: "pointer",
-    }}>
-      <span style={{ fontSize: "14px", width: "18px", textAlign: "center" }}>{icon}</span>
-      <span style={{ flex: 1, textAlign: "left" }}>{label}</span>
-      <span style={{ fontSize: "11px", fontWeight: 600, color: on ? "var(--color-accent-green)" : "var(--color-text-tertiary, var(--color-text-secondary))" }}>{on ? "ON" : "OFF"}</span>
-    </button>
-  );
-}
-
-function SelectItem({ icon, label, value }: { icon: string; label: string; value: string }) {
-  return (
-    <button className="menu-item" style={{
-      display: "flex", alignItems: "center", gap: "10px",
-      padding: "9px 16px", fontSize: "13px", color: "var(--color-text-secondary)",
-      width: "100%", background: "transparent", border: "none", cursor: "pointer",
-    }}>
-      <span style={{ fontSize: "14px", width: "18px", textAlign: "center" }}>{icon}</span>
-      <span style={{ flex: 1, textAlign: "left" }}>{label}</span>
-      <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)" }}>{value}</span>
-    </button>
-  );
-}
-
 // ─── Feedback / Help modal ────────────────────────────────────────────────────
 const USDT_ADDRESS = "TN7v2NArTXd5J2eMuGFpXmgzAFsoZpWcZu";
+
+// Partner wall in the "Support Developer" modal. To add a partner: drop the
+// logo into public/partners/ and add a `partners<Id>` description key to every
+// src/locales/*.json. tileBg must contrast with the logo fills: light-filled
+// logos (Pay2.House) need the dark tile, dark logos on white (Cloaking.House)
+// need "#ffffff" — otherwise they vanish on light theme / dark tile.
+const SUPPORT_PARTNERS = [
+  {
+    id: "Pay2house",
+    name: "Pay2.House",
+    href: "https://pay2.house/p/kc9oevv0?utm_source=opengsc",
+    logo: "/partners/pay2house-logo.svg",
+    tileBg: "#0b0e16",
+    imgStyle: { maxWidth: "78px", maxHeight: "18px" } as React.CSSProperties,
+  },
+  {
+    id: "Groupbuyseo",
+    name: "GroupBuySEO",
+    href: "https://my.groupbuyseo.org/register?affiliate_key=8ino4XJTwJ7EJooF67JUOt2tmbcFk1",
+    logo: "/partners/groupbuyseo-logo.svg",
+    tileBg: "#0b0e16",
+    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
+  },
+  {
+    id: "Cloakinghouse",
+    name: "Cloaking.House",
+    href: "https://cloaking.house/?utm_source=opengsc",
+    logo: "/partners/cloakinghouse-logo.png",
+    tileBg: "#ffffff",
+    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
+  },
+  {
+    id: "Orbitra",
+    name: "Orbitra.link",
+    href: "https://orbitra.link/?utm_source=opengsc",
+    logo: "/partners/orbitra-logo.svg",
+    tileBg: "#ffffff",
+    imgStyle: { maxHeight: "28px" } as React.CSSProperties,
+  },
+] as const;
 
 function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose: () => void }) {
   const { t } = useLanguage();
@@ -307,6 +321,50 @@ function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose
                 </div>
               </div>
 
+              {/* Partners */}
+              <div style={{ marginTop: "20px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "8px" }}>
+                  {t("partnersTitle")}
+                </div>
+                {SUPPORT_PARTNERS.map(p => (
+                  <a
+                    key={p.id}
+                    href={p.href}
+                    target="_blank"
+                    rel="noopener noreferrer sponsored"
+                    style={{
+                      display: "flex", alignItems: "center", gap: "12px",
+                      padding: "10px 12px", borderRadius: "10px",
+                      background: "rgba(255,255,255,0.04)",
+                      border: "1px solid var(--color-border)",
+                      textDecoration: "none", marginBottom: "8px",
+                      transition: "background 0.15s",
+                    }}
+                    onMouseOver={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
+                    onMouseOut={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
+                  >
+                    <span style={{
+                      width: "92px", height: "44px", borderRadius: "8px",
+                      background: p.tileBg,
+                      border: "1px solid var(--color-border)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0,
+                    }}>
+                      <img src={p.logo} alt={p.name} style={{ display: "block", ...p.imgStyle }} />
+                    </span>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+                        {p.name}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.45, marginTop: "2px" }}>
+                        {t(`partners${p.id}`)}
+                      </div>
+                    </div>
+                    <span style={{ marginLeft: "auto", fontSize: "12px", color: "var(--color-text-secondary)", flexShrink: 0 }}>↗</span>
+                  </a>
+                ))}
+              </div>
+
               <div style={{ height: "1px", background: "var(--color-border)", margin: "16px 0" }} />
 
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -329,213 +387,335 @@ function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose
 }
 
 // ─── Chrome Extension modal ───────────────────────────────────────────────────
-function ChromeExtensionModal({ onClose }: { onClose: () => void }) {
-  const features = [
-    {
-      icon: "⚡",
-      title: "Instant Metric Retrieval",
-      desc: "Fetch and display essential page metrics and website properties from virtually any URL — right in your browser.",
-    },
-    {
-      icon: "📌",
-      title: "Effortless Annotations",
-      desc: "Add detailed annotations to any tracked property with a few clicks. Context is never lost.",
-    },
-    {
-      icon: "🚀",
-      title: "One-Click Dashboard",
-      desc: "Jump instantly to your full OpenGSC dashboard for comprehensive data, reporting, and advanced analysis.",
-    },
+// ─── Navigation items ────────────────────────────────────────────────────────
+/**
+ * The item list is read by two components now — the horizontal bar and the mobile
+ * sheet — so it lives in a hook instead of inside one of them. Duplicating ten
+ * entries across two renderers is how a nav item ends up existing on desktop and
+ * not on a phone.
+ *
+ * A-Parser is the only nav item that can be absent, and the reason is that it is the only one
+ * that depends on hardware the app cannot provide. Everything else in this bar works out of
+ * the box; a permanent eighth entry whose page can only ever say "not configured" costs every
+ * user attention to buy nothing. It appears the moment a connection is saved.
+ */
+export interface NavItem {
+  href: string;
+  label: string;
+  key: string;
+  exact?: boolean;
+  icon: React.ReactNode;
+  /** Items sharing a group collapse into one dropdown in the top bar (and one titled section in
+   *  the mobile sheet). Ungrouped items stay top-level. The group sits where its first item is. */
+  group?: NavGroupKey;
+}
+
+type NavGroupKey = "analytics" | "monitoring" | "recon" | "clients";
+
+// 14 destinations stopped fitting one row even at 2000px. Grouped by what the page looks at:
+// analytics — this instance's own GSC data; monitoring — things that change over time and get
+// watched; recon — somebody else's sites and domains; clients — what goes out to customers.
+const NAV_GROUPS: Record<NavGroupKey, { labelKey: string; icon: React.ReactNode }> = {
+  analytics: { labelKey: "navGroupAnalytics", icon: <TrendingUp size={14} /> },
+  monitoring: { labelKey: "navGroupMonitoring", icon: <Waves size={14} /> },
+  recon: { labelKey: "navGroupRecon", icon: <Radar size={14} /> },
+  clients: { labelKey: "navGroupClients", icon: <Inbox size={14} /> },
+};
+
+function useNavItems(): NavItem[] {
+  const { t } = useLanguage();
+
+  const [hasAparser, setHasAparser] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const read = () => {
+      // The local answer is synchronous, so a browser that has the settings renders the item
+      // with no request and no flicker.
+      const local = aparserConfiguredLocally();
+      setHasAparser(local);
+      if (local) return;
+      // It is not, though, the only way an instance can be configured: the env vars win over the
+      // settings value server-side, and a Docker deployment is told to use them. Asking the
+      // server is what keeps the recommended setup from having an invisible menu entry.
+      void isAparserConfigured().then(ok => { if (alive && ok) setHasAparser(true); });
+    };
+    read();
+    // Settings write straight to localStorage; this is the same event SeoKeysSync fires after a
+    // restore, so the item also appears on a machine that has just pulled the backup.
+    const reread = () => { resetAparserConfiguredCache(); read(); };
+    window.addEventListener("seo-keys-restored", reread);
+    window.addEventListener("storage", reread);
+    return () => {
+      alive = false;
+      window.removeEventListener("seo-keys-restored", reread);
+      window.removeEventListener("storage", reread);
+    };
+  }, []);
+
+  return [
+    { href: "/", label: t("menuDashboard"), key: "sites", exact: true, icon: <LayoutDashboard size={14} /> },
+    { href: "/striking", label: t("menuStriking"), key: "striking", icon: <TrendingUp size={14} />, group: "analytics" as const },
+    { href: "/cannibalization", label: t("menuCannibalization"), key: "cannibalization", icon: <Anchor size={14} />, group: "analytics" as const },
+    { href: "/decay", label: t("menuDecay"), key: "decay", icon: <BarChart2 size={14} />, group: "analytics" as const },
+    // Fourth portfolio-wide report, next to the three above: the per-site history stays in
+    // each site's Audit tab, this is the workspace view (every run, plus never-audited sites).
+    { href: "/audits", label: t("menuAudits"), key: "audits", icon: <ClipboardCheck size={14} />, group: "analytics" as const },
+    // Competitors and Demand are not here: both live under SEO Tools. Everything in this bar
+    // reads data the instance already holds; those two buy data from outside it, which is the
+    // line SEO Tools draws.
+    { href: "/seo-tools", label: t("seoNavTitle"), key: "seo-tools", icon: <Sparkles size={14} /> },
+    { href: "/indexer", label: t("indexerNavTitle"), key: "indexer", icon: <Globe size={14} />, group: "monitoring" as const },
+    // Sits next to the portfolio tools but points outward: everything above reads this instance's
+    // own data, this one looks at somebody else's site.
+    { href: "/crawler", label: t("crawlerNavTitle"), key: "crawler", icon: <Radar size={14} />, group: "recon" as const },
+    // Between the crawler and the digest for the same reason the crawler sits where it does:
+    // it looks outward at domains this instance does not own. Unlike the crawler it looks at
+    // ones nobody owns yet.
+    { href: "/drops", label: t("dropsNavTitle"), key: "drops", icon: <Boxes size={14} />, group: "recon" as const },
+    // Link purchases point outward too — money leaves for somebody else's placements — and the
+    // striking table's buy buttons lead here for the history. Always visible, like /serp-monitor:
+    // the page explains what is missing instead of the feature looking absent.
+    { href: "/magiclinks", label: t("mlNavTitle"), key: "magiclinks", icon: <Link2 size={14} />, group: "recon" as const },
+    // The other side of the same coin as /magiclinks: there you pay somebody else to place
+    // posts, here you publish your own (WordPress now, satellite platforms later) and the
+    // loop files the result as a donor link the same way. Always visible: the page explains
+    // what is missing (a connection) instead of the feature looking absent.
+    { href: "/publishing", label: t("publishTitle"), key: "publishing", icon: <Send size={14} />, group: "recon" as const },
+    // Visible always, unlike /aparser: the page itself explains what is missing (A-Parser
+    // credentials) instead of the entry hiding and the feature looking absent.
+    { href: "/serp-monitor", label: t("serpmonNavTitle"), key: "serpmon", icon: <Waves size={14} />, group: "monitoring" as const },
+    // ─── wave-nov nav entries (CONTRACT.md §3), after /serp-monitor ──────────────────
+    // Footprints and Local live in the SEO Tools hub now — the top nav stopped fitting at
+    // 16 items; both are analysis tools, not daily destinations.
+    // N8: client reports (white-label, PDF, scheduled mailing).
+    { href: "/reports", label: t("repNavTitle"), key: "reports", icon: <FileText size={14} />, group: "clients" as const },
+    // N9: incoming leads from the embeddable audit widget.
+    { href: "/leads", label: t("leadNavTitle"), key: "leads", icon: <Inbox size={14} />, group: "clients" as const },
+    { href: "/digest", label: t("digestNavTitle"), key: "digest", icon: <Newspaper size={14} />, group: "monitoring" as const },
+    // Points inward at the user's own machine rather than at this instance's data or at
+    // somebody else's site — hence last, and hidden until that machine exists.
+    ...(hasAparser ? [{ href: "/aparser", label: t("aparserNavTitle"), key: "aparser", icon: <Server size={14} />, group: "recon" as const }] : []),
   ];
+}
 
-  return (
-    <>
-      <div onClick={onClose} style={{
-        position: "fixed", inset: 0, zIndex: 100,
-        background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)",
-      }} />
-      <div style={{
-        position: "fixed", top: "50%", left: "50%",
-        transform: "translate(-50%, -50%)",
-        zIndex: 101,
-        width: "460px", maxWidth: "calc(100vw - 32px)",
-        background: "var(--color-card)",
-        border: "1px solid var(--color-border)",
-        borderRadius: "16px",
-        boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
-        overflow: "hidden",
-      }}>
-        {/* Hero */}
-        <div style={{
-          padding: "28px 28px 24px",
-          background: "linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(59,130,246,0.08) 100%)",
-          borderBottom: "1px solid var(--color-border)",
-          position: "relative",
-        }}>
-          <button onClick={onClose} style={{
-            position: "absolute", top: "16px", right: "16px",
-            width: "28px", height: "28px", borderRadius: "50%",
-            background: "rgba(255,255,255,0.08)", border: "none",
-            cursor: "pointer", fontSize: "14px", color: "var(--color-text-secondary)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}>✕</button>
+function isNavActive(item: NavItem, pathname: string | null): boolean {
+  return item.exact ? pathname === "/" : !!pathname?.startsWith(item.href);
+}
 
-          {/* Chrome icon + badge */}
-          <div style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "16px" }}>
-            <div style={{
-              width: "52px", height: "52px", borderRadius: "14px",
-              background: "linear-gradient(135deg, #8B5CF6, #3B82F6)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: "26px", flexShrink: 0,
-            }}>🔗</div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontSize: "17px", fontWeight: 700, color: "var(--color-text-primary)" }}>
-                  OpenGSC Extension
-                </span>
-                <span style={{
-                  fontSize: "10px", fontWeight: 700,
-                  padding: "2px 7px", borderRadius: "100px",
-                  background: "rgba(139,92,246,0.2)", color: "#a78bfa",
-                  textTransform: "uppercase", letterSpacing: "0.05em",
-                }}>Chrome</span>
-              </div>
-              <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "3px" }}>
-                Access your Search Console Analytics anywhere
-              </div>
-            </div>
-          </div>
-
-          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", lineHeight: "1.6", margin: 0 }}>
-            Stop interrupting your workflow. The official OpenGSC Chrome Extension brings the power of our SEO analysis platform directly to your browser.
-          </p>
-        </div>
-
-        {/* Features */}
-        <div style={{ padding: "20px 28px" }}>
-          <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: "14px" }}>
-            Key Features
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "24px" }}>
-            {features.map(f => (
-              <div key={f.title} style={{
-                display: "flex", gap: "12px",
-                padding: "12px 14px", borderRadius: "10px",
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid var(--color-border)",
-              }}>
-                <span style={{ fontSize: "18px", flexShrink: 0, marginTop: "1px" }}>{f.icon}</span>
-                <div>
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "3px" }}>
-                    {f.title}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: "1.5" }}>
-                    {f.desc}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* CTA */}
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button onClick={onClose} style={{
-              flex: 1, padding: "10px",
-              background: "rgba(255,255,255,0.05)",
-              border: "1px solid var(--color-border)",
-              borderRadius: "9px", fontSize: "13px",
-              color: "var(--color-text-secondary)", cursor: "pointer",
-            }}>Close</button>
-            <button
-              onClick={() => window.open("https://chromewebstore.google.com/search/SEO%20Gets", "_blank")}
-              style={{
-                flex: 2, padding: "10px",
-                background: "linear-gradient(135deg, #8B5CF6, #3B82F6)",
-                border: "none", borderRadius: "9px",
-                fontSize: "13px", fontWeight: 700, color: "#fff",
-                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="2"/>
-                <circle cx="12" cy="12" r="4" fill="white"/>
-                <path d="M12 8 L20.5 8" stroke="white" strokeWidth="2"/>
-                <path d="M6.8 17 L2.3 9" stroke="white" strokeWidth="2"/>
-                <path d="M17.2 17 L21.7 9" stroke="white" strokeWidth="2"/>
-              </svg>
-              Install from Chrome Web Store
-            </button>
-          </div>
-          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", textAlign: "center", marginTop: "10px" }}>
-            Designed for SEO professionals, marketers, and analysts
-          </div>
-        </div>
-      </div>
-    </>
-  );
+function navAccent(key: string): { color: string; bg: string } {
+  if (key === "seo-tools") return { color: "var(--color-accent-purple)", bg: "rgba(191,90,242,0.12)" };
+  if (key === "indexer") return { color: "var(--color-accent-blue)", bg: "rgba(41,151,255,0.12)" };
+  if (key === "digest") return { color: "var(--color-accent-green, #34c759)", bg: "rgba(52,199,89,0.12)" };
+  if (key === "drops") return { color: "var(--color-accent-orange, #ff9f0a)", bg: "rgba(255,159,10,0.12)" };
+  if (key === "serpmon") return { color: "var(--color-accent-teal, #30b0c7)", bg: "rgba(48,176,199,0.12)" };
+  if (key === "magiclinks") return { color: "var(--color-accent-purple, #7c3aed)", bg: "rgba(124,58,237,0.12)" };
+  return { color: "var(--color-accent-blue)", bg: "rgba(59,130,246,0.12)" };
 }
 
 // ─── NavLinks component for top navigation ────────────────────────────────────
+type NavEntry =
+  | { kind: "item"; item: NavItem }
+  | { kind: "group"; key: NavGroupKey; items: NavItem[] };
+
+/** Folds the flat list into top-level entries; a group takes the slot of its first item. */
+function buildNavEntries(items: NavItem[]): NavEntry[] {
+  const out: NavEntry[] = [];
+  const seen = new Map<NavGroupKey, NavItem[]>();
+  for (const item of items) {
+    if (!item.group) { out.push({ kind: "item", item }); continue; }
+    const bucket = seen.get(item.group);
+    if (bucket) { bucket.push(item); continue; }
+    const fresh = [item];
+    seen.set(item.group, fresh);
+    out.push({ kind: "group", key: item.group, items: fresh });
+  }
+  return out;
+}
+
+function navButtonStyle(isActive: boolean, color: string, bg: string): React.CSSProperties {
+  return {
+    display: "flex", alignItems: "center", gap: "6px",
+    padding: "6px 12px", borderRadius: "8px",
+    fontSize: "13px", fontWeight: isActive ? 700 : 500,
+    cursor: "pointer", border: "none",
+    color: isActive ? color : "var(--color-text-secondary)",
+    background: isActive ? bg : "transparent",
+    transition: "all 0.15s",
+    whiteSpace: "nowrap",
+  };
+}
+
 function NavLinks() {
   const router = useRouter();
   const pathname = usePathname();
+  const items = useNavItems();
   const { t } = useLanguage();
+  const [openGroup, setOpenGroup] = useState<NavGroupKey | null>(null);
+  const navRef = useRef<HTMLElement>(null);
 
-  const items = [
-    { href: "/", label: t("menuDashboard"), key: "sites", exact: true, icon: <LayoutDashboard size={14} /> },
-    { href: "/striking", label: t("menuStriking"), key: "striking", icon: <TrendingUp size={14} /> },
-    { href: "/cannibalization", label: t("menuCannibalization"), key: "cannibalization", icon: <Anchor size={14} /> },
-    { href: "/decay", label: t("menuDecay"), key: "decay", icon: <BarChart2 size={14} /> },
-    { href: "/seo-tools", label: t("seoNavTitle"), key: "seo-tools", icon: <Sparkles size={14} /> },
-    { href: "/indexer", label: t("indexerNavTitle"), key: "indexer", icon: <Globe size={14} /> },
-    { href: "/digest", label: t("digestNavTitle"), key: "digest", icon: <Newspaper size={14} /> },
-  ];
+  // Same render-time adjustment as NavBurger: a route change from anywhere closes the dropdown.
+  const [menuPath, setMenuPath] = useState(pathname);
+  if (pathname !== menuPath) {
+    setMenuPath(pathname);
+    if (openGroup) setOpenGroup(null);
+  }
+
+  // Outside click / Escape. A document listener rather than a full-screen backdrop, so a click
+  // on a neighbouring group opens it straight away instead of first just closing this one.
+  useEffect(() => {
+    if (!openGroup) return;
+    const onDown = (e: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) setOpenGroup(null);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpenGroup(null); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [openGroup]);
+
+  const hoverOn = (active: boolean) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (!active) e.currentTarget.style.background = "var(--color-card-hover)";
+  };
+  const hoverOff = (active: boolean) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (!active) e.currentTarget.style.background = "transparent";
+  };
 
   return (
-    <nav style={{ display: "flex", alignItems: "center", gap: "4px", marginLeft: "20px", flex: 1 }}>
-      {items.map(item => {
-        const isActive = item.exact
-          ? pathname === "/"
-          : pathname?.startsWith(item.href);
+    <nav className="nav-desktop" ref={navRef}>
+      {buildNavEntries(items).map(entry => {
+        if (entry.kind === "item") {
+          const { item } = entry;
+          const isActive = isNavActive(item, pathname);
+          const { color, bg } = navAccent(item.key);
+          return (
+            <button
+              key={item.href}
+              onClick={() => router.push(item.href)}
+              aria-current={isActive ? "page" : undefined}
+              style={navButtonStyle(isActive, color, bg)}
+              onMouseOver={hoverOn(isActive)}
+              onMouseOut={hoverOff(isActive)}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          );
+        }
 
-        const activeColor = item.key === "seo-tools" 
-          ? "var(--color-accent-purple)" 
-          : item.key === "indexer" 
-            ? "var(--color-accent-blue)" 
-            : item.key === "digest" 
-              ? "var(--color-accent-green, #34c759)" 
-              : "var(--color-accent-blue)";
-
-        const bgActive = item.key === "seo-tools" 
-          ? "rgba(191,90,242,0.12)" 
-          : item.key === "indexer" 
-            ? "rgba(41,151,255,0.12)" 
-            : item.key === "digest" 
-              ? "rgba(52,199,89,0.12)" 
-              : "rgba(59,130,246,0.12)";
-
+        const group = NAV_GROUPS[entry.key];
+        const activeChild = entry.items.find(i => isNavActive(i, pathname));
+        const isActive = !!activeChild;
+        const { color, bg } = navAccent(activeChild?.key ?? "");
+        const isOpen = openGroup === entry.key;
         return (
-          <button
-            key={item.href}
-            onClick={() => router.push(item.href)}
-            style={{
-              display: "flex", alignItems: "center", gap: "6px",
-              padding: "6px 14px", borderRadius: "8px",
-              fontSize: "13px", fontWeight: isActive ? 700 : 500,
-              cursor: "pointer", border: "none",
-              color: isActive ? activeColor : "var(--color-text-secondary)",
-              background: isActive ? bgActive : "transparent",
-              transition: "all 0.15s",
-            }}
-            onMouseOver={e => { if (!isActive) e.currentTarget.style.background = "var(--color-card-hover)"; }}
-            onMouseOut={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
-          >
-            {item.icon}
-            {item.label}
-          </button>
+          <div key={entry.key} className="nav-group">
+            <button
+              aria-haspopup="menu"
+              aria-expanded={isOpen}
+              onClick={() => setOpenGroup(g => (g === entry.key ? null : entry.key))}
+              style={navButtonStyle(isActive, color, bg)}
+              onMouseOver={hoverOn(isActive)}
+              onMouseOut={hoverOff(isActive)}
+            >
+              {activeChild ? activeChild.icon : group.icon}
+              {t(group.labelKey as never)}
+              <ChevronDown size={13} className="nav-chevron" data-open={isOpen} />
+            </button>
+            {isOpen && (
+              <div className="nav-dropdown" role="menu">
+                {entry.items.map(item => {
+                  const childActive = isNavActive(item, pathname);
+                  return (
+                    <button
+                      key={item.href}
+                      role="menuitem"
+                      className="nav-sheet-item"
+                      data-active={childActive}
+                      onClick={() => { setOpenGroup(null); router.push(item.href); }}
+                    >
+                      {item.icon}
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })}
     </nav>
+  );
+}
+
+// ─── Burger + sheet for narrow viewports ──────────────────────────────────────
+/**
+ * Both this and NavLinks are always in the DOM; `.nav-burger` / `.nav-desktop` in
+ * globals.css decide which one is visible. Nothing here measures the viewport, so
+ * the server and the first client render agree.
+ */
+function NavBurger() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const items = useNavItems();
+  const { t } = useLanguage();
+  const [open, setOpen] = useState(false);
+
+  // Without this the sheet stays open on top of the page the user just navigated to. Closing
+  // inside the click handler alone is not enough: a route can also change from a link inside
+  // the page, from the browser's back button, or from a redirect.
+  //
+  // Adjusted during render rather than in an effect. React re-runs the component immediately
+  // with the new state and never commits the stale frame, so the sheet is gone in the same
+  // paint as the new route; an effect would flash it for one frame and trips the
+  // react-hooks/set-state-in-effect rule this repo lints with.
+  const [sheetPath, setSheetPath] = useState(pathname);
+  if (pathname !== sheetPath) {
+    setSheetPath(pathname);
+    if (open) setOpen(false);
+  }
+
+  return (
+    <>
+      <button
+        className="nav-burger"
+        aria-label={t("navMenu")}
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+      >
+        <Menu size={18} />
+      </button>
+
+      {open && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 44 }} onClick={() => setOpen(false)} />
+          <nav className="nav-sheet">
+            {buildNavEntries(items).map(entry => {
+              const renderItem = (item: NavItem) => (
+                <button
+                  key={item.href}
+                  className="nav-sheet-item"
+                  data-active={isNavActive(item, pathname)}
+                  onClick={() => { setOpen(false); router.push(item.href); }}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              );
+              if (entry.kind === "item") return renderItem(entry.item);
+              return (
+                <div key={entry.key}>
+                  <div className="nav-sheet-heading">{t(NAV_GROUPS[entry.key].labelKey as never)}</div>
+                  {entry.items.map(renderItem)}
+                </div>
+              );
+            })}
+          </nav>
+        </>
+      )}
+    </>
   );
 }
 
@@ -552,7 +732,7 @@ function TopBar() {
   const user = session?.user;
 
   return (
-    <header style={{
+    <header className="topbar" style={{
       position: "sticky", top: 0, zIndex: 40,
       display: "flex", alignItems: "center", justifyContent: "space-between",
       padding: "0 24px",
@@ -577,14 +757,18 @@ function TopBar() {
           display: "flex", alignItems: "center", justifyContent: "center",
           flexShrink: 0,
         }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+          { }
           <img src="/logo.svg" alt="OpenGSC" height={18} style={{ display: "block" }} />
         </div>
       </button>
 
-      {/* Primary nav tabs */}
+      {/* Primary nav tabs — the bar on desktop, the burger below 900px. Both render;
+          globals.css picks one. */}
       <Suspense fallback={<div style={{ flex: 1 }} />}>
         <NavLinks />
+      </Suspense>
+      <Suspense fallback={null}>
+        <NavBurger />
       </Suspense>
 
       {/* Avatar */}
@@ -600,7 +784,7 @@ function TopBar() {
             onMouseOut={e => { if (!open) e.currentTarget.style.borderColor = "transparent"; }}
           >
             {user.image ? (
-              // eslint-disable-next-line @next/next/no-img-element
+               
               <img src={user.image} alt="avatar" width={32} height={32} style={{ display: "block" }} />
             ) : (
               <div style={{
@@ -629,7 +813,7 @@ function TopBar() {
                 <div style={{ padding: "14px 16px 12px", borderBottom: "1px solid var(--color-border)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     {user.image ? (
-                      // eslint-disable-next-line @next/next/no-img-element
+                       
                       <img src={user.image} alt="avatar" width={36} height={36} style={{ borderRadius: "50%" }} />
                     ) : (
                       <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "var(--color-accent-purple)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: 700, color: "#fff" }}>
@@ -752,26 +936,33 @@ function TopBar() {
 }
 
 // ─── Shell ────────────────────────────────────────────────────────────────────
-// Paths rendered without the app shell (no TopBar): auth pages and public share links.
-const AUTH_PATHS = ["/login", "/share"];
+// Paths rendered without the app shell (no TopBar): auth pages, public share links, and the
+// wave-nov public surfaces — the embeddable audit widget (N9) opens inside somebody else's
+// iframe, and the client report link (N8, /share/report/<token>) opens for a customer. Both
+// must render with zero app chrome. /share/report/ is already covered by the "/share" prefix;
+// "/embed" is new.
+const AUTH_PATHS = ["/login", "/share", "/join", "/embed"];
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { layout } = useLayout();
-
+  // Shell no longer reads the layout context: page width is applied through CSS custom properties
+  // set on :root by LayoutProvider, not by re-rendering here. TopBar still subscribes to show the
+  // toggle's current state in the menu.
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh" }}>
       <TopBar />
+      <PasswordChangeGate />
       <UpdateBanner />
+      <SchemaBanner />
       <main style={{
         flex: 1,
         overflow: "auto",
-        ...(layout === "default" ? {
-          maxWidth: "1280px",
-          margin: "0 auto",
-          width: "100%",
-          padding: "0 24px",
-        } : {}),
       }}>
+        {/*
+          No maxWidth/margin/padding here anymore. The Layout toggle now drives page width via CSS
+          custom properties (--page-max-width / --page-padding) on :root, read by .main-content and
+          the seo-tools/indexer layout wrappers. Centering pages here would have double-constrained
+          those containers; letting them own their geometry means one toggle reaches every page.
+        */}
         {children}
       </main>
     </div>

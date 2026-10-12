@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Quote, Loader2, AlertTriangle, Search, ExternalLink } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { getDataForSeoKey } from "@/lib/seo/keys";
-import { EMOTIONS } from "@/lib/seo/contentAnalysis";
+import { EMOTIONS, type Citation } from "@/lib/seo/contentAnalysisShapes";
 
 const card = "panel";
 const POL: Record<string, string> = { positive: "var(--color-accent-green)", neutral: "var(--color-accent-orange)", negative: "var(--color-accent-red)" };
@@ -16,7 +16,7 @@ export default function CitationsPage() {
   const [keyword, setKeyword] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [data, setData] = useState<{ total: number; items: any[] } | null>(null);
+  const [data, setData] = useState<{ total: number; items: Citation[] } | null>(null);
   const hasKey = typeof window !== "undefined" && !!getDataForSeoKey();
 
   async function run() {
@@ -33,7 +33,7 @@ export default function CitationsPage() {
       const d = await res.json();
       if (!res.ok) { setErr(d.error || "error"); setLoading(false); return; }
       setData({ total: d.total ?? (d.items?.length || 0), items: d.items || [] });
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading(false);
   }
 
@@ -43,7 +43,7 @@ export default function CitationsPage() {
     const emo: Record<string, number> = Object.fromEntries(EMOTIONS.map(e => [e, 0]));
     const domains: Record<string, number> = {};
     const byDate: Record<string, number> = {};
-    items.forEach((c: any) => {
+    items.forEach(c => {
       pol[c.polarity] = (pol[c.polarity] || 0) + 1;
       EMOTIONS.forEach(e => { emo[e] += Number(c.emotions?.[e] || 0); });
       if (c.domain) domains[c.domain] = (domains[c.domain] || 0) + 1;
@@ -99,7 +99,7 @@ export default function CitationsPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {EMOTIONS.map(e => (
                   <div key={e} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <span style={{ fontSize: "12px", color: "var(--color-text-secondary)", width: "80px", flexShrink: 0 }}>{t(EM_KEY[e] as any)}</span>
+                    <span style={{ fontSize: "12px", color: "var(--color-text-secondary)", width: "80px", flexShrink: 0 }}>{t(EM_KEY[e] as Parameters<typeof t>[0])}</span>
                     <div style={{ flex: 1, height: "8px", borderRadius: "4px", background: "var(--color-bg)", overflow: "hidden" }}>
                       <div style={{ width: `${(agg.emo[e] / agg.emoMax) * 100}%`, height: "100%", background: "var(--color-accent-purple)" }} />
                     </div>
@@ -138,12 +138,12 @@ export default function CitationsPage() {
           <div className={card}>
             <div className="tool-section-label" style={{ marginBottom: "12px" }}>{t("seoCitList")} ({agg.n})</div>
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {data.items.map((c: any, i: number) => (
+              {data.items.map((c, i: number) => (
                 <div key={i} style={{ padding: "11px 13px", border: "1px solid var(--color-border)", borderRadius: "9px", fontSize: "13px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "9px", marginBottom: "4px", flexWrap: "wrap" }}>
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: POL[c.polarity] || "#888", flexShrink: 0 }} />
                     <a href={c.url} target="_blank" rel="noreferrer" style={{ flex: 1, minWidth: "200px", color: "var(--color-text-primary)", fontWeight: 600, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.title} <ExternalLink size={11} style={{ display: "inline", verticalAlign: "middle", color: "var(--color-text-tertiary)" }} /></a>
-                    {c.topEmotion && <span style={{ fontSize: "10px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", color: "var(--color-accent-purple)", background: "rgba(191,90,242,0.12)" }}>{t(EM_KEY[c.topEmotion] as any)}</span>}
+                    {c.topEmotion && <span style={{ fontSize: "10px", fontWeight: 700, padding: "2px 8px", borderRadius: "20px", color: "var(--color-accent-purple)", background: "rgba(191,90,242,0.12)" }}>{t(EM_KEY[c.topEmotion] as Parameters<typeof t>[0])}</span>}
                     <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{c.domain}{c.date ? ` · ${c.date}` : ""}</span>
                   </div>
                   {c.snippet && <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>{c.snippet}</div>}

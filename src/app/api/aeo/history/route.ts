@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
+import { hostOf } from "@/lib/seo/aeo";
+import { classifyCitations, type ClassifiedCitation } from "@/lib/seo/aeoCitationClassify";
+import { brandNamesFromHost } from "@/lib/seo/localPack";
+import { getAeoDomainLists } from "@/lib/visibility/domainListStore";
 
 // GET /api/aeo/history?questionId=…&days=90
 // Full per-engine check history for one tracked question — used by the expandable row.
 export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
@@ -16,20 +18,71 @@ export async function GET(req: Request) {
 
   const q = await prisma.trackedQuestion.findUnique({
     where: { id: questionId },
-    include: { site: { select: { userId: true } } },
+    include: { site: { select: { userId: true, url: true, aeoCompetitors: true } } },
   });
   if (!q || q.site.userId !== userId) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  // Wave A: classify citations for display with the site's own brand/competitor context. Done
+  // here, on the read, so checks stored before the wave badge correctly with zero migration —
+  // and recomputed fresh so an edited competitor list re-tags old answers too. The operator's
+  // domain-list overlay (R+) rides along for the same reason: a list edited after a check must
+  // re-badge that check, and the read path is where that happens for free.
+  const host = hostOf(q.site.url);
+  let competitorDomains: string[] = [];
+  try {
+    const parsed = q.site.aeoCompetitors ? JSON.parse(q.site.aeoCompetitors) : [];
+    if (Array.isArray(parsed)) {
+      competitorDomains = parsed.map((c: { domain?: unknown }) => hostOf(String(c?.domain ?? ""))).filter(Boolean);
+    }
+  } catch { competitorDomains = []; }
+  const brandDomains = [host, ...brandNamesFromHost(host)].filter(Boolean);
+  const extraLists = await getAeoDomainLists();
+
   const since = new Date(Date.now() - days * 86400000);
-  const checks = await prisma.aeoCheck.findMany({
-    where: { questionId, checkedAt: { gte: since } },
-    orderBy: { checkedAt: "asc" },
-    select: { engine: true, checkedAt: true, cited: true, url: true, snippet: true, error: true },
-  });
+  let checks;
+  try {
+    checks = await prisma.aeoCheck.findMany({
+      where: { questionId, checkedAt: { gte: since } },
+      orderBy: { checkedAt: "asc" },
+      select: {
+        id: true, engine: true, checkedAt: true, cited: true, status: true, url: true,
+        snippet: true, rank: true, model: true, searched: true, error: true,
+        sentiment: true, sentimentScore: true, sentimentNote: true,
+      },
+    });
+  } catch (e) {
+    // The sentiment columns are new in this wave; an instance without `db push` keeps its
+    // history readable rather than 500ing on the badge data it cannot have.
+    const v = e as { code?: string; message?: string };
+    if (v?.code === "P2022" || /sentiment(Score|Note)?\b.*(does not exist|no such column)/i.test(String(v?.message ?? ""))) {
+      return NextResponse.json({ notMigrated: true });
+    }
+    throw e;
+  }
+
+  // The heavy columns (full answer, citation list) are fetched only for the newest check per
+  // engine. The history strip renders dozens of dots; shipping a 12k answer behind each one
+  // would make opening a row cost megabytes for data nobody scrolls to.
+  const latestIds = new Map<string, string>();
+  for (const c of checks) latestIds.set(c.engine, c.id);
+  const detail = latestIds.size
+    ? await prisma.aeoCheck.findMany({
+        where: { id: { in: [...latestIds.values()] } },
+        select: { id: true, engine: true, answerText: true, citations: true, sentiment: true, sentimentScore: true, sentimentNote: true },
+      })
+    : [];
+
+  const latest: Record<string, { answerText: string | null; citations: ClassifiedCitation[]; sentiment: string | null; sentimentScore: number | null; sentimentNote: string | null }> = {};
+  for (const d of detail) {
+    let citations: ClassifiedCitation[] = [];
+    try { citations = d.citations ? classifyCitations(JSON.parse(d.citations), brandDomains, competitorDomains, extraLists) : []; } catch { citations = []; }
+    latest[d.engine] = { answerText: d.answerText, citations, sentiment: d.sentiment, sentimentScore: d.sentimentScore, sentimentNote: d.sentimentNote };
+  }
 
   return NextResponse.json({
     question: q.question,
     results: q.lastResults ? JSON.parse(q.lastResults) : {},
     checks,
+    latest,
   });
 }

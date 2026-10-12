@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
 import { makeOAuth2, type GoogleAccount } from '@/lib/ga4';
@@ -21,8 +20,7 @@ export type GA4AccountInfo = {
 // Lists every GA4 property visible across ALL linked Google accounts, plus a
 // per-account breakdown so the user can see what each account contributed.
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const accounts = (await prisma.account.findMany({
@@ -71,8 +69,8 @@ export async function GET() {
           pageToken = res.data.nextPageToken ?? undefined;
         } while (pageToken);
         accountsInfo.push({ email, count });
-      } catch (err: any) {
-        accountsInfo.push({ email, count: 0, error: err?.message ?? 'error' });
+      } catch (err) {
+        accountsInfo.push({ email, count: 0, error: (err as Error)?.message ?? 'error' });
       }
     })
   );

@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { loggedFetch } from '@/lib/providerLog/log';
 
 // POST { siteDbId: string, urls: string[] }
 // Checks each URL's indexation status via XML River API and persists results.
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const user = await prisma.user.findUnique({
@@ -33,8 +32,11 @@ export async function POST(req: Request) {
   for (const url of urls) {
     try {
       const apiUrl = `https://xmlriver.com/search_console/json/?user=${encodeURIComponent(user.xmlRiverUserId)}&key=${encodeURIComponent(user.xmlRiverApiKey)}&url=${encodeURIComponent(url)}`;
-      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(10000) });
+      // The credentials travel in the query string; the log stores origin and path only, so
+      // the key never reaches a row.
+      const { res, call } = await loggedFetch(apiUrl, { signal: AbortSignal.timeout(10000) }, { provider: 'xmlriver' });
       const data = await res.json().catch(() => ({}));
+      call.finish(data?.error ? { error: String(data.error).slice(0, 300), responseBody: data } : { responseBody: data });
 
       const xrStatus = data?.error
         ? 'error'

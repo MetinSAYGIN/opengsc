@@ -1,23 +1,136 @@
 "use client";
 
 import { useState } from "react";
-import { FileText, Wand2, Download, Loader2, ChevronDown, ChevronRight, BarChart3, LayoutTemplate } from "lucide-react";
+import { FileText, Wand2, Download, Loader2, ChevronDown, ChevronRight, BarChart3, LayoutTemplate, Globe } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { wireframeToMarkdown } from "@/lib/seo/outlineFormat";
 
 const W_COLOR = (w: number) => w >= 9 ? "#ff453a" : w >= 7 ? "#ff9f0a" : "#2997ff";
 const PRI: Record<string, string> = { high: "#ff453a", medium: "#ff9f0a", low: "#34c759" };
 const btnGhost: React.CSSProperties = { display: "flex", alignItems: "center", gap: "6px", padding: "8px 13px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 const btnPurple: React.CSSProperties = { display: "flex", alignItems: "center", gap: "7px", padding: "9px 18px", borderRadius: "8px", border: "none", background: "var(--color-accent-purple)", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" };
 
-const ents = (arr: any[]): { name: string; weight?: number }[] =>
+/** The dictionary lookup passed down to the panels below (what useLanguage returns). */
+type TranslateFn = ReturnType<typeof useLanguage>["t"];
+
+// ─── View shapes for the JSON the generator persists ───────────────────────────
+//
+// These describe the shape the generator is asked for (prompts.ts) — outline records' `data`,
+// landing wireframes, competitor skeletons, gap reports. Every read below still guards with
+// `?.` / `|| []` because records written by older generator versions can miss keys: the types
+// state the contract, the guards carry the history.
+
+interface OutlineMeta {
+  keyword: string;
+  target_word_count: number;
+  dominant_intent: string;
+  title_options: string[];
+  description_options: string[];
+  slug_options: string[];
+}
+interface SubIntent { intent: string; section?: string; word_count?: string | number; coverage?: string }
+interface WeightedEntity { name: string; weight?: number }
+interface TripletRef { subject?: string; predicate?: string; object?: string; strength?: number }
+interface VisualElement { type?: string; title?: string; description?: string }
+interface OutlineSection {
+  h_level: string;
+  heading: string;
+  word_count_total: number[];
+  word_count: number[];
+  word_count_self: number[];
+  summary: string;
+  entities_to_cover: (string | WeightedEntity)[];
+  keywords: string[];
+  visual_elements: (string | VisualElement)[];
+  copywriter_notes: string;
+  entity_connections: TripletRef[];
+  needs_real_experience: boolean;
+}
+interface OutlineEntity {
+  name: string;
+  type?: string;
+  weight?: number;
+  attributes?: Record<string, unknown>;
+  relationship_triplets: (string | TripletRef)[];
+}
+interface ContentStrategyLists {
+  structure_advantages: string[];
+  entity_advantages: string[];
+  structure_superiority: string[];
+  authority_signals: string[];
+}
+interface KeywordUsage { keyword: string; usage?: string }
+interface EntityAnalysisData {
+  content_strategy?: string | ContentStrategyLists;
+  authority_signals?: string[];
+  primary_entity?: {
+    name: string;
+    attributes?: Record<string, unknown>;
+    relationship_triplets: (string | TripletRef)[];
+    authority_validation?: string;
+  };
+  supporting_entities: { name: string; attributes?: Record<string, unknown>; relationship_to_primary?: string; content_integration?: string }[];
+  keyword_strategy?: { primary: (string | KeywordUsage)[]; lsi: (string | KeywordUsage)[]; long_tail: (string | KeywordUsage)[] };
+  visual_elements: { name: string; purpose?: string; eav_data?: string; prompt?: string }[];
+}
+interface OutlineData {
+  meta: OutlineMeta;
+  sections: OutlineSection[];
+  faq: { question?: string; answer_guideline?: string }[];
+  sub_intents: (string | SubIntent)[];
+  entities: OutlineEntity[];
+  entity_analysis?: EntityAnalysisData;
+  authority_fields_to_fill_by_user: string[];
+}
+interface WireframeBlock { type: string; source_section?: string; heading?: string; requirements: string[] }
+interface CompetitorSkeletonInfo {
+  position?: number;
+  url?: string;
+  domain?: string;
+  word_count?: number;
+  has_price_table?: boolean;
+  has_faq?: boolean;
+  headings?: string[];
+}
+interface GapReportData {
+  summary?: string;
+  prioritized_actions: string[];
+  ai_visibility?: {
+    cited_source_types_in_serp: string[];
+    brand_external_presence?: string;
+    main_gap?: string;
+    priority?: string;
+  };
+  content_gaps: { priority?: string; type?: string; item?: string }[];
+  extractable_fact_gaps: { priority?: string; fact?: string; competitor_has?: string; target_has?: string; fix?: string }[];
+  front_loading?: { priority?: string; issue?: string };
+  quality_issues: { priority?: string; issue?: string }[];
+}
+/**
+ * What SeoContentAnalysis hands this panel when a record turns out to be the new-style
+ * analysis shape rather than the legacy gap report — it has none of the keys below, and
+ * every read in GapReport is `?.`-guarded, so it renders as an empty report. Declared here
+ * (structurally, with `unknown` members) so that typed caller keeps compiling.
+ */
+interface AnalysisReportInput {
+  main_keyword?: string;
+  keyword?: string;
+  summary?: unknown;
+  entities?: unknown[];
+  recommendations?: unknown[];
+  competitor_gaps?: unknown[];
+  excluded?: unknown[];
+}
+
+const ents = (arr: (string | WeightedEntity)[] | undefined): { name: string; weight?: number }[] =>
   (arr || []).map(e => typeof e === "string" ? { name: e } : { name: e.name, weight: e.weight });
-const wc = (sec: any) => sec.word_count_total || sec.word_count;
+const wc = (sec: OutlineSection) => sec.word_count_total || sec.word_count;
 
 // ─── Content structure (sections, titles, FAQ) ───────────────────────────────────
-export function OutlineStructure({ outline }: { outline: any }) {
+export function OutlineStructure({ outline }: { outline: OutlineData }) {
   const { t } = useLanguage();
   const [open, setOpen] = useState<Record<number, boolean>>({ 0: true });
-  const meta = outline.meta || {};
+  const meta = outline.meta || ({} as OutlineMeta);
   return (
     <div>
       {meta.title_options?.length > 0 && <Block title={t("seoTitleOptions")}>{meta.title_options.map((x: string, i: number) => <Pill key={i} text={x} />)}</Block>}
@@ -28,7 +141,7 @@ export function OutlineStructure({ outline }: { outline: any }) {
         <div style={{ marginTop: "16px" }}>
           <div className="tool-section-label">{t("seoSections")}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            {outline.sections.map((sec: any, i: number) => (
+            {outline.sections.map((sec, i: number) => (
               <div key={i} style={{ border: "1px solid var(--color-border)", borderRadius: "8px", overflow: "hidden" }}>
                 <div onClick={() => setOpen(o => ({ ...o, [i]: !o[i] }))} style={{ display: "flex", alignItems: "center", gap: "9px", padding: "10px 12px", cursor: "pointer" }}>
                   {open[i] ? <ChevronDown size={15} color="var(--color-text-secondary)" /> : <ChevronRight size={15} color="var(--color-text-secondary)" />}
@@ -51,7 +164,7 @@ export function OutlineStructure({ outline }: { outline: any }) {
                       <div>
                         <b style={{ color: "var(--color-text-primary)" }}>{t("seoVisualElements")}:</b>
                         <ul style={{ margin: "4px 0 0", paddingLeft: "16px" }}>
-                          {sec.visual_elements.map((v: any, j: number) => (
+                          {sec.visual_elements.map((v, j: number) => (
                             <li key={j}>{typeof v === "string" ? v : <><b>{v.type}{v.title ? ` · ${v.title}` : ""}</b>{v.description ? ` — ${v.description}` : ""}</>}</li>
                           ))}
                         </ul>
@@ -62,7 +175,7 @@ export function OutlineStructure({ outline }: { outline: any }) {
                       <div>
                         <b style={{ color: "var(--color-text-primary)" }}>{t("seoEntityConnections")}:</b>
                         <div style={{ display: "flex", flexDirection: "column", gap: "3px", marginTop: "4px" }}>
-                          {sec.entity_connections.map((c: any, j: number) => <Triplet key={j} c={c} />)}
+                          {sec.entity_connections.map((c, j: number) => <Triplet key={j} c={c} />)}
                         </div>
                       </div>
                     )}
@@ -77,7 +190,7 @@ export function OutlineStructure({ outline }: { outline: any }) {
       {outline.faq?.length > 0 && (
         <Block title={t("seoFaq")}>
           <div style={{ width: "100%" }}>
-            {outline.faq.map((f: any, i: number) => (
+            {outline.faq.map((f, i: number) => (
               <div key={i} style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "4px" }}>
                 <b style={{ color: "var(--color-text-primary)" }}>{f.question}</b> — {f.answer_guideline}
               </div>
@@ -99,14 +212,14 @@ export function OutlineStructure({ outline }: { outline: any }) {
 }
 
 // ─── Entity analysis (sub-intents, EAV table, analysis) ──────────────────────────
-export function OutlineEntities({ outline }: { outline: any }) {
+export function OutlineEntities({ outline }: { outline: OutlineData }) {
   const { t } = useLanguage();
   return (
     <div>
       {outline.sub_intents?.length > 0 && (
         <Block title={t("seoSubIntentMap")}>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%" }}>
-            {outline.sub_intents.map((si: any, i: number) => typeof si === "string"
+            {outline.sub_intents.map((si, i: number) => typeof si === "string"
               ? <Pill key={i} text={si} />
               : (
                 <div key={i} style={{ fontSize: "12px", color: "var(--color-text-secondary)", padding: "7px 10px", border: "1px solid var(--color-border)", borderRadius: "7px" }}>
@@ -121,7 +234,7 @@ export function OutlineEntities({ outline }: { outline: any }) {
       {outline.entities?.length > 0 && (
         <Block title={t("seoEntityTable")}>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%" }}>
-            {outline.entities.map((e: any, i: number) => (
+            {outline.entities.map((e, i: number) => (
               <div key={i} style={{ padding: "8px 10px", border: "1px solid var(--color-border)", borderRadius: "7px", fontSize: "12px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" }}>
                   {e.weight != null && <WeightDot weight={e.weight} />}
@@ -135,7 +248,7 @@ export function OutlineEntities({ outline }: { outline: any }) {
                 )}
                 {e.relationship_triplets?.length > 0 && (
                   <div style={{ marginTop: "4px", display: "flex", flexDirection: "column", gap: "2px" }}>
-                    {e.relationship_triplets.map((tr: any, j: number) => <span key={j} style={{ color: "var(--color-text-tertiary)", fontFamily: "monospace", fontSize: "11px" }}>{typeof tr === "string" ? tr : `${tr.subject} → ${tr.predicate} → ${tr.object}`}</span>)}
+                    {e.relationship_triplets.map((tr, j: number) => <span key={j} style={{ color: "var(--color-text-tertiary)", fontFamily: "monospace", fontSize: "11px" }}>{typeof tr === "string" ? tr : `${tr.subject} → ${tr.predicate} → ${tr.object}`}</span>)}
                   </div>
                 )}
               </div>
@@ -149,14 +262,14 @@ export function OutlineEntities({ outline }: { outline: any }) {
   );
 }
 
-function attrs(o: any): string {
+function attrs(o: unknown): string {
   if (!o || typeof o !== "object") return "";
   return Object.entries(o).map(([k, v]) => `${k}: ${v}`).join(" · ");
 }
 
-function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
+function EntityAnalysis({ ea, t }: { ea: EntityAnalysisData; t: TranslateFn }) {
   const cs = ea.content_strategy;
-  const csLists: [string, any][] = cs && typeof cs === "object" ? [
+  const csLists: [string, string[]][] = cs && typeof cs === "object" ? [
     [t("seoStructAdvantages"), cs.structure_advantages],
     [t("seoEntityAdvantages"), cs.entity_advantages],
     [t("seoStructSuperiority"), cs.structure_superiority],
@@ -164,7 +277,7 @@ function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
   ] : [];
   const pe = ea.primary_entity;
   const kw = ea.keyword_strategy;
-  const kwGroups: [string, any][] = kw ? [[t("seoKwPrimary"), kw.primary], [t("seoKwLsi"), kw.lsi], [t("seoKwLongtail"), kw.long_tail]] : [];
+  const kwGroups: [string, (string | KeywordUsage)[]][] = kw ? [[t("seoKwPrimary"), kw.primary], [t("seoKwLsi"), kw.lsi], [t("seoKwLongtail"), kw.long_tail]] : [];
   const lab: React.CSSProperties = { color: "var(--color-text-primary)" };
   return (
     <Block title={t("seoEntityAnalysis")}>
@@ -189,7 +302,7 @@ function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
           <div style={{ padding: "10px 12px", border: "1px solid var(--color-border)", borderRadius: "8px" }}>
             <b style={lab}>{t("seoPrimaryEntity")}: {pe.name}</b>
             {attrs(pe.attributes) && <div style={{ marginTop: "3px" }}>{attrs(pe.attributes)}</div>}
-            {pe.relationship_triplets?.length > 0 && <div style={{ marginTop: "4px", display: "flex", flexDirection: "column", gap: "2px" }}>{pe.relationship_triplets.map((tr: any, j: number) => <span key={j} style={{ fontFamily: "monospace", fontSize: "11px", color: "var(--color-text-tertiary)" }}>{typeof tr === "string" ? tr : `${tr.subject} → ${tr.predicate} → ${tr.object}`}</span>)}</div>}
+            {pe.relationship_triplets?.length > 0 && <div style={{ marginTop: "4px", display: "flex", flexDirection: "column", gap: "2px" }}>{pe.relationship_triplets.map((tr, j: number) => <span key={j} style={{ fontFamily: "monospace", fontSize: "11px", color: "var(--color-text-tertiary)" }}>{typeof tr === "string" ? tr : `${tr.subject} → ${tr.predicate} → ${tr.object}`}</span>)}</div>}
             {pe.authority_validation && <div style={{ marginTop: "4px" }}><span style={{ fontWeight: 600 }}>{t("seoAuthorityValidation")}:</span> {pe.authority_validation}</div>}
           </div>
         )}
@@ -199,7 +312,7 @@ function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
           <div>
             <b style={lab}>{t("seoSupportingEntities")}</b>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "6px" }}>
-              {ea.supporting_entities.map((se: any, i: number) => (
+              {ea.supporting_entities.map((se, i: number) => (
                 <div key={i} style={{ padding: "8px 10px", border: "1px solid var(--color-border)", borderRadius: "7px" }}>
                   <b style={lab}>{se.name}</b>
                   {attrs(se.attributes) && <div style={{ marginTop: "2px" }}>{attrs(se.attributes)}</div>}
@@ -219,7 +332,7 @@ function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
               <div key={i} style={{ marginTop: "6px" }}>
                 <span style={{ fontWeight: 600, color: "var(--color-text-secondary)" }}>{label}:</span>
                 <ul style={{ margin: "2px 0 0", paddingLeft: "16px" }}>
-                  {v.map((x: any, j: number) => <li key={j}>{typeof x === "string" ? x : <><b style={lab}>{x.keyword}</b>{x.usage ? ` — ${x.usage}` : ""}</>}</li>)}
+                  {v.map((x, j: number) => <li key={j}>{typeof x === "string" ? x : <><b style={lab}>{x.keyword}</b>{x.usage ? ` — ${x.usage}` : ""}</>}</li>)}
                 </ul>
               </div>
             ))}
@@ -231,7 +344,7 @@ function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
           <div>
             <b style={lab}>{t("seoEavVisuals")}</b>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "6px" }}>
-              {ea.visual_elements.map((v: any, i: number) => (
+              {ea.visual_elements.map((v, i: number) => (
                 <div key={i} style={{ padding: "8px 10px", border: "1px solid var(--color-border)", borderRadius: "7px" }}>
                   <b style={lab}>{v.name}</b>
                   {v.purpose && <div style={{ marginTop: "2px" }}><span style={{ fontWeight: 600 }}>{t("seoVisualPurpose")}:</span> {v.purpose}</div>}
@@ -248,9 +361,9 @@ function EntityAnalysis({ ea, t }: { ea: any; t: any }) {
 }
 
 // ─── Combined view used by the generator page ────────────────────────────────────
-export function OutlineView({ outline, onGenText, genTextLoading }: { outline: any; onGenText?: () => void; genTextLoading?: boolean }) {
+export function OutlineView({ outline, onGenText, genTextLoading }: { outline: OutlineData; onGenText?: () => void; genTextLoading?: boolean }) {
   const { t } = useLanguage();
-  const meta = outline.meta || {};
+  const meta = outline.meta || ({} as OutlineMeta);
   function download() {
     const blob = new Blob([JSON.stringify(outline, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -296,12 +409,6 @@ export function SerpIntentPanel({ analysis }: { analysis: { dominantIntent: stri
   );
 }
 
-// ─── Landing wireframe (block skeleton) ──────────────────────────────────────────
-const BLOCK_COLOR: Record<string, string> = {
-  HERO_FORM: "#bf5af2", USP_BAR: "#2997ff", ITEM_CARD_LIST: "#ff9f0a", HOW_IT_WORKS: "#34c759",
-  COMPARISON_TABLE: "#ff9f0a", PRICING_TABLE: "#ff9f0a", FEATURE_LIST: "#2997ff", GALLERY: "#bf5af2",
-  REVIEWS: "#34c759", TRUST_BADGES: "#34c759", MAP: "#2997ff", FAQ: "#8e8e93", TEXT_BLOCK: "#8e8e93", CTA_BANNER: "#ff453a",
-};
 
 // Visual landing wireframe: renders each block as a design-free page mockup — placeholder
 // bars, hatched image areas, CTA button stubs and requirement cards (orange, checkable) —
@@ -320,10 +427,16 @@ function ReqCard({ text }: { text: string }) {
     </div>
   );
 }
-export function WireframeView({ wireframe }: { wireframe: any }) {
+export function WireframeView({ wireframe, keyword }: { wireframe: { blocks?: WireframeBlock[] }; keyword?: string }) {
   const { t } = useLanguage();
   const blocks = Array.isArray(wireframe?.blocks) ? wireframe.blocks : [];
   if (!blocks.length) return null;
+  function downloadMd() {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([wireframeToMarkdown(wireframe, keyword)], { type: "text/markdown" }));
+    a.download = `wireframe-${(keyword || "landing").replace(/\s+/g, "-").slice(0, 40)}.md`;
+    a.click();
+  }
   const BUTTON_BLOCKS = new Set(["HERO_FORM", "CTA_BANNER"]);
   const IMAGE_BLOCKS = new Set(["USP_BAR", "GALLERY", "MAP"]);
   const hatch: React.CSSProperties = {
@@ -333,14 +446,19 @@ export function WireframeView({ wireframe }: { wireframe: any }) {
   };
   return (
     <div className="panel">
-      <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 4px", color: "var(--color-text-primary)", display: "flex", alignItems: "center", gap: "8px" }}>
-        <LayoutTemplate size={18} color="var(--color-accent-purple)" /> {t("seoWireframeTitle")}
-      </h3>
-      <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", margin: "0 0 12px" }}>{t("seoWireframeSub")}</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px" }}>
+        <div>
+          <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 4px", color: "var(--color-text-primary)", display: "flex", alignItems: "center", gap: "8px" }}>
+            <LayoutTemplate size={18} color="var(--color-accent-purple)" /> {t("seoWireframeTitle")}
+          </h3>
+          <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", margin: "0 0 12px" }}>{t("seoWireframeSub")}</p>
+        </div>
+        <button onClick={downloadMd} style={{ ...btnGhost, flexShrink: 0 }}><Download size={14} /> MD</button>
+      </div>
 
       {/* The page: one bordered canvas, blocks separated by dashed cut lines */}
       <div style={{ border: "1px solid var(--color-border)", borderRadius: "12px", overflow: "hidden", background: "var(--color-card)" }}>
-        {blocks.map((b: any, i: number) => {
+        {blocks.map((b, i: number) => {
           const reqs: string[] = Array.isArray(b.requirements) ? b.requirements : [];
           return (
             <div key={i} style={{ padding: "18px 22px 22px", borderTop: i ? "1px dashed var(--color-border)" : "none" }}>
@@ -379,9 +497,65 @@ export function WireframeView({ wireframe }: { wireframe: any }) {
   );
 }
 
-// ─── Gap report (content analysis) ───────────────────────────────────────────────
-export function GapReport({ report }: { report: any }) {
+// ─── Landing top-page skeletons: how the ranking pages are actually built ─────────
+// Each card redraws a scraped competitor's real structure — heading tree in document order
+// plus price-table/FAQ markers — so you can eyeball the block order that ranks before looking
+// at the generated wireframe below it.
+const HEAD_CHIP: Record<string, React.CSSProperties> = {
+  H1: { background: "var(--color-bg)", color: "var(--color-text-secondary)" },
+  H2: { background: "rgba(41,151,255,0.12)", color: "var(--color-accent-blue)" },
+  H3: { background: "rgba(52,199,89,0.14)", color: "var(--color-accent-green)" },
+};
+export function CompetitorSkeletons({ competitors }: { competitors: CompetitorSkeletonInfo[] }) {
   const { t } = useLanguage();
+  const list = (Array.isArray(competitors) ? competitors : []).filter(c => Array.isArray(c.headings) && c.headings.length);
+  if (!list.length) return null;
+  return (
+    <div className="panel">
+      <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 4px", color: "var(--color-text-primary)", display: "flex", alignItems: "center", gap: "8px" }}>
+        <Globe size={18} color="var(--color-accent-blue)" /> {t("seoLpCompetitorsTitle")}
+      </h3>
+      <p style={{ fontSize: "12px", color: "var(--color-text-tertiary)", margin: "0 0 12px" }}>{t("seoLpCompetitorsSub")}</p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "10px" }}>
+        {list.map((c, i: number) => (
+          <div key={i} style={{ border: "1px solid var(--color-border)", borderRadius: "10px", padding: "12px 14px", background: "var(--color-bg)", display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", flexShrink: 0 }}>#{c.position || i + 1}</span>
+              <a href={c.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-accent-blue)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {c.domain || c.url}
+              </a>
+              {!!c.word_count && <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", flexShrink: 0 }}>{c.word_count} {t("seoWordsShort")}</span>}
+              {c.has_price_table && <span style={{ ...badge, background: "rgba(255,159,10,0.14)", color: "var(--color-accent-orange)" }}>{t("seoCompPriceTable")}</span>}
+              {c.has_faq && <span style={{ ...badge, background: "var(--color-card)", color: "var(--color-text-secondary)" }}>FAQ</span>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "5px", maxHeight: "300px", overflowY: "auto", borderTop: "1px solid var(--color-border)", paddingTop: "8px" }}>
+              {(c.headings as string[]).map((h: string, j: number) => {
+                const m = h.match(/^(H[1-6])\s*:\s*(.*)$/);
+                const level = m ? m[1] : "H2";
+                const text = (m ? m[2] : h).trim();
+                if (!text) return null;
+                return (
+                  <div key={j} style={{ display: "flex", gap: "6px", alignItems: "flex-start", paddingLeft: (Number(level[1]) - 1) * 10 }}>
+                    <span style={{ fontSize: "8.5px", fontWeight: 700, padding: "2px 4px", borderRadius: "4px", flexShrink: 0, marginTop: "1px", ...(HEAD_CHIP[level] || HEAD_CHIP.H3) }}>{level}</span>
+                    <span style={{ fontSize: "11px", color: level === "H1" ? "var(--color-text-primary)" : "var(--color-text-secondary)", lineHeight: 1.4, fontWeight: level === "H1" ? 700 : 400 }}>{text}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+const badge: React.CSSProperties = { fontSize: "9px", fontWeight: 700, padding: "2px 7px", borderRadius: "20px", flexShrink: 0, letterSpacing: "0.03em" };
+
+// ─── Gap report (content analysis) ───────────────────────────────────────────────
+export function GapReport({ report: input }: { report: GapReportData | AnalysisReportInput }) {
+  const { t } = useLanguage();
+  // Restated under the rendering shape: the guards below (`?.length`, `&&`) already treat
+  // every field as possibly absent, which is the only claim the cast makes.
+  const report = input as GapReportData;
   return (
     <div className="panel">
       <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 6px", color: "var(--color-text-primary)", display: "flex", alignItems: "center", gap: "8px" }}>
@@ -405,22 +579,22 @@ export function GapReport({ report }: { report: any }) {
           </div>
         </Section>
       )}
-      {report.content_gaps?.length > 0 && <Section title={t("seoContentGaps")}>{report.content_gaps.map((g: any, i: number) => <Row key={i} pri={g.priority}><b>{g.type}:</b> {g.item}</Row>)}</Section>}
+      {report.content_gaps?.length > 0 && <Section title={t("seoContentGaps")}>{report.content_gaps.map((g, i: number) => <Row key={i} pri={g.priority}><b>{g.type}:</b> {g.item}</Row>)}</Section>}
       {report.extractable_fact_gaps?.length > 0 && (
         <Section title={t("seoFactGaps")}>
-          {report.extractable_fact_gaps.map((g: any, i: number) => (
+          {report.extractable_fact_gaps.map((g, i: number) => (
             <Row key={i} pri={g.priority}><b>{g.fact}</b> — {t("seoCompetitorHas")} {g.competitor_has || "—"}; {t("seoYouHave")} {g.target_has || "—"}. {g.fix && <span style={{ color: "var(--color-accent-green)" }}>→ {g.fix}</span>}</Row>
           ))}
         </Section>
       )}
       {report.front_loading?.issue && <Section title={t("seoFrontLoading")}><Row pri={report.front_loading.priority}>{report.front_loading.issue}</Row></Section>}
-      {report.quality_issues?.length > 0 && <Section title={t("seoQuality")}>{report.quality_issues.map((q: any, i: number) => <Row key={i} pri={q.priority}>{q.issue}</Row>)}</Section>}
+      {report.quality_issues?.length > 0 && <Section title={t("seoQuality")}>{report.quality_issues.map((q, i: number) => <Row key={i} pri={q.priority}>{q.issue}</Row>)}</Section>}
     </div>
   );
 }
 
 // ─── shared bits ──────────────────────────────────────────────────────────────
-function Triplet({ c }: { c: any }) {
+function Triplet({ c }: { c: TripletRef }) {
   return (
     <span style={{ fontFamily: "monospace", fontSize: "11px", color: "var(--color-text-tertiary)" }}>
       {c.subject} <span style={{ color: "var(--color-accent-blue)" }}>→ {c.predicate} →</span> {c.object}

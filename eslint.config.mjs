@@ -12,7 +12,37 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Prisma client output (prisma generate) — generated code, never lint it.
+    "src/generated/**",
   ]),
+  {
+    // Plain CommonJS Node scripts — require() is the correct module system there.
+    files: ["scripts/**/*.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  {
+    // Sync setState inside effects is a deliberate idiom in this codebase (reading
+    // localStorage on mount to stay SSR-safe, resetting page when filters change).
+    // Rewriting 160+ such sites without UI tests is risk without payoff — kept visible
+    // as warnings for gradual cleanup instead of failing the build.
+    rules: { "react-hooks/set-state-in-effect": "warn" },
+  },
+  {
+    // Conventional unused-vars hygiene: underscore-prefixed names are intentional
+    // placeholders, and `const { [id]: _drop, ...rest } = x` omits keys by rest-sibling.
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_", ignoreRestSiblings: true },
+      ],
+    },
+  },
+  {
+    // Plain <img> on purpose for remote images of arbitrary origin (user avatars, partner
+    // logos, provider-hosted screenshots): next/image remotePatterns cannot cover domains
+    // that only become known at runtime, and these are all explicitly sized.
+    rules: { "@next/next/no-img-element": "off" },
+  },
 ]);
 
 export default eslintConfig;

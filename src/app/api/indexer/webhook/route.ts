@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { rawExec } from "@/lib/db/raw";
 
 // Valid bot types the doorway may report directly (kept in sync with the doorway script).
 const VALID_BOT_TYPES = ["google", "bing", "yandex", "mailru", "ai", "other"];
@@ -58,8 +59,24 @@ export async function POST(req: Request) {
     const botType = isRedirect
       ? "redirect"
       : (VALID_BOT_TYPES.includes(reported) ? reported : getBotType(userAgent || ""));
+    const code = statusCode ? parseInt(statusCode) : 200;
+    const dateStr = new Date().toISOString().split("T")[0];
 
-    // Create log entry
+    // 1. Increment pre-aggregated daily stat (fast O(1) upsert)
+    const statId = `stat_${domain.id}_${dateStr}_${botType}_${code}`;
+    await rawExec(
+      `INSERT INTO "IndexerDailyStat" ("id", "domainId", "date", "botType", "statusCode", "count")
+       VALUES (?, ?, ?, ?, ?, 1)
+       ON CONFLICT("domainId", "date", "botType", "statusCode")
+       DO UPDATE SET "count" = "count" + 1`,
+      statId,
+      domain.id,
+      dateStr,
+      botType,
+      code
+    );
+
+    // 2. Create raw log entry (for 7-day live inspection window)
     await prisma.indexerLog.create({
       data: {
         domainId: domain.id,
@@ -67,10 +84,15 @@ export async function POST(req: Request) {
         ip: ip || "0.0.0.0",
         userAgent: userAgent || "Unknown",
         botType,
-        statusCode: statusCode ? parseInt(statusCode) : 200,
+        statusCode: code,
         referer: referer || null,
       },
     });
+
+    // 3. Periodic log retention purge (~1% of requests) to keep raw logs clean (capped at 5,000 rows)
+    if (Math.random() < 0.01) {
+      rawExec(`DELETE FROM "IndexerLog" WHERE "id" NOT IN (SELECT "id" FROM "IndexerLog" ORDER BY "timestamp" DESC LIMIT 5000)`).catch(() => {});
+    }
 
     // Update pages and subdomains counts on the domain dynamically
     // A page is logged, let's simulate the page counts growth
@@ -90,7 +112,6 @@ export async function POST(req: Request) {
     // money-site pages actually get discovered/indexed. Only for real 200 bot serves —
     // a 304/403/redirect renders no HTML, so there is nothing to inject into.
     let links: string[] = [];
-    const code = statusCode ? parseInt(statusCode) : 200;
     const isServedBot = !isRedirect && botType !== "redirect" && code === 200;
 
     if (isServedBot) {
@@ -114,7 +135,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: true, links });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[Indexer Webhook Error]", e);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

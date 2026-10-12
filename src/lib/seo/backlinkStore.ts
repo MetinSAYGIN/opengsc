@@ -1,0 +1,263 @@
+// Storage for the backlink profile: referring domains and daily summaries.
+//
+// The interesting part is `syncRefDomains`. A provider only tells you what is live right now,
+// but the question people actually have is "what changed" — and change is the difference
+// between this pull and the last one. Computing it locally means new and lost links fall out of
+// a single request rather than costing a second one, and it works identically for an imported
+// CSV, which has no notion of history at all.
+//
+// Raw SQL with swallowed errors throughout, like the rest of the metrics layer: on a database
+// that has not run `prisma db push`, every one of these returns empty instead of taking a page
+// down with it.
+
+import { runUpsert } from "@/lib/db/upsert";
+import { rawQuery, rawExec } from "@/lib/db/raw";
+
+export interface RefDomainRecord {
+  refDomain: string;
+  provider: string;
+  dr: number | null;
+  linksToTarget: number | null;
+  dofollow: boolean;
+  firstSeen: string;
+  /** Majestic-only extras, empty on Ahrefs rows. */
+  cf: number | null;
+  topic: string;
+  ip: string;
+  lost: boolean;
+  lostAt: string;
+  source: "api" | "csv";
+  fetchedAt: string;
+}
+
+export interface SyncResult {
+  seen: number;
+  added: number;
+  lost: number;
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+export const normDomain = (d: string) =>
+  d.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+
+// Row shapes rawQuery hands back (untyped at the driver boundary): booleans/flags arrive as
+// 0/1 on SQLite and nullables stay null, so the mappers below re-coerce each field.
+interface RefDomainRowDb {
+  provider: string; refDomain: string; dr: number | null; linksToTarget: number | null;
+  dofollow: number | boolean; firstSeen: string | null; cf: number | null; topic: string | null;
+  ip: string | null; lost: number | boolean; lostAt: string | null;
+  source: string; fetchedAt: string | number | Date;
+}
+
+/**
+ * Read one target's stored referring domains. `provider` scopes to one provider's view —
+ * except the literal `"all"`, which crosses providers for the merged tab: dedup happens
+ * downstream, because the store deliberately keeps both providers' row for a domain both
+ * have seen (their metrics are different numbers, not conflicting ones).
+ */
+export async function readRefDomains(
+  target: string,
+  opts: { provider?: string; includeLost?: boolean; limit?: number } = {},
+): Promise<RefDomainRecord[]> {
+  const provider = opts.provider ?? "ahrefs";
+  // High on purpose: full profile pulls stopped having a row ceiling, and this read is what the
+  // profile tab renders — clamping it here would bring the ceiling back through the back door.
+  const limit = Math.max(1, Math.min(100000, opts.limit ?? 500));
+  try {
+    const rows: RefDomainRowDb[] = await rawQuery(
+      `SELECT provider, refDomain, dr, linksToTarget, dofollow, firstSeen, cf, topic, ip,
+              lost, lostAt, source, fetchedAt
+         FROM "RefDomainRow"
+        WHERE target = ?${provider === "all" ? "" : " AND provider = ?"}${opts.includeLost ? "" : " AND lost = 0"}
+        ORDER BY lost ASC, dr DESC
+        LIMIT ${limit}`,
+      ...(provider === "all" ? [normDomain(target)] : [normDomain(target), provider]),
+    );
+    return rows.map(r => ({
+      refDomain: r.refDomain,
+      provider: r.provider,
+      dr: r.dr == null ? null : Number(r.dr),
+      linksToTarget: r.linksToTarget == null ? null : Number(r.linksToTarget),
+      dofollow: !!r.dofollow,
+      firstSeen: r.firstSeen ?? "",
+      cf: r.cf == null ? null : Number(r.cf),
+      topic: r.topic ?? "",
+      ip: r.ip ?? "",
+      lost: !!r.lost,
+      lostAt: r.lostAt ?? "",
+      source: r.source === "csv" ? "csv" : "api",
+      fetchedAt: new Date(r.fetchedAt).toISOString(),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface RefDomainInput {
+  refDomain: string;
+  dr?: number | null;
+  linksToTarget?: number | null;
+  dofollow?: boolean;
+  firstSeen?: string;
+  cf?: number | null;
+  topic?: string;
+  ip?: string;
+}
+
+/**
+ * Writes the live set and marks everything else as lost.
+ *
+ * `complete` is the crucial argument. A full pull can conclude that an absent domain is gone; a
+ * partial one — a CSV filtered to DR ≥ 50, or a capped limit — absolutely cannot, and marking
+ * those as lost would invent link losses that never happened and fire alerts about them. When
+ * in doubt the caller passes `false` and only additions are recorded.
+ */
+export async function syncRefDomains(
+  target: string,
+  rows: RefDomainInput[],
+  opts: { provider?: string; source?: "api" | "csv"; complete: boolean },
+): Promise<SyncResult> {
+  const t = normDomain(target);
+  const provider = opts.provider ?? "ahrefs";
+  const source = opts.source ?? "api";
+  const at = new Date().toISOString();
+  const day = today();
+
+  // Read every stored row, not a window: the lost-marking pass below compares against this set,
+  // and a truncated `before` would let domains outside the window escape being marked lost.
+  const before = await readRefDomains(t, { provider, includeLost: true, limit: 100000 });
+  const knownLive = new Set(before.filter(r => !r.lost).map(r => r.refDomain));
+  const seenNow = new Set<string>();
+  let added = 0;
+
+  for (const r of rows) {
+    const d = normDomain(r.refDomain);
+    if (!d.includes(".")) continue;
+    seenNow.add(d);
+    if (!knownLive.has(d)) added++;
+    try {
+      await runUpsert({
+        table: "RefDomainRow",
+        conflict: ["target", "refDomain", "provider"],
+        values: {
+          target: t, refDomain: d, provider,
+          dr: r.dr ?? null,
+          linksToTarget: r.linksToTarget ?? null,
+          dofollow: r.dofollow === false ? 0 : 1,
+          firstSeen: r.firstSeen ?? "",
+          cf: r.cf ?? null,
+          topic: r.topic ?? "",
+          ip: r.ip ?? "",
+          // A domain present in this pull is live by definition, so both insert and update
+          // reset the lost flag — that is how a link that came back stops reading as lost.
+          lost: 0, lostAt: "",
+          source, fetchedAt: at,
+        },
+        update: {
+          // An API pull just measured these values — they overwrite. A CSV import keeps the
+          // keep-semantics it has always had: its file may be weeks old and column-poor, and
+          // it must never erase fresher, richer API data. (This is what let a bad mapping
+          // linger: the wrong links values from the first Majestic pull would have survived
+          // every re-pull had API pulls also kept.)
+          dr: r.dr != null ? "set" : "keep",
+          linksToTarget: source === "api" ? "set" : "keep",
+          dofollow: "set",
+          firstSeen: source === "api" && r.firstSeen ? "set" : "keepEmpty",
+          cf: r.cf != null ? "set" : "keep",
+          topic: source === "api" && r.topic ? "set" : "keep",
+          ip: source === "api" && r.ip ? "set" : "keep",
+          lost: "set", lostAt: "set",
+          source: "set", fetchedAt: "set",
+        },
+      });
+    } catch { /* best effort */ }
+  }
+
+  let lost = 0;
+  if (opts.complete) {
+    for (const prev of before) {
+      if (prev.lost || seenNow.has(prev.refDomain)) continue;
+      try {
+        await rawExec(
+          `UPDATE "RefDomainRow" SET lost = 1, lostAt = ? WHERE target = ? AND refDomain = ? AND provider = ?`,
+          day, t, prev.refDomain, provider,
+        );
+        lost++;
+      } catch { /* best effort */ }
+    }
+  }
+
+  return { seen: seenNow.size, added, lost };
+}
+
+// ─── Daily summary ─────────────────────────────────────────────────────────────
+
+export interface Snapshot {
+  date: string;
+  refDomains: number | null;
+  backlinks: number | null;
+  dofollowPct: number | null;
+}
+
+/** One row per day: a second pull on the same day corrects it rather than adding noise. */
+export async function writeSnapshot(
+  target: string,
+  s: { refDomains?: number | null; backlinks?: number | null; dofollowPct?: number | null },
+  // `date` backfills a past day (DataForSEO's monthly history import); "history" marks such a
+  // row so it can never be mistaken for a pull this instance made.
+  opts: { provider?: string; source?: "api" | "csv" | "history"; date?: string } = {},
+): Promise<void> {
+  try {
+    await runUpsert({
+      table: "BacklinkSnapshot",
+      conflict: ["target", "date", "provider"],
+      values: {
+        target: normDomain(target), date: opts.date ?? today(), provider: opts.provider ?? "ahrefs",
+        refDomains: s.refDomains ?? null,
+        backlinks: s.backlinks ?? null,
+        dofollowPct: s.dofollowPct ?? null,
+        source: opts.source ?? "api",
+        createdAt: new Date().toISOString(),
+      },
+      // `createdAt` is absent from the update map on purpose: a correction later the same day
+      // should not move the moment the day's row was first written.
+      update: {
+        refDomains: "keep", backlinks: "keep", dofollowPct: "keep",
+        source: "set",
+      },
+    });
+  } catch { /* best effort */ }
+}
+
+export async function readSnapshots(target: string, limit = 90, provider = "ahrefs"): Promise<Snapshot[]> {
+  try {
+    const rows: { date: string; refDomains: number | null; backlinks: number | null; dofollowPct: number | null }[] = await rawQuery(
+      `SELECT date, refDomains, backlinks, dofollowPct FROM "BacklinkSnapshot"
+        WHERE target = ? AND provider = ? ORDER BY date DESC LIMIT ${Math.max(1, Math.min(365, limit))}`,
+      normDomain(target), provider,
+    );
+    return rows.map(r => ({
+      date: r.date,
+      refDomains: r.refDomains == null ? null : Number(r.refDomains),
+      backlinks: r.backlinks == null ? null : Number(r.backlinks),
+      dofollowPct: r.dofollowPct == null ? null : Number(r.dofollowPct),
+    })).reverse();
+  } catch {
+    return [];
+  }
+}
+
+/** Referring domains marked lost since a given day — the input to the lost-link alert. */
+export async function lostSince(target: string, sinceDay: string, minDr: number, provider = "ahrefs") {
+  try {
+    const rows: { refDomain: string; dr: number | null; lostAt: string }[] = await rawQuery(
+      `SELECT refDomain, dr, lostAt FROM "RefDomainRow"
+        WHERE target = ? AND provider = ? AND lost = 1 AND lostAt >= ? AND dr >= ?
+        ORDER BY dr DESC LIMIT 50`,
+      normDomain(target), provider, sinceDay, minDr,
+    );
+    return rows.map(r => ({ refDomain: r.refDomain, dr: Number(r.dr ?? 0), lostAt: r.lostAt }));
+  } catch {
+    return [];
+  }
+}

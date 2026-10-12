@@ -1,24 +1,34 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { fetchLLM } from "@/lib/llm";
+import { rawQuery } from "@/lib/db/raw";
 
 // POST /api/linkwatch/insights { aiProvider, aiApiKey, model?, aiBaseUrl?, language? }
 // AI summary over the stored mentions — themes, mention contexts, anchor patterns,
 // content/PR opportunities (the analysis step of detailed.com/ai-backlinks-api).
 
+// One stored LinkMention row as the SELECT names it (rawQuery stays untyped).
+interface MentionRow {
+  brand: string;
+  urlFrom: string;
+  domainFrom: string;
+  title: string | null;
+  anchor: string | null;
+  drFrom: number;
+  firstSeen: string | null;
+  dofollow: boolean | null;
+}
+
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const b = await req.json().catch(() => ({}));
   const apiKey = String(b.aiApiKey ?? "");
   if (!apiKey) return NextResponse.json({ error: "no_ai_key" }, { status: 400 });
 
-  let mentions: any[] = [];
+  let mentions: MentionRow[] = [];
   try {
-    mentions = await prisma.$queryRawUnsafe(
+    mentions = await rawQuery<MentionRow[]>(
       `SELECT brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, dofollow
        FROM "LinkMention" WHERE userId = ? ORDER BY drFrom DESC LIMIT 400`, userId);
   } catch { return NextResponse.json({ error: "not_migrated" }, { status: 500 }); }

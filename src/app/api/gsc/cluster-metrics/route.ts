@@ -1,9 +1,9 @@
+import { dbAny } from "@/lib/prisma";
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
 import { verifyAuthOrShare } from '@/lib/authShare';
+import { daysParam } from '@/lib/periodWindow';
 
 function periodToDays(period: string): number {
   const today = new Date();
@@ -114,7 +114,7 @@ export async function GET(req: Request) {
   const period = searchParams.get('period') ?? '28d';
 
   const [clusterDefs, groupDefs] = await Promise.all([
-    (prisma as any).topicCluster.findMany({ where: { siteId }, orderBy: { createdAt: 'asc' } }),
+    dbAny.topicCluster.findMany({ where: { siteId }, orderBy: { createdAt: 'asc' } }),
     prisma.contentGroup.findMany({ where: { siteId }, orderBy: { createdAt: 'asc' } }),
   ]);
 
@@ -123,7 +123,7 @@ export async function GET(req: Request) {
   }
 
   // Date windows
-  const days = periodToDays(period);
+  const days = daysParam(searchParams.get('days')) ?? periodToDays(period);
   const endDate = new Date(); endDate.setDate(endDate.getDate() - 2);
   const startDate = new Date(endDate); startDate.setDate(endDate.getDate() - days + 1);
   const prevEnd = new Date(startDate); prevEnd.setDate(startDate.getDate() - 1);
@@ -144,7 +144,8 @@ export async function GET(req: Request) {
     groupDefs.length   > 0 ? queryGSC(accounts, site.siteId, fmt(prevStart), fmt(prevEnd),  'page',  500) : Promise.resolve([]),
   ]);
 
-  const toRow = (r: any) => ({
+  // A GSC searchanalytics row exactly as queryGSC above returns it.
+  const toRow = (r: Awaited<ReturnType<typeof queryGSC>>[number]) => ({
     label:  r.keys?.[0] ?? '',
     clicks: r.clicks ?? 0,
     impr:   r.impressions ?? 0,

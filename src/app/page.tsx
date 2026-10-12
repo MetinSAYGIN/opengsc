@@ -1,27 +1,50 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, Suspense } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Search, Eye, EyeOff, Star, ExternalLink,
-  ArrowUpDown, SlidersHorizontal, Sparkles, Percent, MoveUp,
+  Search, EyeOff, Star, ExternalLink,
+  ArrowUpDown, SlidersHorizontal, 
   Globe, Monitor, FileText, ChevronDown, Check,
-  Image, Video, Newspaper, Compass,
-  Download, Tag, X, Loader2, RefreshCw,
+  Image as ImageIcon, Video, Newspaper, Compass,
+  Download, Tag, X, Loader2, 
 } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from "recharts";
+import { buildCandleRows } from "@/lib/chartCandles";
+import { CandlePanes, useChartTypePref } from "@/components/CandleChartParts";
+import { drSeriesText, type DrPoint } from "@/components/DrSparkline";
 import { usePrivacy } from "@/lib/PrivacyContext";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { useHealthStatus } from "@/components/SiteHealthPanel";
+import { loadSyncedAt, rememberSyncedAt, fetchSyncState, watchSync, type SyncState } from "@/lib/syncedAt";
+import { marketFor } from "@/lib/seo/market";
+import { usePersistedState, isGscPeriod, isIsoDate, isSearchType } from "@/lib/usePersistedState";
+import { getAhrefsDrKey } from "@/lib/seo/keys";
+import UptimeDot, { uptimeBadgeLabel } from "@/components/uptime/UptimeDot";
+import type { UptimeBadge } from "@/lib/uptime/types";
+
+// The uptime status reads as one more site tag (online/offline) in the card footer, next
+// to market and tags. The tint pairs with the status word, so colour is never the only
+// carrier of meaning — the tooltip holds the full story (status · since · 24h). Colours
+// go through the theme vars so both light and dark stay readable, and the word matches
+// the dot inside (the dot reads the same vars).
+const UPTIME_MUTED = { bg: "color-mix(in srgb, var(--color-text-secondary) 12%, transparent)", fg: "var(--color-text-secondary)" };
+const UPTIME_CHIP_LOOK: Record<UptimeBadge["status"], { bg: string; fg: string }> = {
+  up: { bg: "color-mix(in srgb, var(--color-accent-green) 14%, transparent)", fg: "var(--color-accent-green)" },
+  degraded: { bg: "color-mix(in srgb, var(--color-accent-orange) 16%, transparent)", fg: "var(--color-accent-orange)" },
+  down: { bg: "color-mix(in srgb, var(--color-accent-red) 16%, transparent)", fg: "var(--color-accent-red)" },
+  unknown: UPTIME_MUTED,
+  paused: UPTIME_MUTED,
+  checker_offline: UPTIME_MUTED,
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Metric = "clicks" | "impressions" | "ctr" | "position";
 type SortBy = "az" | "total" | "growth" | "growth_pct" | "decline" | "decline_imp" | "decline_pos" | "tags";
-type Comparison = "disabled" | "previous" | "yoy" | "prev_month" | "custom";
-type PeriodView = "day" | "week" | "month";
+type Comparison = "disabled" | "previous" | "yoy" | "prev_month";
 type SearchType = "web" | "discover" | "news" | "image" | "video";
 type BrandedFilter = "all" | "branded" | "nonbranded";
+type UptimeFilter = "all" | "issues" | "down" | "up";
 
 // ─── Metric config ────────────────────────────────────────────────────────────
 const MC = {
@@ -40,10 +63,26 @@ interface Pt {
   cCN: number; iCN: number; tCN: number; pCN: number;
 }
 
-function norm(arr: number[]): number[] {
-  const lo = Math.min(...arr), hi = Math.max(...arr);
-  return hi === lo ? arr.map(() => 50) : arr.map(v => Math.round(((v - lo) / (hi - lo)) * 85 + 5));
-}
+// One dashboard row: a Prisma Site as the portfolio API returns it, spread together with the
+// chart data, summary and hasData flag that route computes. Discovery rows (/api/gsc/sites GET)
+// carry only the Site fields — sitesWithData fills data/summary in for those before rendering.
+type Summary = Record<Metric, { value: number; change: number }>;
+type SiteRow = {
+  id: string;
+  url: string;
+  siteId: string;
+  tags?: string | null;
+  market?: string | null;
+  archivedAt?: string | null;
+  pinned?: boolean;
+  hidden?: boolean;
+  siteDbId?: string | null;
+  hasData?: boolean;
+  data: Pt[];
+  summary: Summary;
+};
+// A Google account chip in the accounts bar.
+type GscAccount = { id: string; picture?: string | null; email: string };
 
 function periodToDays(period: string): number {
   const today = new Date();
@@ -67,58 +106,6 @@ function periodToDays(period: string): number {
     "3y":         1095,
   };
   return map[period] ?? 28;
-}
-
-function makeSiteData(n = 14, startDate?: Date): { data: Pt[]; summary: Record<Metric, { value: number; change: number }> } {
-  let c = 20 + Math.random() * 150,
-      im = c * (12 + Math.random() * 25),
-      t  = 2 + Math.random() * 12,
-      p  = 5 + Math.random() * 35;
-
-  const rc: number[] = [], ri: number[] = [], rt: number[] = [], rp: number[] = [];
-  const rcC: number[] = [], riC: number[] = [], rtC: number[] = [], rpC: number[] = [];
-
-  for (let i = 0; i < n; i++) {
-    c  = Math.max(1,   c  + (Math.random() - 0.47) * 25);
-    im = Math.max(10,  im + (Math.random() - 0.47) * 300);
-    t  = Math.max(0.1, Math.min(50, t + (Math.random() - 0.5) * 2));
-    p  = Math.max(1,   Math.min(100, p + (Math.random() - 0.5) * 3));
-    rc.push(Math.round(c));   ri.push(Math.round(im));
-    rt.push(+t.toFixed(1));   rp.push(+p.toFixed(1));
-    const f = 0.45 + Math.random() * 0.65;
-    rcC.push(Math.round(c * f));  riC.push(Math.round(im * f));
-    rtC.push(+(t * f).toFixed(1)); rpC.push(+Math.min(100, p / f).toFixed(1));
-  }
-
-  const nC = norm(rc), nI = norm(ri), nT = norm(rt), nP = norm(rp);
-  const nCC = norm(rcC), nIC = norm(riC), nTC = norm(rtC), nPC = norm(rpC);
-
-  const base = startDate ? new Date(startDate) : (() => { const d = new Date(); d.setDate(d.getDate() - n); return d; })();
-
-  const data: Pt[] = rc.map((_, i) => {
-    const d = new Date(base);
-    d.setDate(base.getDate() + i);
-    const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: n > 365 ? "numeric" : undefined });
-    return {
-      date: dateStr,
-      clicks: rc[i], impressions: ri[i], ctr: rt[i], position: rp[i],
-      clicksC: rcC[i], impressionsC: riC[i], ctrC: rtC[i], positionC: rpC[i],
-      cN: nC[i], iN: nI[i], tN: nT[i], pN: nP[i],
-      cCN: nCC[i], iCN: nIC[i], tCN: nTC[i], pCN: nPC[i],
-    };
-  });
-
-  const last = n - 1, mid = Math.floor(n / 2);
-  const pct = (a: number, b: number) => b === 0 ? 0 : Math.round(((a - b) / b) * 100);
-  return {
-    data,
-    summary: {
-      clicks:      { value: rc[last],  change: pct(rc[last],  rc[mid]) },
-      impressions: { value: ri[last],  change: pct(ri[last],  ri[mid]) },
-      ctr:         { value: rt[last],  change: pct(rt[last],  rt[mid]) },
-      position:    { value: rp[last],  change: pct(rp[last],  rp[mid]) },
-    },
-  };
 }
 
 function fmtK(n: number) { return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
@@ -217,7 +204,7 @@ function ExportModal({ domain, onClose }: { domain: string; onClose: () => void 
   };
 
   const toggle = (k: ExportCol) => setSelected(p => {
-    const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n;
+    const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n;
   });
 
   return (
@@ -271,7 +258,8 @@ function ExportModal({ domain, onClose }: { domain: string; onClose: () => void 
 }
 
 // ─── Custom tooltip ───────────────────────────────────────────────────────────
-function ChartTooltip({ active, payload }: any) {
+// Props recharts injects into the content element; only the two this renders against are named.
+function ChartTooltip({ active, payload }: { active?: boolean; payload?: { payload?: unknown }[] }) {
   const { t } = useLanguage();
   if (!active || !payload?.length) return null;
   const d = payload[0]?.payload as Pt;
@@ -315,7 +303,40 @@ function ChartTooltip({ active, payload }: any) {
 }
 
 // ─── Multi-metric chart ───────────────────────────────────────────────────────
-function MultiMetricChart({ data, activeMetrics, prevTrend = true }: { data: Pt[]; activeMetrics: Set<Metric>; prevTrend?: boolean }) {
+function MultiMetricChart({ data, activeMetrics, prevTrend = true, candles = false }: { data: Pt[]; activeMetrics: Set<Metric>; prevTrend?: boolean; candles?: boolean }) {
+  const { t } = useLanguage();
+  // Candle sparkline (Settings → Preferences → Charts): raw values, one tiny pane per metric —
+  // the normalised cN/iN keys exist only to overlay four curves on one scale, which candles don't do.
+  // *C === 0 means "no comparison row" in the portfolio API, not a real zero.
+  const candleRows = useMemo(() => (candles ? buildCandleRows(
+    data,
+    [
+      { key: "clicks",      value: r => r.clicks,                              prev: r => (r.clicksC > 0 ? r.clicksC : null) },
+      { key: "impressions", value: r => r.impressions,                         prev: r => (r.impressionsC > 0 ? r.impressionsC : null) },
+      { key: "ctr",         value: r => r.ctr,                                 prev: r => (r.ctrC > 0 ? r.ctrC : null) },
+      { key: "position",    value: r => (r.position > 0 ? r.position : null),  prev: r => (r.positionC > 0 ? r.positionC : null) },
+    ],
+    r => r.date,
+    r => r.date,
+  ) : []), [candles, data]);
+  if (candles) {
+    return (
+      <CandlePanes
+        rows={candleRows}
+        compact
+        height={90}
+        showPrev={prevTrend}
+        metrics={(["clicks", "impressions", "ctr", "position"] as Metric[])
+          .filter(m => activeMetrics.has(m))
+          .map(m => ({
+            key: m,
+            color: MC[m].color,
+            kind: m === "ctr" ? "pct" as const : m === "position" ? "pos" as const : "count" as const,
+            label: m === "ctr" ? "CTR" : m === "position" ? t("avgPosition") : m === "clicks" ? t("clicks") : t("impressions"),
+          }))}
+      />
+    );
+  }
   const metrics: { m: Metric; nKey: string; cKey: string }[] = [
     { m: "clicks",      nKey: "cN",  cKey: "cCN" },
     { m: "impressions", nKey: "iN",  cKey: "iCN" },
@@ -346,6 +367,48 @@ function MultiMetricChart({ data, activeMetrics, prevTrend = true }: { data: Pt[
         ))}
       </AreaChart>
     </ResponsiveContainer>
+  );
+}
+
+// ─── MarketInput — two-letter market editor, mirrors TagInput's isolation ───
+function MarketInput({ initialValue, onSave, onCancel, placeholder }: {
+  initialValue: string;
+  onSave: (v: string) => void;
+  onCancel: () => void;
+  placeholder?: string;
+}) {
+  const { t } = useLanguage();
+  const [value, setValue] = useState(initialValue);
+  const valid = /^[a-z]{2}$/.test(value.trim()) || value.trim() === "";
+  return (
+    <div style={{ display: "flex", gap: "5px", alignItems: "center" }} onClick={e => e.stopPropagation()}>
+      <input
+        autoFocus
+        value={value}
+        maxLength={2}
+        onChange={e => setValue(e.target.value.toLowerCase())}
+        onKeyDown={e => {
+          if (e.key === "Enter" && valid) { e.preventDefault(); onSave(value.trim()); }
+          if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+        }}
+        placeholder={placeholder || t("siteMarketAuto")}
+        style={{
+          flex: 1, minWidth: 0, width: "80px", padding: "5px 9px",
+          borderRadius: "7px", border: `1.5px solid ${valid ? "var(--color-accent-blue)" : "#ff9f0a"}`,
+          background: "var(--color-bg)", color: "var(--color-text-primary)",
+          fontSize: "13px", outline: "none", textTransform: "lowercase",
+        }}
+      />
+      <button
+        disabled={!valid}
+        onClick={e => { e.stopPropagation(); onSave(value.trim()); }}
+        style={{ padding: "5px 10px", borderRadius: "7px", border: "none", background: valid ? "var(--color-accent-blue)" : "var(--color-border)", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: valid ? "pointer" : "default", flexShrink: 0 }}
+      >✓</button>
+      <button
+        onClick={e => { e.stopPropagation(); onCancel(); }}
+        style={{ padding: "5px 8px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "13px", cursor: "pointer", flexShrink: 0 }}
+      >✕</button>
+    </div>
   );
 }
 
@@ -447,7 +510,7 @@ function CardBtn({ children, tooltip, onClick, active, activeColor }: {
 }
 
 // ─── Dropdown ─────────────────────────────────────────────────────────────────
-function Dropdown({ trigger, children, align = "left" }: { trigger: React.ReactNode; children: React.ReactNode; align?: "left" | "right" }) {
+function Dropdown({ trigger, children, align = "left", width }: { trigger: React.ReactNode; children: React.ReactNode; align?: "left" | "right"; width?: number }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -458,25 +521,29 @@ function Dropdown({ trigger, children, align = "left" }: { trigger: React.ReactN
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  // Clamp panel inside viewport after it renders
+  // Clamp panel inside the viewport after it renders: horizontally shift away
+  // from the right edge AND the left edge (a right-aligned panel whose trigger sits near
+  // the left edge — the period menu once the quick pills row was gone — hung off-screen
+  // to the left), vertically cap the height so tall panels scroll
+  // inside instead of running past the bottom of the screen.
   useEffect(() => {
     if (!open || !panelRef.current) return;
     const panel = panelRef.current;
     const rect  = panel.getBoundingClientRect();
-    const vw    = window.innerWidth;
-    if (rect.right > vw - 8) {
-      const overflow = rect.right - (vw - 8);
-      panel.style.transform = `translateX(-${overflow}px)`;
-    } else {
-      panel.style.transform = "";
-    }
+    const vw = window.innerWidth;
+    let shift = 0;
+    if (rect.right > vw - 8) shift = vw - 8 - rect.right;
+    if (rect.left + shift < 8) shift = 8 - rect.left;
+    panel.style.transform = shift ? `translateX(${shift}px)` : "";
+    panel.style.maxHeight = `${window.innerHeight - rect.top - 8}px`;
+    panel.style.overflowY = "auto";
   }, [open]);
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(o => !o)}>{trigger}</div>
       {open && (
-        <div ref={panelRef} style={{ position: "absolute", top: "calc(100% + 6px)", [align === "right" ? "right" : "left"]: 0, background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.25)", zIndex: 100, minWidth: "200px", maxWidth: "min(360px, calc(100vw - 16px))", clipPath: "inset(0 round 12px)" }}>
+        <div ref={panelRef} className="dd-panel" style={{ position: "absolute", top: "calc(100% + 6px)", [align === "right" ? "right" : "left"]: 0, background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.25)", zIndex: 100, ...(width !== undefined ? { width: `${width}px`, maxWidth: "calc(100vw - 16px)" } : { minWidth: "200px", maxWidth: "min(360px, calc(100vw - 16px))" }), clipPath: "inset(0 round 12px)" }}>
           {children}
         </div>
       )}
@@ -502,6 +569,11 @@ const tbBtn = (active = false): React.CSSProperties => ({
   color: active ? "var(--color-accent-blue)" : "var(--color-text-secondary)",
   fontSize: "12px", fontWeight: active ? 700 : 500, cursor: "pointer", whiteSpace: "nowrap" as const,
 });
+const customDateInput: React.CSSProperties = {
+  padding: "5px 8px", borderRadius: "8px", border: "1px solid var(--color-border)",
+  background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px",
+  flex: "1 1 0", minWidth: 0,
+};
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 const DashGoogleIcon = ({ s = 14 }) => (<svg width={s} height={s} viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>);
@@ -509,7 +581,7 @@ const DashBingIcon = ({ s = 14 }) => (<svg width={s} height={s} viewBox="0 0 512
 const DashYandexIcon = ({ s = 14 }) => (<svg width={s} height={s} viewBox="0 0 32 32"><path d="M21.88,2h-4c-4,0-8.07,3-8.07,9.62a8.33,8.33,0,0,0,4.14,7.66L9,28.13A1.25,1.25,0,0,0,9,29.4a1.21,1.21,0,0,0,1,.6h2.49a1.24,1.24,0,0,0,1.2-.75l4.59-9h.34v8.62A1.14,1.14,0,0,0,19.82,30H22a1.12,1.12,0,0,0,1.16-1.06V3.22A1.19,1.19,0,0,0,22,2ZM18.7,16.28h-.59c-2.3,0-3.66-1.87-3.66-5,0-3.9,1.73-5.29,3.34-5.29h.94Z" fill="#d61e3b"/></svg>);
 
 function PortfolioPageContent() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const router = useRouter();
   const searchParams = useSearchParams();
   // Legacy: the striking/cannibalization/decay views moved to their own routes
@@ -519,42 +591,109 @@ function PortfolioPageContent() {
     if (legacy && legacy !== "sites") router.replace(`/${legacy}`);
     else if (legacy === "sites") router.replace("/");
   }, [searchParams, router]);
-  const [sites, setSites]       = useState<any[]>([]);
+  const [sites, setSites]       = useState<SiteRow[]>([]);
   const [loading, setLoading]   = useState(true);
   const [search, setSearch]     = useState("");
   const { blur } = usePrivacy();
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  // Favorites and hiding persist on the Site row (`pinned` / `hidden`), so both derive from
+  // the sites the server returned instead of state a reload would forget. Toggling flips the
+  // row optimistically and PATCHes the flag; a failed PATCH flips the card back.
+  const favorites = useMemo(() => new Set(sites.filter(s => s.pinned).map(s => s.id)), [sites]);
+  const hidden    = useMemo(() => new Set(sites.filter(s => s.hidden ).map(s => s.id)), [sites]);
+  // Archive of properties removed from Search Console — collapsed by default.
+  const [showArchive, setShowArchive] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState<string | null>(null);
   // Ahrefs Domain Rating per domain (free public API, server-cached). License requires
   // visible "Domain Rating by Ahrefs" attribution wherever DR is shown.
   const [drMap, setDrMap] = useState<Record<string, number>>({});
+  // The panel's own monthly DR series per domain (DrSnapshot) — what turns each card's "DR 12"
+  // chip into "12, and it fell from 24 three months ago". Grown by the monthly DR walk, read
+  // here as a pure local fetch: free, keyless, absent until the second point exists.
+  const [drHist, setDrHist] = useState<Record<string, DrPoint[]>>({});
+  // True while the background DR backfill (below) is still working through the site list —
+  // lets cards distinguish "still checking" from "checked, nothing found" instead of just
+  // popping in whenever their chunk finishes, which reads as broken rather than loading.
+  const [drLoading, setDrLoading] = useState(false);
+  // Paid domain metrics, kept in a separate map from DR on purpose: DR is free and always
+  // present, these are optional and may never arrive. Merging them would make one nullable
+  // thing out of two with very different guarantees.
+  const [domMap, setDomMap] = useState<Record<string, { refDomains: number | null; orgTraffic: number | null }>>({});
   const [siteTags, setSiteTags] = useState<Record<string, string[]>>({});
   const tagsInitialized = useRef(false);
   const [exportSite, setExportSite] = useState<string | null>(null);
 
+  // ─── Uptime (T2) ───────────────────────────────────────────────────────────
+  // One GET /api/uptime/status on load and every 60 s while the tab is visible. A hidden tab
+  // skips its ticks (no pointless load), the map is siteDbId → badge. Plain useState, the same
+  // as the neighboring tag/market filters — a filter the neighbors do not persist, this one
+  // does not persist either.
+  const [uptimeMap, setUptimeMap] = useState<Record<string, UptimeBadge>>({});
+  const [uptimeNotifyDegraded, setUptimeNotifyDegraded] = useState(false);
+  const [uptimeFilter, setUptimeFilter] = useState<UptimeFilter>("all");
+  useEffect(() => {
+    let stopped = false;
+    const load = () => {
+      fetch("/api/uptime/status")
+        .then(r => r.json())
+        .then(d => {
+          if (stopped || !Array.isArray(d.badges)) return; // 401 / notMigrated → no dots, no lie
+          const map: Record<string, UptimeBadge> = {};
+          for (const b of d.badges as UptimeBadge[]) map[b.siteId] = b;
+          setUptimeMap(map);
+          setUptimeNotifyDegraded(d.notifyDegraded === true);
+        })
+        .catch(() => {});
+    };
+    load();
+    const timer = setInterval(() => { if (document.visibilityState === "visible") load(); }, 60_000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, []);
+
   const [activeMetrics, setActiveMetrics] = useState<Set<Metric>>(new Set(["clicks", "impressions", "ctr", "position"]));
+  // Line vs candles (Settings → Preferences → Charts), hydration-safe.
+  const chartTypePref = useChartTypePref();
   const [sortBy, setSortBy] = useState<SortBy>(() => {
     if (typeof window !== "undefined") return (localStorage.getItem("gsc_sort") as SortBy) ?? "az";
     return "az";
   });
-  const [accounts, setAccounts] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<GscAccount[]>([]);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [editingTagSiteId, setEditingTagSiteId] = useState<string | null>(null);
-  const [period, setPeriod]     = useState("7d");
+  // Per-site market override, mirroring `editingTagSiteId`. The market drives which country the
+  // keyword cache is filed under, so editing it is a correctness lever — not a preference.
+  const [editingMarketId, setEditingMarketId] = useState<string | null>(null);
+  // Market filter chip — null = show all. Special value "__unknown__" matches sites whose market
+  // cannot be resolved, the same amber set the card highlights.
+  const [activeMarket, setActiveMarket] = useState<string | null>(null);
+  // The GSC window survives a refresh (?period= in the URL, else the last value this browser
+  // was set to) and travels: opening a site carries it, so the portfolio and the site page
+  // describe the same range instead of silently snapping back to 7 days.
+  const [period, setPeriod]     = usePersistedState<string>("gsc_period", "7d", isGscPeriod, "period");
+  // The custom range's two halves — "custom" in the period above only means "use these".
+  // Same URL/localStorage pair as the period, so a shared link reproduces the exact window.
+  const [rangeStart, setRangeStart] = usePersistedState<string>("gsc_start", "", isIsoDate, "start");
+  const [rangeEnd, setRangeEnd]     = usePersistedState<string>("gsc_end", "", isIsoDate, "end");
+  // A custom period is fetchable only when both halves are picked and ordered — a half-set
+  // range must never reach the API looking like a window.
+  const customReady = period === "custom" && !!rangeStart && !!rangeEnd && rangeStart <= rangeEnd;
   // Search-engine portfolio tabs. Google = local DB; Bing/Yandex = live, fetched on tab
   // click and cached per engine+period so switching back is instant.
   const [engine, setEngine] = useState<"google" | "bing" | "yandex">("google");
   const [altEngines, setAltEngines] = useState<("bing" | "yandex")[]>([]);
-  const [engineCache, setEngineCache] = useState<Record<string, any[]>>({});
-  const [engineSyncedAt, setEngineSyncedAt] = useState<Record<string, number>>({});
+  const [engineCache, setEngineCache] = useState<Record<string, SiteRow[]>>({});
+  const [, setEngineSyncedAt] = useState<Record<string, number>>({});
   const [engineAccounts, setEngineAccounts] = useState<Record<string, { name: string }[]>>({ bing: [], yandex: [] });
   const [engineLoading, setEngineLoading] = useState(false);
-  const [periodView, setPeriodView] = useState<PeriodView>("day");
-  const [comparison, setComparison] = useState<Comparison>("previous");
+  // Chart granularity and the comparison mode are presentation of the same window, so they
+  // persist per browser (a shared link does not need to reproduce them) but stay out of the URL.
+  const [comparison, setComparison] = usePersistedState<Comparison>("gsc_comparison", "previous", v => v === "disabled" || v === "previous" || v === "yoy" || v === "prev_month");
   const [prevTrend, setPrevTrend]   = useState(true);
   const [matchWd, setMatchWd]       = useState(true);
   const [showPct, setShowPct]       = useState(true);
-  const [searchType, setSearchType] = useState<SearchType>("web");
+  // The GSC search type the portfolio describes. Persisted + URL-carried like the period:
+  // a shared link reproduces the exact view. Bing/Yandex have no types — the menu greys the
+  // section out on those tabs, and the engine fetches never carry the param.
+  const [searchType, setSearchType] = usePersistedState<SearchType>("gsc_search_type", "web", isSearchType, "searchType");
   const [branded, setBranded]       = useState<BrandedFilter>("all");
   const [filterDimension, setFilterDimension] = useState<"query"|"page"|"country"|"device"|null>(null);
   const [filterText, setFilterText] = useState("");
@@ -564,9 +703,13 @@ function PortfolioPageContent() {
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
 
+  // Asked of the server rather than of localStorage, so the label reflects the instance's last
+  // sync rather than the last one this particular browser happened to watch finish. See
+  // src/lib/syncedAt.ts.
   useEffect(() => {
-    const s = localStorage.getItem('gsc_synced_at');
-    if (s) setSyncedAt(new Date(s));
+    let cancelled = false;
+    loadSyncedAt().then(d => { if (!cancelled && d) setSyncedAt(d); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -581,17 +724,21 @@ function PortfolioPageContent() {
     localStorage.setItem("gsc_sort", s);
   };
 
-  const [newSitesFound, setNewSitesFound] = useState(0);
+  const [, setNewSitesFound] = useState(0);
+
+  // Stable identity of the current window: a preset key, or the custom range spelled out —
+  // fetch effects and engine caches key on this so two different ranges never collide.
+  const windowKey = period === "custom" ? `custom:${rangeStart || ""}:${rangeEnd || ""}` : period;
 
   const portfolioUrl = (p = period) =>
-    `/api/gsc/portfolio?period=${p}&matchWd=${matchWd}`;
+    `/api/gsc/portfolio?period=${p}&matchWd=${matchWd}&comparison=${comparison}&searchType=${searchType}${p === "custom" && customReady ? `&start=${rangeStart}&end=${rangeEnd}` : ""}`;
 
   const refetchPortfolio = (p = period) => {
     fetch(portfolioUrl(p))
       .then(r => r.json())
       .then(d => {
         if (d.sites) {
-          setNewSitesFound(prev => Math.max(0, (d.sites as any[]).length - sites.length));
+          setNewSitesFound(() => Math.max(0, (d.sites as SiteRow[]).length - sites.length));
           setSites(d.sites);
         }
       })
@@ -606,15 +753,23 @@ function PortfolioPageContent() {
       .then(d => {
         if (!ignore && d.sites?.length) {
           setSites(prev => {
-            // Only update if we don't already have data, to avoid overwriting portfolio metrics
-            if (prev.length > 0 && prev[0].hasData) return prev;
-            return d.sites;
+            // Discovery and the portfolio sweep are not sequenced — whichever resolves second
+            // must not destroy the other's contribution. Portfolio rows are authoritative for
+            // metrics, so they stay untouched; discovery only appends sites the portfolio has
+            // not returned yet (brand-new discoveries). The old guard inspected prev[0]
+            // .hasData, so one site that can never sync sorting first — hasData false forever,
+            // e.g. a property the Google account lacks permission for — let the metric-less
+            // discovery list wipe the whole portfolio on every single load.
+            if (prev.length === 0) return d.sites;
+            const known = new Set(prev.map(s => s.id));
+            const extra = (d.sites as SiteRow[]).filter(s => !known.has(s.id));
+            return extra.length > 0 ? [...prev, ...extra] : prev;
           });
           // Load tags from DB once on mount
           if (!tagsInitialized.current) {
             tagsInitialized.current = true;
             const tagsFromDb: Record<string, string[]> = {};
-            for (const s of d.sites as any[]) {
+            for (const s of d.sites as SiteRow[]) {
               if (s.tags) {
                 try {
                   const parsed = JSON.parse(s.tags);
@@ -630,8 +785,35 @@ function PortfolioPageContent() {
       })
       .catch(() => {});
     return () => { ignore = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, []);
+
+  // What a finished run means, in one place — shared by the button and by the resume effect
+  // below, so a sync watched from a freshly opened tab ends exactly like one watched from the
+  // tab that started it.
+  const settleSync = (s: SyncState) => {
+    refetchPortfolio();
+    if (s.needsReauth) {
+      setSyncStatus("reauth");
+      setSyncWarning("reauth");
+      setTimeout(() => setSyncStatus("idle"), 30_000);
+    } else if (s.accountErrors > 0 && s.sitesSynced === 0) {
+      setSyncStatus("error");
+      setSyncWarning("error");
+      setTimeout(() => setSyncStatus("idle"), 30_000);
+    } else {
+      // The server's completion time, not this tab's clock — the tab only hears about it on the
+      // next poll, up to fifteen seconds later.
+      const at = s.completedAt ?? new Date();
+      setSyncedAt(at);
+      rememberSyncedAt(at);
+      setSyncStatus("done");
+      setTimeout(() => setSyncStatus("idle"), 5_000);
+    }
+  };
+
+  const stopWatch = useRef<(() => void) | null>(null);
+  useEffect(() => () => { stopWatch.current?.(); }, []);
 
   const handleSync = () => {
     if (syncStatus === "syncing") return;
@@ -645,42 +827,32 @@ function PortfolioPageContent() {
     fetch('/api/gsc/sync', { method: 'POST' })
       .then(r => r.json())
       .then(() => {
-        // Poll status every 15s until sync finishes, then refresh data
-        const poll = setInterval(() => {
-          fetch('/api/gsc/sync')
-            .then(r => r.json())
-            .then(s => {
-              if (!s.syncing) {
-                clearInterval(poll);
-                refetchPortfolio();
-                // Check for auth errors in the result
-                if (s.lastResult?.needsReauth) {
-                  setSyncStatus("reauth");
-                  setSyncWarning("reauth");
-                  setTimeout(() => setSyncStatus("idle"), 30_000);
-                } else if (s.lastResult?.accountErrors > 0 && s.lastResult?.sitesSynced === 0) {
-                  setSyncStatus("error");
-                  setSyncWarning("error");
-                  setTimeout(() => setSyncStatus("idle"), 30_000);
-                } else {
-                  // Only mark as synced on actual success
-                  const now = new Date();
-                  setSyncedAt(now);
-                  localStorage.setItem('gsc_synced_at', now.toISOString());
-                  setSyncStatus("done");
-                  setTimeout(() => setSyncStatus("idle"), 5_000);
-                }
-              }
-            })
-            .catch(() => {});
-        }, 15_000);
-        // Safety: stop polling after 15 min
-        setTimeout(() => { clearInterval(poll); setSyncStatus("idle"); }, 15 * 60_000);
+        stopWatch.current?.();
+        stopWatch.current = watchSync(settleSync, () => setSyncStatus("idle"));
       })
       .catch(() => setSyncStatus("idle"));
   };
 
-  // Fetch real data from portfolio API whenever period or comparison settings change
+  // A sync outlives the page that started it: it runs in the server process, not in the tab. So
+  // a reload, or a different browser entirely, picks the spinner back up rather than showing an
+  // idle button while two hundred properties are still being fetched one by one.
+  useEffect(() => {
+    let cancelled = false;
+    fetchSyncState().then(s => {
+      if (cancelled || !s?.syncing) return;
+      setSyncStatus("syncing");
+      stopWatch.current?.();
+      stopWatch.current = watchSync(settleSync, () => setSyncStatus("idle"));
+    });
+    return () => { cancelled = true; };
+    // settleSync closes over setState functions and refetchPortfolio, all of which are recreated
+    // every render; listing it would restart the watcher on each one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch real data from the portfolio API whenever the window (preset or custom range) or the
+  // comparison settings change. Keyed on windowKey, not on the raw state pieces, so picking
+  // dates while a preset is active does not refetch a window that did not change.
   useEffect(() => {
     setLoading(true);
     fetch(portfolioUrl(period))
@@ -688,13 +860,13 @@ function PortfolioPageContent() {
       .then(d => { if (d.sites) setSites(d.sites); })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [period, matchWd]);
+  }, [windowKey, matchWd, comparison, searchType]);
 
   // Which engine tabs to show (owner keys live in localStorage, same as the site page).
   useEffect(() => {
     const has = (e: string) => {
       if (localStorage.getItem(`seoKey_${e}`)) return true;
-      try { return (JSON.parse(localStorage.getItem(`seoKey_${e}_accounts_list`) || "[]") as any[]).length > 0; } catch { return false; }
+      try { return (JSON.parse(localStorage.getItem(`seoKey_${e}_accounts_list`) || "[]") as unknown[]).length > 0; } catch { return false; }
     };
     const list: ("bing" | "yandex")[] = [];
     if (has("bing")) list.push("bing");
@@ -702,7 +874,7 @@ function PortfolioPageContent() {
     setAltEngines(list);
     // Connected accounts per engine (name from Settings), mirroring the Google accounts bar.
     const accsOf = (e: string): { name: string }[] => {
-      let arr: any[] = [];
+      let arr: { key?: string; name?: string; email?: string }[] = [];
       try { arr = JSON.parse(localStorage.getItem(`seoKey_${e}_accounts_list`) || "[]"); } catch { arr = []; }
       const out = arr.filter(a => a?.key).map(a => ({ name: a.name || a.email || (e === "bing" ? "Bing" : "Yandex") }));
       if (!out.length && localStorage.getItem(`seoKey_${e}`)) out.push({ name: "Default" });
@@ -711,14 +883,14 @@ function PortfolioPageContent() {
     setEngineAccounts({ bing: accsOf("bing"), yandex: accsOf("yandex") });
   }, []);
 
-  const engineKey = `${engine}_${period}`;
+  const engineKey = `${engine}_${windowKey}`;
 
   // Fetch one engine's portfolio. Normally serves the stored server-side snapshot instantly;
   // pass force=true (Sync / Refresh) to rebuild from the live APIs.
   const loadEngine = (eng: "bing" | "yandex", p = period, setLoading = false, force = false) => {
-    const key = `${eng}_${p}`;
+    const key = `${eng}_${p === "custom" ? windowKey : p}`;
     if (setLoading) setEngineLoading(true);
-    return fetch(`/api/gsc/portfolio-engine?engine=${eng}&period=${p}${force ? "&refresh=1" : ""}`)
+    return fetch(`/api/gsc/portfolio-engine?engine=${eng}&period=${p}${p === "custom" && customReady ? `&start=${rangeStart}&end=${rangeEnd}` : ""}${force ? "&refresh=1" : ""}`)
       .then(r => r.json())
       .then(d => { if (d.sites) { setEngineCache(c => ({ ...c, [key]: d.sites })); setEngineSyncedAt(t => ({ ...t, [key]: d.cachedAt ? new Date(d.cachedAt).getTime() : Date.now() })); } })
       .catch(() => {})
@@ -777,42 +949,125 @@ function PortfolioPageContent() {
   const activeFilterCount = [
     branded !== "all",
     filterDimension !== null && filterText.trim() !== "",
+    !!activeTag,
+    !!activeMarket,
+    uptimeFilter !== "all",
   ].filter(Boolean).length;
 
   // Fetch Ahrefs DR for all dashboard domains (chunked; server caches 7 days).
   useEffect(() => {
     if (!sites.length) return;
     const domains = [...new Set(sites.map(s => getDomain(s.url).toLowerCase().replace(/^www\./, "")).filter(d => d.includes(".")))];
+    setDrLoading(true);
     (async () => {
-      for (let i = 0; i < domains.length; i += 100) {
-        try {
-          const res = await fetch(`/api/dr?domains=${encodeURIComponent(domains.slice(i, i + 100).join(","))}`);
-          if (!res.ok) continue;
-          const d = await res.json();
-          const add: Record<string, number> = {};
-          Object.entries(d.ratings || {}).forEach(([k, v]: [string, any]) => { add[k] = Number(v.dr); });
-          setDrMap(prev => ({ ...prev, ...add }));
-        } catch { /* best-effort */ }
+      try {
+        for (let i = 0; i < domains.length; i += 100) {
+          try {
+            const res = await fetch(`/api/dr?domains=${encodeURIComponent(domains.slice(i, i + 100).join(","))}`, { headers: { "x-ahrefs-dr-key": getAhrefsDrKey() } });
+            if (!res.ok) continue;
+            const d = await res.json();
+            const add: Record<string, number> = {};
+            Object.entries((d.ratings || {}) as Record<string, { dr?: number }>).forEach(([k, v]) => { add[k] = Number(v.dr); });
+            setDrMap(prev => ({ ...prev, ...add }));
+          } catch { /* best-effort */ }
+        }
+      } finally {
+        // Whatever is still missing after this is a real "no rating", not a pending one — cards
+        // stop pulsing and fall back to showing nothing, same as before this loading state existed.
+        setDrLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sites.length]);
+
+  // The monthly DR series behind those chips (DrSnapshot) — the same one-ask-per-session
+  // batch shape as the DR backfill above. The route is a pure local read, so it neither
+  // spends anything nor needs a key; domains with no stored series are simply absent.
+  useEffect(() => {
+    if (!sites.length) return;
+    const domains = [...new Set(sites.map(s => getDomain(s.url).toLowerCase().replace(/^www\./, "")).filter(d => d.includes(".")))];
+    (async () => {
+      for (let i = 0; i < domains.length; i += 250) {
+        try {
+          const res = await fetch(`/api/dr/history?domains=${encodeURIComponent(domains.slice(i, i + 250).join(","))}`);
+          if (!res.ok) continue;
+          const d = await res.json();
+          const hist = (d?.history ?? {}) as Record<string, DrPoint[]>;
+          if (Object.keys(hist).length) setDrHist(prev => ({ ...prev, ...hist }));
+        } catch { /* decorative until it exists */ }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sites.length]);
+
+  // Referring domains and organic traffic, read from the metric cache only — this call never
+  // reaches a provider and never spends anything (see /api/metrics/domain). Whatever is there
+  // was put there by an import or by an explicit fetch elsewhere; if nothing is, the cards look
+  // exactly as they did before this existed.
+  useEffect(() => {
+    if (!sites.length) return;
+    const domains = [...new Set(sites.map(s => getDomain(s.url).toLowerCase().replace(/^www\./, "")).filter(d => d.includes(".")))];
+    (async () => {
+      for (let i = 0; i < domains.length; i += 200) {
+        try {
+          const res = await fetch("/api/metrics/domain", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ domains: domains.slice(i, i + 200), fetch: false }),
+          });
+          if (!res.ok) continue;
+          const d = await res.json();
+          const add: Record<string, { refDomains: number | null; orgTraffic: number | null }> = {};
+          Object.entries((d.metrics || {}) as Record<string, { refDomains?: number | null; orgTraffic?: number | null }>).forEach(([k, v]) => {
+            if (v?.refDomains != null || v?.orgTraffic != null) {
+              add[k] = { refDomains: v.refDomains ?? null, orgTraffic: v.orgTraffic ?? null };
+            }
+          });
+          setDomMap(prev => ({ ...prev, ...add }));
+        } catch { /* the card is complete without these */ }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sites.length]);
+
+  // Resolve a site's market the same way the card chip does: explicit override, then ccTLD, then
+  // null. Kept as a helper so the filter and the totals row answer the same question the card does.
+  const marketOf = (s: SiteRow) => marketFor({ url: s.url, siteId: s.siteId, market: s.market });
+  // `__unknown__` is the active-market value for the amber set — sites whose market cannot be
+  // resolved and which therefore file paid keyword data under the wrong country (or refuse it).
+  const marketMatch = (s: SiteRow) => {
+    if (!activeMarket) return true;
+    const m = marketOf(s);
+    return activeMarket === "__unknown__" ? m === null : m === activeMarket;
+  };
 
   const filtered = sitesWithData
     .filter(s => {
       const domain = getDomain(s.url).toLowerCase();
       const tagsStr = (siteTags[s.id] || []).join(" ").toLowerCase();
       const searchLower = search.toLowerCase();
-      
+
       if (!domain.includes(searchLower) && !tagsStr.includes(searchLower)) return false;
       if (branded === "branded"    && brandedRatio(s.url) <  0.45) return false;
       if (branded === "nonbranded" && brandedRatio(s.url) >= 0.45) return false;
+      if (activeTag && !(siteTags[s.id] || []).includes(activeTag)) return false;
+      if (activeMarket && !marketMatch(s)) return false;
+      // Uptime status filter: down/up strictly; "issues" = offline or slow. Sites without a
+      // monitor (no badge) survive only under "all" — not being watched is not a status.
+      if (uptimeFilter !== "all") {
+        const st = uptimeMap[s.id]?.status;
+        if (uptimeFilter === "issues" && st !== "down" && st !== "degraded") return false;
+        if (uptimeFilter === "down" && st !== "down") return false;
+        if (uptimeFilter === "up" && st !== "up") return false;
+      }
       // Portfolio dimension filters work on domain/position, so they apply to every engine.
       if (filterText.trim() && filterText !== "__longtail__") {
         const txt = filterText.trim().toLowerCase();
         if (filterDimension === "country") {
+          // Match the resolved market (override + ccTLD), falling back to the TLD as a textual
+          // hint — so "gr" finds both a `.gr` domain and a `.com` site whose market is set to gr.
+          const m = marketOf(s);
           const tld = domain.split(".").pop() ?? "";
-          if (!tld.includes(txt)) return false;
+          if (!(m === txt || tld.includes(txt))) return false;
         } else if (filterDimension === "query" || filterDimension === "page") {
           if (!domain.includes(txt)) return false;
         }
@@ -870,14 +1125,41 @@ function PortfolioPageContent() {
           return 0;
       }
     });
-  const favSites    = filtered.filter(s => favorites.has(s.id) && !hidden.has(s.id));
-  const restSites   = filtered.filter(s => !favorites.has(s.id) && !hidden.has(s.id));
-  const hiddenSites = filtered.filter(s => hidden.has(s.id));
+  // Properties that Google no longer returns are archived, not deleted. They are
+  // pulled out of every live group so they stop skewing the portfolio totals.
+  const isArchived  = (s: { archivedAt?: string | null }) => Boolean(s.archivedAt);
+  const archivedSites = filtered.filter(isArchived);
+  const liveFiltered  = filtered.filter(s => !isArchived(s));
+  // "Needs attention": down sites (and slow ones when the workspace asked to be alerted about
+  // slow). Hidden and archived never join — being shelved is not being down. The group sits
+  // ABOVE favorites and its members are not repeated below, so it reads as "look here first"
+  // without breaking whatever sort the user chose. Plain computation (no useMemo): `filtered`
+  // above is not memoized either, and building a Set here is cheaper than preserving one.
+  const needsAttentionIds = new Set<string>();
+  for (const s of liveFiltered) {
+    if (hidden.has(s.id)) continue;
+    const st = uptimeMap[s.id]?.status;
+    if (st === "down" || (st === "degraded" && uptimeNotifyDegraded)) needsAttentionIds.add(s.id);
+  }
+  const attentionSites = liveFiltered.filter(s => needsAttentionIds.has(s.id) && !hidden.has(s.id));
+  const favSites    = liveFiltered.filter(s => favorites.has(s.id) && !hidden.has(s.id) && !needsAttentionIds.has(s.id));
+  const restSites   = liveFiltered.filter(s => !favorites.has(s.id) && !hidden.has(s.id) && !needsAttentionIds.has(s.id));
+  const hiddenSites = liveFiltered.filter(s => hidden.has(s.id));
+  // One warning line over the whole list when the checker itself could not reach the network —
+  // gray dots above sites the server could not honestly judge.
+  const checkerOffline = Object.values(uptimeMap).some(b => b.status === "checker_offline");
+  // The offline badge sits in the accounts bar, next to the "All sites" chip — it qualifies
+  // SITES, never accounts, so it counts only live, non-hidden sites and names them in the
+  // tooltip. A bare "1 offline" pill beside the account chips reads as "an account is down".
+  const uptimeDownSites = sites.filter(s => !isArchived(s) && !hidden.has(s.id) && uptimeMap[s.id]?.status === "down");
+  const uptimeDownCount = uptimeDownSites.length;
 
-  // ─── Totals from visible (filtered) sites — respects search/tag/branded filters ──
-  // When a tag is active, totals are computed only over sites carrying that tag
-  const visibleForTotals = [...favSites, ...restSites].filter(
-    s => !activeTag || (siteTags[s.id] || []).includes(activeTag)
+  // ─── Totals from visible (filtered) sites — respects search/tag/market/branded filters ──
+  // When a tag or market is active, totals are computed only over sites matching it. The
+  // attention group is a placement, not a filter — its sites stay in the totals.
+  const visibleForTotals = [...attentionSites, ...favSites, ...restSites].filter(
+    s => (!activeTag || (siteTags[s.id] || []).includes(activeTag))
+      && (!activeMarket || marketMatch(s))
   );
   const totalClicks      = visibleForTotals.reduce((s, site) => s + (site.summary?.clicks?.value ?? 0), 0);
   const totalImpressions = visibleForTotals.reduce((s, site) => s + (site.summary?.impressions?.value ?? 0), 0);
@@ -886,9 +1168,53 @@ function PortfolioPageContent() {
   const withPos = visibleForTotals.filter(s => (s.summary?.position?.value ?? 0) > 0);
   const avgPos  = withPos.length > 0 ? +(withPos.reduce((s, site) => s + site.summary.position.value, 0) / withPos.length).toFixed(1) : 0;
 
-  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
-  const toggleFav    = (id: string) => setFavorites(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const toggleHide   = (id: string) => setHidden(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  // Bring an archived property back into the live list. Useful when a domain was
+  // only temporarily unverified in GSC — the next sync would restore it anyway.
+  const restoreSite = async (id: string) => {
+    setArchiveBusy(id);
+    try {
+      const res = await fetch("/api/gsc/sites", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, archived: false }),
+      });
+      if (res.ok) setSites(prev => prev.map(s => s.id === id ? { ...s, archivedAt: null } : s));
+    } catch { /* leave the row as-is; the next sync will reconcile */ }
+    finally { setArchiveBusy(null); }
+  };
+
+  // Permanent removal. Cascades to metrics, audits, keywords and backlinks,
+  // so it is gated behind an explicit confirm.
+  const deleteSite = async (id: string, domain: string) => {
+    if (!window.confirm(`${t("archiveDeleteConfirm")}\n\n${domain}`)) return;
+    setArchiveBusy(id);
+    try {
+      const res = await fetch(`/api/gsc/sites?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (res.ok) setSites(prev => prev.filter(s => s.id !== id));
+    } catch { /* no-op: the row stays, user can retry */ }
+    finally { setArchiveBusy(null); }
+  };
+
+  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
+  // One optimistic flip + one PATCH per toggle. The server row is the source of truth, so a
+  // failed request un-flips the card instead of leaving UI state the next load would contradict.
+  const toggleSiteFlag = (id: string, flag: "pinned" | "hidden") => {
+    const site = sites.find(s => s.id === id);
+    if (!site) return;
+    const next = !site[flag];
+    setSites(prev => prev.map(s => s.id === id ? { ...s, [flag]: next } : s));
+    fetch("/api/gsc/sites", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, [flag]: next }),
+    }).then(res => {
+      if (!res.ok) throw new Error(String(res.status));
+    }).catch(() => {
+      setSites(prev => prev.map(s => s.id === id ? { ...s, [flag]: !next } : s));
+    });
+  };
+  const toggleFav    = (id: string) => toggleSiteFlag(id, "pinned");
+  const toggleHide   = (id: string) => toggleSiteFlag(id, "hidden");
 
   // ─── Period groups (uses t() for labels) ──────────────────────────────────
   const fmt    = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -925,9 +1251,8 @@ function PortfolioPageContent() {
       { label: t("period16m"), value: "16m", desc: r(mAgo(16), yesterday) },
     ],
     [
-      { label: t("period2y"), value: "2y",     desc: r(yAgo(2), yesterday) },
-      { label: t("period3y"), value: "3y",     desc: r(yAgo(3), yesterday) },
-      { label: t("custom"),   value: "custom", desc: "" },
+      { label: t("period2y"), value: "2y", desc: r(yAgo(2), yesterday) },
+      { label: t("period3y"), value: "3y", desc: r(yAgo(3), yesterday) },
     ],
   ];
 
@@ -935,6 +1260,24 @@ function PortfolioPageContent() {
     for (const g of periodGroups) for (const p of g) if (p.value === v) return p.label;
     return v;
   };
+
+  // "Вручную" applies as a real window only once both dates are picked and ordered — a
+  // half-set range never switches the period. Clearing both dates while custom is active
+  // steps back to the default preset instead of leaving the dashboard on a phantom window.
+  const applyCustomRange = (s: string, e: string) => {
+    if (s && e && s <= e) {
+      setRangeStart(s); setRangeEnd(e); setPeriod("custom");
+    } else {
+      setRangeStart(s); setRangeEnd(e);
+      if (!s && !e && period === "custom") setPeriod("7d");
+    }
+  };
+  const customActive = period === "custom";
+  const fmtShort = (d: Date) => d.toLocaleDateString("ru", { day: "numeric", month: "short" });
+  // The trigger reads as the range itself when a custom window is live; a preset keeps its label.
+  const periodTriggerLabel = customActive
+    ? (customReady ? `${fmtShort(new Date(rangeStart))} – ${fmtShort(new Date(rangeEnd))}` : t("custom"))
+    : getPeriodLabel(period);
 
   const metricLabels: Record<Metric, string> = {
     clicks:      t("clicks"),
@@ -1078,6 +1421,83 @@ function PortfolioPageContent() {
         );
       })()}
 
+      {/* Market filter — derived from the resolved market (override + ccTLD), so a `.com` site set
+          to `gr` appears under gr, not under "com". `__unknown__` groups the amber set: sites the
+          keyword cache cannot file correctly until a human picks a market. */}
+      {(() => {
+        const counts = new Map<string, number>();
+        for (const s of sites) {
+          const m = marketOf(s);
+          const key = m === null ? "__unknown__" : m;
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        if (counts.size <= 1) return null; // one bucket = nothing to filter between
+        const entries = [...counts.entries()].sort((a, b) =>
+          a[0] === "__unknown__" ? 1 : b[0] === "__unknown__" ? -1 : a[0].localeCompare(b[0]),
+        );
+        return (
+          <>
+            {md}{ms(t("siteMarket"))}
+            <div style={{ padding: "4px 14px 10px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {entries.map(([key, n]) => {
+                const unknown = key === "__unknown__";
+                const isActive = activeMarket === key;
+                return (
+                  <button key={key} onClick={() => setActiveMarket(isActive ? null : key)} style={{
+                    padding: "4px 10px", borderRadius: "20px", fontSize: "12px", fontWeight: 500, cursor: "pointer",
+                    border: `1px solid ${isActive ? "#ff9f0a" : "var(--color-border)"}`,
+                    background: isActive ? "rgba(255,159,10,0.16)" : "transparent",
+                    color: isActive ? "#ff9f0a" : "var(--color-text-secondary)",
+                  }}>
+                    {unknown ? t("siteMarketUnknown") : key.toUpperCase()} <span style={{ opacity: 0.6 }}>{n}</span>
+                    {isActive && <span style={{ marginLeft: "5px", fontWeight: 700 }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Uptime status filter — pills like the branded row, from the live badge map. */}
+      {(() => {
+        const counts = { down: 0, degraded: 0, up: 0 };
+        for (const s of sites) {
+          const st = uptimeMap[s.id]?.status;
+          if (st === "down") counts.down++;
+          else if (st === "degraded") counts.degraded++;
+          else if (st === "up") counts.up++;
+        }
+        if (!counts.down && !counts.degraded && !counts.up) return null; // nothing watched yet
+        const pills: { v: UptimeFilter; l: string; n?: number; color: string }[] = [
+          { v: "all", l: t("uptimeFilterAll"), color: "#3B82F6" },
+          { v: "issues", l: t("uptimeFilterIssues"), n: counts.down + counts.degraded, color: "#ff9f0a" },
+          { v: "down", l: t("uptimeStatus_down"), n: counts.down, color: "#ff453a" },
+          { v: "up", l: t("uptimeStatus_up"), n: counts.up, color: "#34c759" },
+        ];
+        return (
+          <>
+            {md}{ms(t("uptimeFilter"))}
+            <div style={{ padding: "4px 14px 10px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {pills.map(({ v, l, n, color }) => {
+                const isActive = uptimeFilter === v;
+                return (
+                  <button key={v} onClick={() => setUptimeFilter(isActive && v !== "all" ? "all" : v)} style={{
+                    padding: "4px 10px", borderRadius: "20px", fontSize: "12px", fontWeight: 500, cursor: "pointer",
+                    border: `1px solid ${isActive ? color : "var(--color-border)"}`,
+                    background: isActive ? "rgba(255,255,255,0.06)" : "transparent",
+                    color: isActive ? color : "var(--color-text-secondary)",
+                  }}>
+                    {l} {n != null && n > 0 && <span style={{ opacity: 0.6 }}>{n}</span>}
+                    {isActive && <span style={{ marginLeft: "5px", fontWeight: 700 }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
+
       {md}{ms(t("presetFilters"))}
       <button style={mi(filterDimension === "query" && filterText === "?")}
         onClick={() => { setFilterDimension("query"); setFilterText("?"); }}>
@@ -1092,7 +1512,7 @@ function PortfolioPageContent() {
       {activeFilterCount > 0 && (
         <>
           {md}
-          <button style={{ ...mi(), color: "#EF4444" }} onClick={() => { setBranded("all"); setFilterDimension(null); setFilterText(""); }}>
+          <button style={{ ...mi(), color: "#EF4444" }} onClick={() => { setBranded("all"); setFilterDimension(null); setFilterText(""); setActiveTag(null); setActiveMarket(null); }}>
             <X size={13}/> Reset filters
           </button>
         </>
@@ -1101,18 +1521,18 @@ function PortfolioPageContent() {
   );
 
   // Period dropdown
+  const cmpOff = comparison === "disabled";
   const PeriodDd = (
-    <Dropdown trigger={<button style={{...tbBtn(),gap:"8px"}}>{getPeriodLabel(period)} <ChevronDown size={13}/></button>} align="right">
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",minWidth:"460px"}}>
-        {/* Left: comparison */}
-        <div style={{borderRight:"1px solid var(--color-border)"}}>
+    <Dropdown trigger={<button style={{...tbBtn(),gap:"8px"}}>{periodTriggerLabel} <ChevronDown size={13}/></button>} align="left" width={600}>
+      <div className="period-grid">
+        {/* Left: comparison & search type */}
+        <div className="period-col-compare" style={{minWidth:0}}>
           {ms(t("comparisonPeriod"))}
           {([
             {l: t("compDisabled"),   v:"disabled"},
             {l: t("compPrevious"),   v:"previous"},
             {l: t("compYoy"),        v:"yoy"},
             {l: t("compPrevMonth"),  v:"prev_month"},
-            {l: t("custom"),         v:"custom"},
           ] as {l:string;v:Comparison}[]).map(({l,v}) => (
             <button key={v} style={{...mi(comparison===v),fontWeight:comparison===v?600:400,color:comparison===v?"#3B82F6":"var(--color-text-secondary)"}} onClick={()=>setComparison(v)}>{l}</button>
           ))}
@@ -1122,52 +1542,63 @@ function PortfolioPageContent() {
             {l: t("matchWeekdays"), val:matchWd,   set:setMatchWd},
             {l: t("showChangePct"), val:showPct,   set:setShowPct},
           ]).map(({l,val,set}) => (
-            <button key={l} style={mi()} onClick={()=>set(!val)}>
+            <button key={l} style={{...mi(),opacity:cmpOff?0.4:1,cursor:cmpOff?"default":"pointer"}} onClick={()=>{ if (!cmpOff) set(!val); }}>
               <div style={{width:"16px",height:"16px",borderRadius:"4px",flexShrink:0,border:`2px solid ${val?"#3B82F6":"var(--color-border)"}`,background:val?"#3B82F6":"transparent",display:"flex",alignItems:"center",justifyContent:"center"}}>
                 {val && <Check size={10} color="#fff" />}
               </div>
               {l}
             </button>
           ))}
+          {cmpOff && (
+            <div style={{padding:"4px 14px 8px",fontSize:"11px",lineHeight:1.5,color:"var(--color-text-secondary)"}}>{t("comparisonOffHint")}</div>
+          )}
           {md}{ms(t("searchType"))}
-          {([
-            {l: t("searchTypeWeb"),      v:"web",      i:<Globe size={13}/>},
-            {l: t("searchTypeDiscover"), v:"discover", i:<Compass size={13}/>},
-            {l: t("searchTypeNews"),     v:"news",     i:<Newspaper size={13}/>},
-            {l: t("searchTypeImage"),    v:"image",    i:<Image size={13}/>},
-            {l: t("searchTypeVideo"),    v:"video",    i:<Video size={13}/>},
-          ] as {l:string;v:SearchType;i:React.ReactNode}[]).map(({l,v,i}) => (
-            <button key={v} style={mi(searchType===v)} onClick={()=>setSearchType(v)}>{i} {l}{searchType===v&&<Check size={12} style={{marginLeft:"auto"}}/>}</button>
-          ))}
+          {/* Search types exist only in Google's data — greyed on the Bing/Yandex tabs */}
+          {(() => {
+            const stOff = engine !== "google";
+            return (
+              <>
+                {stOff && <div style={{ padding: "0 14px 4px", fontSize: "11px", color: "var(--color-text-secondary)" }}>{t("searchTypeGoogleOnly")}</div>}
+                {([
+                  {l: t("searchTypeWeb"),      v:"web",      i:<Globe size={13}/>},
+                  {l: t("searchTypeDiscover"), v:"discover", i:<Compass size={13}/>},
+                  {l: t("searchTypeNews"),     v:"news",     i:<Newspaper size={13}/>},
+                  {l: t("searchTypeImage"),    v:"image",    i:<ImageIcon size={13}/>},
+                  {l: t("searchTypeVideo"),    v:"video",    i:<Video size={13}/>},
+                ] as {l:string;v:SearchType;i:React.ReactNode}[]).map(({l,v,i}) => (
+                  <button key={v} style={{...mi(searchType===v),opacity:stOff?0.4:1,cursor:stOff?"default":"pointer"}} onClick={()=>{ if (!stOff) setSearchType(v); }}>{i} {l}{searchType===v&&<Check size={12} style={{marginLeft:"auto"}}/>}</button>
+                ))}
+              </>
+            );
+          })()}
         </div>
-        {/* Right: periods */}
-        <div style={{minWidth:0,display:"flex",flexDirection:"column"}}>
-          <div style={{display:"flex",borderBottom:"1px solid var(--color-border)",padding:"6px 8px",gap:"4px"}}>
-            {([
-              {v:"day",   l: t("periodDay")},
-              {v:"week",  l: t("periodWeek")},
-              {v:"month", l: t("periodMonth")},
-            ] as {v:PeriodView;l:string}[]).map(({v,l}) => (
-              <button key={v} onClick={()=>setPeriodView(v)} style={{flex:1,padding:"5px 0",borderRadius:"6px",fontSize:"13px",fontWeight:periodView===v?600:400,cursor:"pointer",background:periodView===v?"rgba(59,130,246,0.12)":"transparent",color:periodView===v?"#3B82F6":"var(--color-text-secondary)",border:"none",transition:"all 0.15s"}}>
-                {l}
-              </button>
-            ))}
-          </div>
-          <div className="period-scroll" style={{maxHeight:"420px",overflowY:"auto",scrollbarGutter:"stable",width:"100%"}}>
-            {periodGroups.map((grp, gi) => (
-              <div key={gi}>
-                {grp.map(({label,value,desc}) => {
-                  const active = period===value;
-                  return (
-                    <button key={value} style={{...mi(active),flexDirection:"column",alignItems:"flex-start",gap:"1px",padding:"8px 16px"}} onClick={()=>setPeriod(value)}>
-                      <span style={{fontWeight:active?700:400,fontSize:"13px"}}>{label}</span>
-                      {desc && <span style={{fontSize:"11px",color:"var(--color-text-secondary)",marginTop:"1px"}}>{desc}</span>}
-                    </button>
-                  );
-                })}
-                {gi < periodGroups.length-1 && md}
-              </div>
-            ))}
+        {/* Right: period presets + custom range */}
+        <div style={{minWidth:0}}>
+          {periodGroups.map((grp, gi) => (
+            <div key={gi}>
+              {grp.map(({label,value,desc}) => {
+                const active = period===value;
+                return (
+                  <button key={value} style={{...mi(active),flexDirection:"column",alignItems:"flex-start",gap:"1px",padding:"8px 16px"}} onClick={()=>setPeriod(value)}>
+                    <span style={{fontWeight:active?700:400,fontSize:"13px"}}>{label}</span>
+                    {desc && <span style={{fontSize:"11px",color:"var(--color-text-secondary)",marginTop:"1px"}}>{desc}</span>}
+                  </button>
+                );
+              })}
+              {gi < periodGroups.length-1 && md}
+            </div>
+          ))}
+          {md}
+          {/* Custom range — applies the moment both dates are picked; highlighted while live */}
+          <div style={{padding:"8px 16px 10px",display:"flex",flexDirection:"column",gap:"6px",background:customActive?"rgba(59,130,246,0.07)":"transparent"}}>
+            <div style={{fontSize:"11px",fontWeight:600,color:customActive?"#3B82F6":"var(--color-text-secondary)"}}>{t("custom")}</div>
+            <div style={{display:"flex",alignItems:"center",gap:"6px"}} onClick={e=>e.stopPropagation()}>
+              <input type="date" value={rangeStart} max={rangeEnd || undefined}
+                onChange={e=>applyCustomRange(e.target.value, rangeEnd)} style={customDateInput}/>
+              <span style={{color:"var(--color-text-secondary)",fontSize:"12px"}}>–</span>
+              <input type="date" value={rangeEnd} min={rangeStart || undefined}
+                onChange={e=>applyCustomRange(rangeStart, e.target.value)} style={customDateInput}/>
+            </div>
           </div>
         </div>
       </div>
@@ -1175,7 +1606,7 @@ function PortfolioPageContent() {
   );
 
   // Site card
-  function SiteCard({ site }: { site: any }) {
+  function SiteCard({ site }: { site: SiteRow }) {
     const domain = getDomain(site.url);
     const isFav  = favorites.has(site.id);
     const sum: Record<Metric,{value:number;change:number}> = site.summary;
@@ -1196,15 +1627,17 @@ function PortfolioPageContent() {
       : {};
 
     return (
-      <div onClick={() => router.push(`/site/${encodeURIComponent(domain)}`)} className="card" style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:"8px",cursor:"pointer",textDecoration:"none",color:"inherit",...declineBorder}}>
+      <div onClick={() => router.push(`/site/${encodeURIComponent(domain)}?period=${period}${period === "custom" && customReady ? `&start=${rangeStart}&end=${rangeEnd}` : ""}`)} className="card" style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:"8px",cursor:"pointer",textDecoration:"none",color:"inherit",...declineBorder}}>
         {/* Header */}
         <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:"8px"}}>
           {/* Domain (name row + DR line underneath — the badge no longer squeezes the name) */}
           <div style={{display:"flex",flexDirection:"column",gap:"3px",minWidth:0}}>
             <div style={{display:"flex",alignItems:"center",gap:"6px",minWidth:0}}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              { }
               <img src={`/api/favicon?domain=${domain}`} width={16} height={16} alt=""
                 style={{borderRadius:"3px",flexShrink:0,filter:blur?"blur(5px)":"none",transition:"filter 0.25s"}} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
+              {/* Uptime status lives in the footer chips now — an online/offline tag next
+                  to market and tags, not a dot squeezing the name. */}
               <span style={{fontWeight:500,fontSize:"13px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",filter:blur?"blur(5px)":"none",transition:"filter 0.25s"}}>
                 {domain}
               </span>
@@ -1223,11 +1656,69 @@ function PortfolioPageContent() {
                 />
               )}
             </div>
-            {drMap[domain.toLowerCase().replace(/^www\./,"")] != null && (
-              <span title="Domain Rating by Ahrefs (ahrefs.com)" style={{fontSize:"10px",fontWeight:700,padding:"1px 6px",borderRadius:"6px",alignSelf:"flex-start",marginLeft:"22px",background:"rgba(58,87,252,0.12)",color:"#3A57FC",filter:blur?"blur(4px)":"none",transition:"filter 0.25s"}}>
-                DR {Math.round(drMap[domain.toLowerCase().replace(/^www\./,"")])}
-              </span>
-            )}
+            {(() => {
+              const key = domain.toLowerCase().replace(/^www\./,"");
+              const dr = drMap[key];
+              const dm = domMap[key];
+              // While the dashboard-wide DR backfill is still running, an unloaded card pulses
+              // instead of just staying silent — otherwise cards popping in over the first
+              // minute or two (Ahrefs is rate-limited on purpose) reads as some sites being
+              // broken rather than everything still loading.
+              const drPending = dr == null && drLoading;
+              if (dr == null && !dm && !drPending) return null;
+              const chip: React.CSSProperties = {fontSize:"10px",fontWeight:700,padding:"1px 6px",borderRadius:"6px",filter:blur?"blur(4px)":"none",transition:"filter 0.25s"};
+              return (
+                <div style={{display:"flex",gap:"4px",alignSelf:"flex-start",marginLeft:"22px",flexWrap:"wrap"}}>
+                  {/* DR is the free, always-available number and keeps its own styling. The
+                      optional paid metrics sit beside it in a muted chip so their absence
+                      reads as "not loaded" rather than "broken". The delta chip is the
+                      accumulated monthly series behind the number, compressed to what fits
+                      beside a 10px chip: ↓n red / ↑n green over the stored window (a
+                      polyline this small reads as noise, not a trend). The months and the
+                      ≥5-point penalty rule live in the tooltip; no chip until the delta
+                      actually rounds to something. */}
+                  {dr != null && (() => {
+                    const pts = drHist[key];
+                    const drop = pts && pts.length >= 2 ? pts[pts.length - 1].dr - pts[0].dr : 0;
+                    const shown = Math.round(Math.abs(drop));
+                    if (!shown) return (
+                      <span title="Domain Rating by Ahrefs (ahrefs.com)" style={{...chip,background:"rgba(58,87,252,0.12)",color:"#3A57FC"}}>
+                        DR {Math.round(dr)}
+                      </span>
+                    );
+                    const title = `${t("drHistHint")}\n\n${drSeriesText(pts!)}`
+                      + (drop <= -5 ? `\n\n${t("drHistFlag").replace("{n}", String(shown))}` : "");
+                    return (
+                      <>
+                        <span title="Domain Rating by Ahrefs (ahrefs.com)" style={{...chip,background:"rgba(58,87,252,0.12)",color:"#3A57FC"}}>
+                          DR {Math.round(dr)}
+                        </span>
+                        <span title={title} style={{...chip,cursor:"help",
+                          background: drop < 0 ? "rgba(239,68,68,0.12)" : "rgba(16,185,129,0.12)",
+                          color: drop < 0 ? "#F87171" : "#34D399"}}>
+                          {drop < 0 ? "↓" : "↑"}{shown}
+                        </span>
+                      </>
+                    );
+                  })()}
+                  {drPending && (
+                    <span title="Domain Rating by Ahrefs — checking…" className="dr-pulse" style={{...chip,background:"rgba(58,87,252,0.06)",color:"var(--color-text-tertiary)"}}>
+                      DR
+                    </span>
+                  )}
+                  {dm?.refDomains != null && (
+                    <span title={t("dashRefDomains")} style={{...chip,background:"rgba(255,255,255,0.06)",color:"var(--color-text-secondary)"}}>
+                      RD {fmtK(Math.round(dm.refDomains))}
+                    </span>
+                  )}
+                  {dm?.orgTraffic != null && (
+                    <span title={t("dashOrgTraffic")} style={{...chip,background:"rgba(255,255,255,0.06)",color:"var(--color-text-secondary)"}}>
+                      OT {fmtK(Math.round(dm.orgTraffic))}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Metrics 2×2 */}
@@ -1243,7 +1734,7 @@ function PortfolioPageContent() {
                     {m==="clicks"?"✦":m==="impressions"?"◉":m==="ctr"?"%":"↑"}
                   </span>
                   <span style={{fontWeight:600,filter:blur?"blur(5px)":"none",transition:"filter 0.25s"}}>{fmtVal(m,value)}</span>
-                  {change !== 0 && showPct && (
+                  {change !== 0 && showPct && comparison !== "disabled" && (
                     <span style={{fontSize:"10px",color:good?"#10B981":"#EF4444",fontWeight:500,filter:blur?"blur(5px)":"none",transition:"filter 0.25s"}}>
                       {arrow}{Math.abs(change)}%
                     </span>
@@ -1255,7 +1746,7 @@ function PortfolioPageContent() {
         </div>
 
         {/* Chart */}
-        <MultiMetricChart data={site.data} activeMetrics={activeMetrics} prevTrend={prevTrend} />
+        <MultiMetricChart data={site.data} activeMetrics={activeMetrics} prevTrend={prevTrend && comparison !== "disabled"} candles={chartTypePref === "candle"} />
 
         {/* Footer: tags and 4 action icons */}
         <div style={{display:"flex",flexDirection:"column",gap:"6px",paddingTop:"2px"}} onClick={e=>e.stopPropagation()}>
@@ -1279,9 +1770,74 @@ function PortfolioPageContent() {
             />
           )}
 
+          {/* Inline market editor — two-letter ISO code, or empty to fall back to the ccTLD. */}
+          {editingMarketId === site.id && (
+            <MarketInput
+              initialValue={site.market || ""}
+              onSave={v => {
+                setEditingMarketId(null);
+                fetch("/api/gsc/market", {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ siteId: site.id, market: v }),
+                }).then(r => r.json()).then(d => {
+                  // Optimistic local update so the chip reflects the resolved market immediately,
+                  // without a full portfolio refetch. The server echoes back the effective value.
+                  if (d?.ok) setSites(prev => prev.map(s => s.id === site.id ? { ...s, market: d.market } : s));
+                }).catch(() => {});
+              }}
+              onCancel={() => setEditingMarketId(null)}
+              placeholder={t("siteMarketAuto")}
+            />
+          )}
+
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             {/* Tags display */}
-            <div style={{display:"flex",gap:"4px",flexWrap:"wrap",flex:1,minWidth:0,marginRight:"8px"}}>
+            <div style={{display:"flex",gap:"4px",flexWrap:"wrap",flex:1,minWidth:0,marginRight:"8px",alignItems:"center"}}>
+              {/* Uptime status — an online/offline tag beside market and tags. Same rule the
+                  dot had: absent when the site has no monitor, because an unchecked site
+                  has no status to show. */}
+              {(() => {
+                const badge = uptimeMap[site.id] ?? null;
+                if (!badge) return null;
+                const look = UPTIME_CHIP_LOOK[badge.status];
+                return (
+                  <span
+                    title={uptimeBadgeLabel(badge, t, language)}
+                    style={{display:"inline-flex",alignItems:"center",gap:"5px",fontSize:"10px",fontWeight:700,padding:"2px 6px",borderRadius:"4px",whiteSpace:"nowrap",background:look.bg,color:look.fg}}
+                  >
+                    <UptimeDot badge={badge} size={7} decorative />
+                    {t(`uptimeStatus_${badge.status}` as Parameters<typeof t>[0])}
+                  </span>
+                );
+              })()}
+              {(() => {
+                // The market chip: a resolved gl code (from override or ccTLD) shows muted; an
+                // unknown market shows amber, because keyword data will be filed under the wrong
+                // country — or refused outright — until a human picks one. Click opens the inline
+                // editor — the chip is the only entry point, so it must read as interactive.
+                const effective = marketFor({ url: site.url, siteId: site.siteId, market: site.market });
+                const unknown = effective === null;
+                const editing = editingMarketId === site.id;
+                return (
+                  <span
+                    title={unknown ? t("siteMarketUnknown") : `${t("siteMarket")}: ${effective.toUpperCase()} — ${t("siteMarketEdit")}`}
+                    onClick={e => { e.preventDefault(); e.stopPropagation(); setEditingMarketId(editing ? null : site.id); }}
+                    style={{
+                      fontSize: "10px", fontWeight: 700, padding: "2px 6px", borderRadius: "4px",
+                      whiteSpace: "nowrap", cursor: "pointer",
+                      textTransform: unknown ? "none" : "uppercase",
+                      background: unknown ? "rgba(255,159,10,0.16)" : "rgba(139,92,246,0.12)",
+                      color: unknown ? "#ff9f0a" : "#8B5CF6",
+                      border: unknown ? "1px dashed rgba(255,159,10,0.5)" : "1px solid transparent",
+                      outline: editing ? "1.5px solid #8B5CF6" : "none",
+                      outlineOffset: "1px",
+                    }}
+                  >
+                    {unknown ? `⚠ ${t("siteMarketSet")}` : effective}
+                  </span>
+                );
+              })()}
               {(siteTags[site.id] || []).map(tag => {
                 const isActive = activeTag === tag;
                 return (
@@ -1372,10 +1928,10 @@ function PortfolioPageContent() {
     <div className="main-content">
       <style>{`
         @keyframes gsc-spin { to { transform: rotate(360deg); } }
-        .period-scroll::-webkit-scrollbar { width: 6px; }
-        .period-scroll::-webkit-scrollbar-track { background: var(--color-bg-secondary, #1e2130); border-radius: 3px; }
-        .period-scroll::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
-        .period-scroll::-webkit-scrollbar-thumb:hover { background: var(--color-text-secondary); }
+        .dd-panel::-webkit-scrollbar { width: 6px; }
+        .dd-panel::-webkit-scrollbar-track { background: var(--color-bg-secondary, #1e2130); border-radius: 3px; }
+        .dd-panel::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+        .dd-panel::-webkit-scrollbar-thumb:hover { background: var(--color-text-secondary); }
       `}</style>
 
       {/* ─── Search-engine tabs ─── */}
@@ -1398,6 +1954,11 @@ function PortfolioPageContent() {
           <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"4px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,cursor:"default",border:"1px solid rgba(59,130,246,0.4)",background:"rgba(59,130,246,0.12)",color:"#3B82F6",whiteSpace:"nowrap"}}>
             {t("allSitesSection")} (<span style={{filter:blur?"blur(5px)":"none",transition:"filter 0.25s"}}>{sites.length}</span>)
           </div>
+          {uptimeDownCount > 0 && (
+            <div title={uptimeDownSites.map(s => getDomain(s.url)).join("\n")} style={{display:"flex",alignItems:"center",gap:"6px",padding:"4px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:700,cursor:"default",border:"1px solid rgba(255,69,58,0.4)",background:"rgba(255,69,58,0.12)",color:"var(--color-accent-red)",whiteSpace:"nowrap"}}>
+              {t("uptimeDownCount").replace("{n}", String(uptimeDownCount))}
+            </div>
+          )}
           {accounts.map(acc => (
             <div key={acc.id} style={{display:"flex",alignItems:"center",gap:"5px",padding:"4px 10px",borderRadius:"20px",fontSize:"12px",background:"var(--color-bg-secondary,rgba(255,255,255,0.04))",border:"1px solid var(--color-border)"}}>
               {acc.picture
@@ -1436,18 +1997,10 @@ function PortfolioPageContent() {
 
       {(
         <>
-          {/* ─── Period quick buttons + Metric text toggles ─── */}
+          {/* ─── Period dropdown + Metric text toggles ─── */}
           <div style={{display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap",marginBottom:"8px"}}>
-        {/* Quick period buttons */}
-        {(["7d","28d","3m","6m","12m","16m"] as string[]).map(p => {
-          const active = period === p;
-          return (
-            <button key={p} onClick={() => setPeriod(p)} style={{padding:"6px 13px",borderRadius:"9999px",fontSize:"12px",fontWeight:active?700:500,cursor:"pointer",border:`1px solid ${active?"var(--color-accent-blue)":"var(--color-border)"}`,background:active?"rgba(0,102,204,0.12)":"var(--color-card)",color:active?"var(--color-accent-blue)":"var(--color-text-secondary)",transition:"all 0.15s",whiteSpace:"nowrap"}}>
-              {getPeriodLabel(p)}
-            </button>
-          );
-        })}
-        {/* More periods */}
+        {/* The single period control — the quick pills it used to sit beside were the same
+            six shortcuts the menu already lists, so they only doubled the surface */}
         {PeriodDd}
 
         <div style={{flex:1,minWidth:"8px"}}/>
@@ -1562,6 +2115,16 @@ function PortfolioPageContent() {
               onRemove={() => { setFilterDimension(null); setFilterText(""); }}
             />
           )}
+          {uptimeFilter !== "all" && (
+            <FilterChip
+              label={`${t("uptimeFilter")}: ${
+                uptimeFilter === "issues" ? t("uptimeFilterIssues")
+                : uptimeFilter === "down" ? t("uptimeStatus_down")
+                : t("uptimeStatus_up")
+              }`}
+              onRemove={() => setUptimeFilter("all")}
+            />
+          )}
         </div>
       )}
 
@@ -1573,7 +2136,7 @@ function PortfolioPageContent() {
             {label:t("totalImpressions"), icon:"◉", color:"#8B5CF6", bg:"rgba(139,92,246,0.06)", value: fmtK(totalImpressions),      sub: t("fromNSites").replace("{n}", String(visibleForTotals.length))},
             {label:t("averageCTR"),       icon:"%", color:"#10B981", bg:"rgba(16,185,129,0.06)", value: `${avgCtr}%`,                sub: withCtr.length > 0 ? t("acrossNSites").replace("{n}", String(withCtr.length)) : t("noData")},
             {label:t("averagePosition"),  icon:"↑", color:"#F59E0B", bg:"rgba(245,158,11,0.06)", value: avgPos > 0 ? String(avgPos) : "—", sub: withPos.length > 0 ? t("acrossNSites").replace("{n}", String(withPos.length)) : t("noData")},
-          ]).map(({label, icon, color, bg, value, sub}) => (
+          ]).map(({label, icon, color, value, sub}) => (
             <div key={label} style={{padding:"12px 16px",borderRadius:"12px",background:"var(--color-card)",border:"1px solid var(--color-border)"}}>
               <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"6px"}}>
                 <span style={{fontWeight:800,fontSize:"12px",color,lineHeight:1}}>{icon}</span>
@@ -1599,6 +2162,23 @@ function PortfolioPageContent() {
         </div>
       ) : (
         <>
+          {/* The checker itself could not reach the network on its last pass — the gray dots
+              below describe the checker, not the sites. One line, no per-site noise. */}
+          {checkerOffline && engine === "google" && (
+            <div style={{margin:"0 0 10px",padding:"8px 14px",borderRadius:"10px",background:"rgba(255,159,10,0.08)",border:"1px solid rgba(255,159,10,0.3)",fontSize:"12px",color:"var(--color-accent-orange)"}}>
+              {t("uptimeStatus_checker_offline")}
+            </div>
+          )}
+          {attentionSites.length>0 && (
+            <section style={{marginBottom:"12px"}}>
+              <div style={{fontSize:"11px",color:"var(--color-accent-red)",fontWeight:600,marginBottom:"12px",textTransform:"uppercase",letterSpacing:"0.07em"}}>
+                ⚠ {t("uptimeNeedsAttention")} (<span style={{filter:blur?"blur(4px)":"none",transition:"filter 0.25s"}}>{attentionSites.length}</span>)
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:"12px"}}>
+                {attentionSites.map((s,i)=><SiteCard key={s.id||i} site={s}/>)}
+              </div>
+            </section>
+          )}
           {favSites.length>0 && (
             <section>
               <div style={{fontSize:"11px",color:"var(--color-text-secondary)",fontWeight:600,marginBottom:"12px",textTransform:"uppercase",letterSpacing:"0.07em"}}>⭐ {t("favoritesSection")} (<span style={{filter:blur?"blur(4px)":"none",transition:"filter 0.25s"}}>{favSites.length}</span>)</div>
@@ -1627,6 +2207,57 @@ function PortfolioPageContent() {
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340px,1fr))",gap:"12px",opacity:0.5}}>
                 {hiddenSites.map((s,i)=><SiteCard key={s.id||i} site={s}/>)}
               </div>
+            </section>
+          )}
+
+          {/* Archive — properties no longer returned by Search Console. Collapsed by
+              default so replaced domains stop cluttering the dashboard, but their
+              history stays in the database until deleted by hand. */}
+          {archivedSites.length>0 && (
+            <section style={{marginTop:"8px"}}>
+              <button
+                className="archive-toggle"
+                onClick={()=>setShowArchive(v=>!v)}
+                aria-expanded={showArchive}
+              >
+                <span className={showArchive ? "archive-caret open" : "archive-caret"}>▸</span>
+                <span>🗄 {t("archiveSection")}</span>
+                <span className="archive-count" style={{filter:blur?"blur(4px)":"none",transition:"filter 0.25s"}}>
+                  {archivedSites.length}
+                </span>
+              </button>
+              {showArchive && (
+                <>
+                  <div className="archive-hint">{t("archiveHint")}</div>
+                  <div className="archive-list">
+                    {archivedSites.map((s,i)=>(
+                      <div key={s.id||i} className={archiveBusy===s.id ? "archive-row busy" : "archive-row"}>
+                        <span style={{display:"inline-flex",alignItems:"center",gap:"6px"}}>
+                          <UptimeDot badge={uptimeMap[s.id] ?? null} />
+                          <span className="archive-domain" style={{filter:blur?"blur(4px)":"none",transition:"filter 0.25s"}}>
+                            {getDomain(s.url)}
+                          </span>
+                        </span>
+                        {s.archivedAt && (
+                          <span className="archive-date">
+                            {new Date(s.archivedAt).toLocaleDateString()}
+                          </span>
+                        )}
+                        <button
+                          className="archive-btn"
+                          onClick={()=>restoreSite(s.id)}
+                          disabled={archiveBusy===s.id}
+                        >{t("archiveRestore")}</button>
+                        <button
+                          className="archive-btn danger"
+                          onClick={()=>deleteSite(s.id, getDomain(s.url))}
+                          disabled={archiveBusy===s.id}
+                        >{t("archiveDelete")}</button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </section>
           )}
         </>

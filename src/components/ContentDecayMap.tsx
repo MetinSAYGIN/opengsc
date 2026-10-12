@@ -1,27 +1,21 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
-import Link from "next/link";
-import { RefreshCw } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { ScatterChart, Scatter, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { withShare, isGuestView } from "@/lib/shareParam";
+import { withShare } from "@/lib/shareParam";
+import UrlCell from "@/components/UrlCell";
+import DecayingPagesTable from "@/components/DecayingPagesTable";
+import { usePersistedState } from "@/lib/usePersistedState";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 type HeatMetric = "clicks" | "impressions";
 type HeatPeriod = "month" | "week";
 
-interface PageRow { url: string; vals: number[]; siteName?: string }
-interface DecayRow {
-  page: string; url: string;
-  clicksLast2m: number; clicksLast2mPct: number;
-  clicksYoY: number | null; clicks: number;
-  status: "Warning" | "Critical";
-  siteId?: string; siteName?: string;
-}
+interface PageRow { url: string; fullUrl?: string; vals: number[]; siteName?: string }
 interface DecayData {
   pages: PageRow[]; cols: string[]; years?: (number | undefined)[];
-  allVals: number[]; decay: DecayRow[];
+  allVals: number[];
 }
 
 // ─── Color helpers ─────────────────────────────────────────────────────────────
@@ -86,143 +80,40 @@ function HowItWorks() {
   );
 }
 
-// ─── Decaying Pages Table ──────────────────────────────────────────────────────
-function DecayingPagesTable({ rows }: { rows: DecayRow[] }) {
-  const { t } = useLanguage();
-  const [rowsPerPage, setRowsPerPage] = useState(5);
-  const visible = rows.slice(0, rowsPerPage);
-
-  const statusColor = (s: DecayRow["status"]) =>
-    s === "Critical" ? "#EF4444" : "#F59E0B";
-
-  if (rows.length === 0) {
-    return (
-      <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "13px", textAlign: "center" }}>
-        No declining pages detected in this period.
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ padding: "20px 28px", borderBottom: "1px solid var(--color-border)" }}>
-      <div style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "14px" }}>
-        {t("cdmTableTitle")}
-      </div>
-
-      <div style={{
-        display: "grid", gridTemplateColumns: "1fr 140px 110px 80px 90px",
-        padding: "8px 12px",
-        background: "var(--color-bg)", borderRadius: "8px 8px 0 0",
-        border: "1px solid var(--color-border)", borderBottom: "none",
-        fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)",
-      }}>
-        <div>{t("cdmPage")}</div>
-        <div style={{ textAlign: "right" }}>{t("cdmClicksLast2m")}</div>
-        <div style={{ textAlign: "right" }}>{t("cdmClicksYoY")}</div>
-        <div style={{ textAlign: "right" }}>{t("clicks")}</div>
-        <div style={{ textAlign: "right" }}>{t("cdmStatus")}</div>
-      </div>
-
-      <div style={{ border: "1px solid var(--color-border)", borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
-        {visible.map((row, i) => (
-          <div key={row.url} style={{
-            display: "grid", gridTemplateColumns: "1fr 140px 110px 80px 90px",
-            padding: "12px 12px",
-            borderBottom: i < visible.length - 1 ? "1px solid var(--color-border)" : "none",
-            background: i % 2 === 0 ? "var(--color-card)" : "rgba(255,255,255,0.02)",
-            alignItems: "center", fontSize: "13px",
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, overflow: "hidden" }}>
-              <span style={{ color: "#3B82F6", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.url}>
-                {row.page}
-              </span>
-              {row.siteName && (
-                <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", padding: "2px 6px", borderRadius: "4px", flexShrink: 0 }} title={row.siteName}>
-                  {row.siteName}
-                </span>
-              )}
-              {!isGuestView() && (
-                <Link href={`/seo-tools/rewrite?url=${encodeURIComponent(row.url)}`} title={t("cdmRewrite")}
-                  onClick={e => e.stopPropagation()}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "4px", flexShrink: 0, padding: "2px 7px", borderRadius: "6px", border: "1px solid var(--color-border)", color: "#34c759", fontSize: "10px", fontWeight: 700, textDecoration: "none" }}>
-                  <RefreshCw size={11} /> {t("cdmRewrite")}
-                </Link>
-              )}
-            </div>
-
-            <div style={{ textAlign: "right", color: "#EF4444", fontWeight: 600 }}>
-              <span style={{ fontSize: "11px" }}>↘</span>{" "}
-              {Math.abs(row.clicksLast2m)} ({Math.abs(row.clicksLast2mPct)}%)
-            </div>
-
-            <div style={{ textAlign: "right" }}>
-              {row.clicksYoY === null
-                ? <span style={{ color: "var(--color-text-secondary)" }}>—</span>
-                : <span style={{ color: row.clicksYoY < 0 ? "#EF4444" : "#10B981" }}>
-                    {row.clicksYoY > 0 ? "+" : ""}{row.clicksYoY}%
-                  </span>
-              }
-            </div>
-
-            <div style={{ textAlign: "right", color: "var(--color-text-secondary)" }}>{row.clicks}</div>
-
-            <div style={{ textAlign: "right" }}>
-              <span style={{
-                display: "inline-block", padding: "3px 10px", borderRadius: "20px",
-                fontSize: "12px", fontWeight: 600,
-                color: statusColor(row.status),
-                background: `${statusColor(row.status)}18`,
-                border: `1px solid ${statusColor(row.status)}40`,
-              }}>{row.status}</span>
-            </div>
-          </div>
-        ))}
-
-        <div style={{
-          padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between",
-          background: "var(--color-bg)", borderTop: "1px solid var(--color-border)",
-          fontSize: "12px", color: "var(--color-text-secondary)",
-        }}>
-          <span>{t("cdmShowingRows").replace("{start}", "1").replace("{end}", String(visible.length)).replace("{total}", String(rows.length))}</span>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span>{t("cdmRowsPerPage")}</span>
-            <select value={rowsPerPage} onChange={e => setRowsPerPage(Number(e.target.value))}
-              style={{ padding: "3px 8px", borderRadius: "6px", fontSize: "12px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", cursor: "pointer", outline: "none" }}>
-              {[5, 10, 25, 50].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Heatmap ───────────────────────────────────────────────────────────────────
 function Heatmap({
-  domain, siteDbId,
-}: { domain: string; siteDbId: string }) {
+  domain, siteDbId, initialPeriod, onPeriodChange, sites = null,
+}: { domain: string; siteDbId: string; initialPeriod?: HeatPeriod; onPeriodChange?: (p: HeatPeriod) => void; sites?: string[] | null }) {
   const { t } = useLanguage();
 
   const [metric,    setMetric]    = useState<HeatMetric>("clicks");
-  const [period,    setPeriod]    = useState<HeatPeriod>("month");
+  // The decay bucket is stored (gsc_decay_period) so week stays week across a refresh; a
+  // standalone page can pin it via ?period= (initialPeriod, forwarded by ContentDecayMap)
+  // so a shared decay report opens at the bucket it was read at.
+  const [storedPeriod, setStoredPeriod] = usePersistedState<HeatPeriod>("gsc_decay_period", "month", v => v === "month" || v === "week");
+  const period    = initialPeriod ?? storedPeriod;
+  const setPeriod = (p: HeatPeriod) => { setStoredPeriod(p); onPeriodChange?.(p); };
   const [threshold, setThreshold] = useState(30);
   const [data,      setData]      = useState<DecayData | null>(null);
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState("");
 
+  // The portfolio picker's selection, as a stable key (it's an array prop).
+  const sitesKey = sites?.length ? [...sites].sort().join(",") : "";
   const fetchData = useCallback(async (m: HeatMetric, p: HeatPeriod) => {
     if (!siteDbId) return;
     setLoading(true); setError("");
     try {
-      const res = await fetch(withShare(
-        `/api/gsc/decay?siteId=${encodeURIComponent(siteDbId)}&metric=${m}&period=${p}&cols=16&top=20`
-      ));
+      const res = await fetch(withShare("/api/gsc/decay"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId: siteDbId, parts: ["heatmap"], metric: m, period: p, cols: 16, top: 20, ...(sitesKey ? { sites: sitesKey.split(",") } : {}) }),
+      });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Failed");
       setData(json);
-    } catch (e: any) { setError(e.message); }
+    } catch (e) { setError((e as Error).message); }
     setLoading(false);
-  }, [siteDbId]);
+  }, [siteDbId, sitesKey]);
 
   useEffect(() => { fetchData(metric, period); }, [metric, period, fetchData]);
 
@@ -324,7 +215,7 @@ function Heatmap({
       {/* Heatmap table */}
       {pages.length > 0 && (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "separate", borderSpacing: "3px", width: "100%" }}>
+          <table className="privacy-sensitive" style={{ borderCollapse: "separate", borderSpacing: "3px", width: "100%" }}>
             <thead>
               {period === "month" && yearGroups.length > 0 && (
                 <tr>
@@ -369,9 +260,9 @@ function Heatmap({
               {pages.map((p) => {
                 const total = p.vals.reduce((a, b) => a + b, 0);
                 return (
-                  <tr key={p.url}>
-                    <td style={{ fontSize: "12px", color: "#3B82F6", fontWeight: 500, paddingRight: "12px", paddingBottom: "3px", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <span title={p.url}>{p.url}</span>
+                  <tr key={`${p.siteName ?? ""}\n${p.fullUrl ?? p.url}`}>
+                    <td style={{ paddingRight: "12px", paddingBottom: "3px", maxWidth: "260px", overflow: "hidden", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <UrlCell label={p.url} href={p.fullUrl ?? p.url} fontSize={12} />
                       {p.siteName && (
                         <span style={{ fontSize: "9px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.05)", padding: "1px 5px", borderRadius: "3px", flexShrink: 0 }}>
                           {p.siteName}
@@ -400,18 +291,20 @@ function Heatmap({
 // ─── Position Decay Scatter Plot ──────────────────────────────────────────────
 function PositionDecayScatter({ siteDbId }: { siteDbId: string }) {
   const { t } = useLanguage();
-  const [points, setPoints] = useState<any[]>([]);
+  const [points, setPoints] = useState<{ currPos: number; prevPos: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [reason, setReason] = useState("");
+  const [periods, setPeriods] = useState<{ previous: string; current: string } | null>(null);
 
   useEffect(() => {
     if (!siteDbId) return;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setReason("");
     fetch(withShare(`/api/gsc/decay/position?siteId=${encodeURIComponent(siteDbId)}`))
       .then(r => r.json())
       .then(d => {
         if (d.error) setError(d.error);
-        else setPoints(d.points ?? []);
+        else { setPoints(d.points ?? []); setReason(d.reason ?? ""); setPeriods(d.periods ?? null); }
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
@@ -443,13 +336,26 @@ function PositionDecayScatter({ siteDbId }: { siteDbId: string }) {
         {t("cdmScatterDesc") || "X-axis is the query position 30-60 days ago. Y-axis is today's position. The diagonal represents no change. Points above the diagonal represent search queries that declined; points below improved."}
       </p>
 
+      {periods && (
+        <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginTop: "-12px", marginBottom: "16px" }}>
+          {periods.previous} → {periods.current}
+        </div>
+      )}
+
       {points.length === 0 ? (
-        <div style={{ padding: "40px", textAlign: "center", color: "var(--color-text-secondary)" }}>
-          No sufficient search queries found in both periods to plot.
+        // One generic sentence used to cover every cause. Naming the cause matters: "connect a
+        // Google account" and "this site has no query with 10+ impressions in both windows" call
+        // for completely different actions.
+        <div style={{ padding: "40px", textAlign: "center", color: "var(--color-text-secondary)", fontSize: "13px", lineHeight: 1.6 }}>
+          {reason === "no_google_account"
+            ? t("cdmScatterNoAccount")
+            : t("cdmScatterNoOverlap")}
         </div>
       ) : (
         <div style={{ height: "420px", background: "var(--color-bg)", borderRadius: "8px", padding: "16px", border: "1px solid var(--color-border)" }}>
-          <ResponsiveContainer width="100%" height="100%">
+          {/* initialDimension seeds the pre-measure render: recharts 3.x defaults it to -1×-1
+            and logs a width(-1)/height(-1) warning before the first ResizeObserver report */}
+        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 388 }}>
             <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis 
@@ -511,29 +417,16 @@ function PositionDecayScatter({ siteDbId }: { siteDbId: string }) {
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
-export default function ContentDecayMap({ domain, siteDbId }: { domain: string; siteDbId: string }) {
+// initialPeriod/onPeriodChange come from the standalone /decay page (?period=week pins the
+// bucket for a shared link); the site page renders this component without them and the stored
+// value (gsc_decay_period, shared with the heatmap below) is what the window starts at.
+export default function ContentDecayMap({ domain, siteDbId, initialPeriod, onPeriodChange }: { domain: string; siteDbId: string; initialPeriod?: HeatPeriod; onPeriodChange?: (p: HeatPeriod) => void }) {
   const { t } = useLanguage();
-
-  const [metric,    setMetric]    = useState<HeatMetric>("clicks");
-  const [period,    setPeriod]    = useState<HeatPeriod>("month");
-  const [data,      setData]      = useState<DecayData | null>(null);
-  const [loading,   setLoading]   = useState(false);
-  const [view,      setView]      = useState<"heatmap" | "scatter">("heatmap");
-
-  const fetchData = useCallback(async (m: HeatMetric, p: HeatPeriod) => {
-    if (!siteDbId) return;
-    setLoading(true);
-    try {
-      const res = await fetch(withShare(
-        `/api/gsc/decay?siteId=${encodeURIComponent(siteDbId)}&metric=${m}&period=${p}&cols=16&top=20`
-      ));
-      const json = await res.json();
-      if (res.ok) setData(json);
-    } catch {}
-    setLoading(false);
-  }, [siteDbId]);
-
-  useEffect(() => { fetchData(metric, period); }, [metric, period, fetchData]);
+  const [view, setView] = useState<"heatmap" | "scatter">("heatmap");
+  // Portfolio site filter — shared by the table (which hosts the picker) and the heatmap.
+  const [sites, setSites] = useState<string[] | null>(null);
+  // The portfolio page passes "all"; the scatter is a single-property view (see the toggle below).
+  const isPortfolio = siteDbId === "all";
 
   return (
     <div style={{
@@ -541,11 +434,17 @@ export default function ContentDecayMap({ domain, siteDbId }: { domain: string; 
       overflow: "hidden", marginTop: "20px", background: "var(--color-card)",
     }}>
       <HowItWorks />
-      <DecayingPagesTable rows={data?.decay ?? []} />
+      <DecayingPagesTable siteDbId={siteDbId} defaultPeriod={initialPeriod}
+        selectedSites={isPortfolio ? sites : null} onSelectSites={isPortfolio ? setSites : undefined} />
       
-      {/* Toggle View buttons */}
-      <div style={{ display: "flex", gap: "10px", padding: "16px 28px", borderBottom: "1px solid var(--color-border)", background: "rgba(255,255,255,0.01)" }}>
-        {(["heatmap", "scatter"] as const).map(v => (
+      {/* Toggle View buttons.
+          The scatter plots one site's queries by rank, which only means something within a single
+          property: position 3 on one site and position 30 on another describe different SERPs and
+          share no axis. On the portfolio page it would also fan out into two live Search Console
+          calls per site. Offering it there would be both misleading and slow, so it is offered
+          only where it applies. */}
+      <div style={{ display: "flex", gap: "10px", padding: "16px 28px", borderBottom: "1px solid var(--color-border)", background: "rgba(255,255,255,0.01)", alignItems: "center" }}>
+        {(isPortfolio ? (["heatmap"] as const) : (["heatmap", "scatter"] as const)).map(v => (
           <button key={v} onClick={() => setView(v)} style={{
             padding: "6px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 600,
             cursor: "pointer", border: `1px solid ${view === v ? "#3B82F6" : "var(--color-border)"}`,
@@ -555,10 +454,13 @@ export default function ContentDecayMap({ domain, siteDbId }: { domain: string; 
             {v === "heatmap" ? (t("cdmViewHeatmap") || "Heatmap View") : (t("cdmViewScatter") || "Decay Scatter Plot")}
           </button>
         ))}
+        {isPortfolio && (
+          <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>{t("cdmScatterPerSiteOnly")}</span>
+        )}
       </div>
 
-      {view === "heatmap" ? (
-        <Heatmap domain={domain} siteDbId={siteDbId} />
+      {view === "heatmap" || isPortfolio ? (
+        <Heatmap domain={domain} siteDbId={siteDbId} initialPeriod={initialPeriod} onPeriodChange={onPeriodChange} sites={isPortfolio ? sites : null} />
       ) : (
         <PositionDecayScatter siteDbId={siteDbId} />
       )}

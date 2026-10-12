@@ -1,19 +1,19 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { fetchLLM } from "@/lib/llm";
 import { stripForeignScripts } from "@/lib/seo/generate";
 
 // POST /api/seo/factfix — rewrite an article to remove/soften/flag unverified claims
 // found by fact-check. body: { article, claims[], keyword?, aiProvider, aiApiKey, model? }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!(session?.user as any)?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const workspaceId = await workspaceUserId("spend");
+  if (!workspaceId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json();
   const article = String(b.article ?? "");
   // Accept either plain strings or {claim,status,note} objects (note carries the correct value).
-  const rawClaims: any[] = Array.isArray(b.claims) ? b.claims.slice(0, 40) : [];
+  const rawClaims: (string | { claim?: unknown; status?: unknown; note?: unknown })[] =
+    Array.isArray(b.claims) ? b.claims.slice(0, 40) : [];
   const claims = rawClaims.map((c) => typeof c === "string" ? { claim: c, status: "", note: "" } : { claim: String(c.claim ?? ""), status: String(c.status ?? ""), note: String(c.note ?? "") }).filter((c) => c.claim.trim());
   if (!article.trim()) return NextResponse.json({ error: "no_article" }, { status: 400 });
   if (!claims.length) return NextResponse.json({ text: article }); // nothing to fix

@@ -9,6 +9,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Loader2, AlertTriangle, Bot, Monitor, ShieldCheck, ShieldAlert, ShieldX, ArrowRight, Globe, CheckCircle2, ExternalLink, HelpCircle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { readUrlParam, writeUrlParam } from "@/lib/urlParam";
 import { addHistory, getHistoryItem } from "@/lib/seo/history";
 import { getFirecrawlKey } from "@/lib/seo/keys";
 
@@ -19,10 +20,14 @@ const btnPurple: React.CSSProperties = { display: "inline-flex", alignItems: "ce
 type Hop = { url: string; status: number; location?: string; redirectType?: string; setCookie?: boolean };
 type Signals = { canonicalHtml?: string; htmlLang?: string; metaRobots?: string; hreflang: { lang: string; href: string }[]; title: string; metaDescription?: string; h1?: string; jsRedirects: string[]; indexable: boolean; indexableReasons: string[] };
 type View = { ua: string; ok: boolean; rendered?: boolean; blocked?: boolean; antiBot?: string; hops: Hop[]; finalUrl: string; finalStatus: number; headers: Record<string, string | undefined>; signals: Signals; wordCount: number; bodyText: string; htmlRaw: string; screenshot?: string; error?: string };
-type Diff = { verdict: "clean" | "suspicious" | "cloaking"; score: number; flags: string[] };
+type Diff = { verdict: "clean" | "suspicious" | "cloaking" | "unknown"; score: number; flags: string[]; notes?: string[]; similarity?: number; noiseFloor?: number; confidence?: "high" | "medium" | "low" };
+type DiffPair = { a: string; b: string; kind: "baseline" | "cross" | "device"; similarity: number };
+type Matrix = { pairs: DiffPair[]; noiseFloor: number; crossDelta: number; confidence: "high" | "medium" | "low" };
 type Gsc = { verdict?: string | null; coverageState?: string | null; indexingState?: string | null; robotsTxtState?: string | null; pageFetchState?: string | null; crawledAs?: string | null; googleCanonical?: string | null; userCanonical?: string | null; lastCrawlTime?: string | null };
 type AntiBot = { blocked: boolean; provider?: string; bypassed: boolean };
-type Result = { url: string; views: View[]; diff: Diff; ownSite?: { id: string; url: string } | null; gsc?: Gsc | null; wayback?: { available: boolean; url?: string; timestamp?: string } | null; antiBot?: AntiBot | null };
+type Result = { url: string; views: View[]; diff: Diff; matrix?: Matrix | null; ownSite?: { id: string; url: string } | null; gsc?: Gsc | null; wayback?: { available: boolean; url?: string; timestamp?: string } | null; antiBot?: AntiBot | null };
+
+const CONF_KEY = { high: "gbvConfHigh", medium: "gbvConfMedium", low: "gbvConfLow" } as const;
 
 const UA_LABEL: Record<string, string> = {
   gbMobile: "Googlebot (mobile)",
@@ -49,6 +54,16 @@ export default function GooglebotViewPage() {
   const [res, setRes] = useState<Result | null>(null);
   const [viewIdx, setViewIdx] = useState(0);
   const [mode, setMode] = useState<"preview" | "text" | "html">("preview");
+  // Deep link (?compare=js&view=text): restore on mount, mirror on change. viewIdx stays out of
+  // the URL on purpose — it indexes into the views the response happened to produce, so a
+  // number in a shared link would point at a different view or none.
+  useEffect(() => {
+    const c = readUrlParam("compare");
+    if (c === "raw" || c === "js") setCompareMode(c);
+    const m = readUrlParam("view");
+    if (m === "preview" || m === "text" || m === "html") setMode(m);
+  }, []);
+  useEffect(() => { writeUrlParam("compare", compareMode); writeUrlParam("view", mode); }, [compareMode, mode]);
   const [richLoading, setRichLoading] = useState(false);
   const [richErr, setRichErr] = useState("");
   const [richMsg, setRichMsg] = useState("");
@@ -64,7 +79,7 @@ export default function GooglebotViewPage() {
         if (item && item.type === "googlebot") {
           setRes(item.data);
           setUrl(item.data.url);
-          const hasJsRender = item.data.views.some((v: any) => v.ua === "gbRender" || v.ua === "browserRender");
+          const hasJsRender = item.data.views.some((v: View) => v.ua === "gbRender" || v.ua === "browserRender");
           if (hasJsRender) {
             setFirecrawl(true);
             setCompareMode("js");
@@ -97,7 +112,7 @@ export default function GooglebotViewPage() {
         setRes(d);
         const historyData = {
           ...d,
-          views: d.views.map((v: any) => ({
+          views: d.views.map((v: View) => ({
             ...v,
             htmlRaw: "",
           })),
@@ -108,7 +123,7 @@ export default function GooglebotViewPage() {
           data: historyData,
         });
       }
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setRunning(false);
   }
 
@@ -311,7 +326,10 @@ export default function GooglebotViewPage() {
                   <Icon size={22} color={v.color} />
                   <div>
                     <div style={{ fontSize: "15px", fontWeight: 700, color: v.color }}>{v.label}</div>
-                    <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("gbvScore")}: {res.diff.score}/100</div>
+                    <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
+                      {t("gbvScore")}: {res.diff.score}/100
+                      {res.diff.confidence ? ` · ${t("gbvConfidence")}: ${t(CONF_KEY[res.diff.confidence])}` : ""}
+                    </div>
                   </div>
                 </div>
                 {res.diff.flags.length > 0 && (
@@ -319,9 +337,52 @@ export default function GooglebotViewPage() {
                     {res.diff.flags.map((f, i) => <li key={i}>{f}</li>)}
                   </ul>
                 )}
+                {/* Findings that are not cloaking but change how the page should be read — a
+                    client-side redirect served to everyone, for instance. Kept visually separate so
+                    they never look like evidence for the verdict above. */}
+                {res.diff.notes && res.diff.notes.length > 0 && (
+                  <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--color-border)" }}>
+                    <div style={{ fontSize: "10px", fontWeight: 700, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("gbvNotesTitle")}</div>
+                    <ul style={{ margin: "6px 0 0", paddingLeft: "18px", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
+                      {res.diff.notes.map((n, i) => <li key={i}>{n}</li>)}
+                    </ul>
+                  </div>
+                )}
               </div>
             );
           })()}
+
+          {/* The sampling evidence behind the verdict — shown so the score can be audited rather
+              than trusted. Baseline rows are the page arguing with itself; cross rows are the
+              actual question. */}
+          {res.matrix && res.matrix.pairs.length > 0 && (
+            <div className={card}>
+              <div className="tool-section-label" style={{ marginBottom: "6px" }}>{t("gbvMatrixTitle")}</div>
+              <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.6, marginBottom: "10px" }}>{t("gbvMatrixHint")}</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                  <tbody>
+                    {res.matrix.pairs.map((pair, i) => (
+                      <tr key={i} style={{ borderTop: i ? "1px solid var(--color-border)" : "none" }}>
+                        <td style={{ padding: "6px 8px 6px 0", color: "var(--color-text-secondary)" }}>
+                          {pair.a} ↔ {pair.b}
+                          <span style={{ marginLeft: "8px", fontSize: "10px", color: "var(--color-text-tertiary)" }}>
+                            {pair.kind === "baseline" ? t("gbvPairBaseline") : pair.kind === "device" ? t("gbvPairDevice") : t("gbvPairCross")}
+                          </span>
+                        </td>
+                        <td style={{ padding: "6px 0", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, color: pair.similarity >= 0.99 ? "var(--color-accent-green)" : pair.similarity >= 0.9 ? "var(--color-accent-orange)" : "var(--color-accent-red)" }}>
+                          {pair.similarity.toFixed(3)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginTop: "10px", fontSize: "11px", color: "var(--color-text-secondary)" }}>
+                {t("gbvNoiseFloor")}: <b>{(res.matrix.noiseFloor * 100).toFixed(1)}%</b>
+              </div>
+            </div>
+          )}
 
           {/* Cross-check with the real Google */}
           <div className={card} style={{ borderColor: "rgba(66,133,244,0.3)", background: "rgba(66,133,244,0.04)" }}>
@@ -452,7 +513,7 @@ export default function GooglebotViewPage() {
                 ) : mode === "preview" ? (
                   sel.screenshot ? (
                     <>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      { }
                       <img src={sel.screenshot} alt={t("gbvScreenshot")} style={{ width: "100%", borderRadius: "8px", border: "1px solid var(--color-border)", background: "#fff", display: "block" }} />
                       <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)", marginTop: "6px", lineHeight: 1.4 }}>{t("gbvScreenshot")} · {UA_LABEL[sel.ua] || sel.ua}</div>
                     </>

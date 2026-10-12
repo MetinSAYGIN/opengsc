@@ -1,8 +1,23 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { verifyAuthOrShare } from "@/lib/authShare";
 import { getOwnerEngineKey } from "@/lib/engineKeysServer";
+
+// Bing returns errors as HTTP 400 with { ErrorCode, Message } (e.g. InvalidApiKey,
+// InvalidSiteUrl). Surface them instead of silently returning empty data.
+async function bingErrorFrom(res: Response, siteUrl: string): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  try {
+    const j = JSON.parse(raw);
+    const msg = j?.Message || j?.message || raw;
+    // Friendlier hint for the most common cause (wrong key type / bad key).
+    if (/invalidapikey/i.test(String(msg))) return "Bing: InvalidApiKey — check you pasted an API Key (Bing → Settings → API Access → API Key), not an OAuth Client ID.";
+    if (/invalidsiteurl/i.test(String(msg))) return `Bing: InvalidSiteUrl — this exact URL (${siteUrl}) isn't a verified site in this Bing account.`;
+    return `Bing ${res.status}: ${String(msg).slice(0, 200)}`;
+  } catch {
+    return `Bing ${res.status}: ${raw.slice(0, 200) || "request failed"}`;
+  }
+}
 
 // GET /api/indexing/bing?siteUrl=...&apiKey=...            (owner: key from browser)
 //     /api/indexing/bing?siteUrl=...&siteId=...&shareToken=...  (guest: key resolved server-side)
@@ -14,8 +29,7 @@ export async function GET(req: Request) {
   const shareToken = searchParams.get("shareToken") || "";
 
   // Authenticate as the logged-in owner OR via a valid share link for this site.
-  const session = await getServerSession(authOptions);
-  let ownerId = (session?.user as any)?.id as string | undefined;
+    let ownerId = await workspaceUserId();
   if (!ownerId && shareToken && siteId) {
     const auth = await verifyAuthOrShare(req, siteId);
     if (auth) ownerId = auth.userId;
@@ -32,27 +46,11 @@ export async function GET(req: Request) {
   const api = (method: string) =>
     `https://ssl.bing.com/webmaster/api.svc/json/${method}?siteUrl=${encodeURIComponent(siteUrl)}&apikey=${encodeURIComponent(apiKey)}`;
 
-  // Bing returns errors as HTTP 400 with { ErrorCode, Message } (e.g. InvalidApiKey,
-  // InvalidSiteUrl). Surface them instead of silently returning empty data.
-  async function bingErrorFrom(res: Response): Promise<string> {
-    const raw = await res.text().catch(() => "");
-    try {
-      const j = JSON.parse(raw);
-      const msg = j?.Message || j?.message || raw;
-      // Friendlier hint for the most common cause (wrong key type / bad key).
-      if (/invalidapikey/i.test(String(msg))) return "Bing: InvalidApiKey — check you pasted an API Key (Bing → Settings → API Access → API Key), not an OAuth Client ID.";
-      if (/invalidsiteurl/i.test(String(msg))) return `Bing: InvalidSiteUrl — this exact URL (${siteUrl}) isn't a verified site in this Bing account.`;
-      return `Bing ${res.status}: ${String(msg).slice(0, 200)}`;
-    } catch {
-      return `Bing ${res.status}: ${raw.slice(0, 200) || "request failed"}`;
-    }
-  }
-
   try {
     // 1. Get Rank and Traffic Stats (PRIMARY — its error is the whole call's error)
     const trafficRes = await fetch(api("GetRankAndTrafficStats"), { signal: AbortSignal.timeout(10000) });
     if (!trafficRes.ok) {
-      return NextResponse.json({ error: await bingErrorFrom(trafficRes) }, { status: 200 });
+      return NextResponse.json({ error: await bingErrorFrom(trafficRes, siteUrl) }, { status: 200 });
     }
     const trafficData = (await trafficRes.json()).d || [];
 
@@ -87,15 +85,14 @@ export async function GET(req: Request) {
       pages: pageData,
       crawl: crawlData,
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Failed to query Bing Webmaster API" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message || "Failed to query Bing Webmaster API" }, { status: 500 });
   }
 }
 
 // POST /api/indexing/bing -> Submit sitemap to Bing
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("act");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
@@ -106,24 +103,24 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing sitemapUrl" }, { status: 400 });
     }
 
-    // If API key is provided, use the Bing Webmaster API SubmitSitemap
-    if (apiKey && siteUrl) {
-      const url = `https://ssl.bing.com/webmaster/api.svc/json/SubmitSitemap?siteUrl=${encodeURIComponent(siteUrl)}&sitemapUrl=${encodeURIComponent(sitemapUrl)}&apikey=${encodeURIComponent(apiKey)}`;
-      const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(10000) });
-      if (response.ok) {
-        return NextResponse.json({ ok: true, method: "api" });
-      }
+    // An API key is now the only way in. This used to fall back to https://www.bing.com/ping,
+    // the anonymous sitemap submission endpoint, which Bing shut down in 2022 over spam — it
+    // answers 410 Gone. The fallback therefore never worked, and worse, it swallowed the real
+    // problem: a bad key produced "Bing ping failed with status 410" instead of InvalidApiKey.
+    if (!apiKey || !siteUrl) {
+      return NextResponse.json(
+        { error: "Bing needs an API key to accept a sitemap — anonymous submission was retired in 2022. Add one in Settings → Bing Webmaster, or list the sitemap in robots.txt." },
+        { status: 400 },
+      );
     }
 
-    // Fallback: standard HTTP ping (does not require API key)
-    const pingUrl = `https://www.bing.com/ping?sitemap=${encodeURIComponent(sitemapUrl)}`;
-    const response = await fetch(pingUrl, { signal: AbortSignal.timeout(10000) });
-    if (response.ok) {
-      return NextResponse.json({ ok: true, method: "ping" });
+    const url = `https://ssl.bing.com/webmaster/api.svc/json/SubmitSitemap?siteUrl=${encodeURIComponent(siteUrl)}&sitemapUrl=${encodeURIComponent(sitemapUrl)}&apikey=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) {
+      return NextResponse.json({ error: await bingErrorFrom(response, siteUrl) }, { status: 400 });
     }
-
-    return NextResponse.json({ error: `Bing ping failed with status ${response.status}` }, { status: 400 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Unknown error" }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message || "Unknown error" }, { status: 500 });
   }
 }

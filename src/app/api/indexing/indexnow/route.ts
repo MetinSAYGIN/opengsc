@@ -1,10 +1,8 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("act");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
@@ -35,7 +33,7 @@ export async function POST(req: Request) {
       const text = await response.text();
       return NextResponse.json({ error: `IndexNow responded with status ${response.status}: ${text}` }, { status: 400 });
     }
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message || "Unknown error" }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message || "Unknown error" }, { status: 500 });
   }
 }

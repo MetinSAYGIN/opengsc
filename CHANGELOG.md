@@ -1,0 +1,1608 @@
+# Changelog
+
+All notable changes to OpenGSC. Dates are release dates; the version shown in
+**Settings → System** comes from `package.json`.
+
+## [Unreleased]
+
+### Changed — Site Audit health score weighs findings by severity (#30)
+
+- **A site with only minor warnings no longer scores 0/100.** The old score was the share of pages with no scored finding at all, so one image without alt counted as much as a 404, and a 4-page WordPress site with a small warning on every template scored the same as a site that was down — tripping the "health score below 50" alert. Each page is now scored on its own: 100, minus 8 per distinct warning (never below 40), or 0 with any critical finding (HTTP error, failed fetch, broken links, noindex, redirect loop). The site score is the average.
+- **A plain internal redirect is not a page.** A single 301/308 to the same site (http→https, www↔apex, trailing slash) is left out of the average; it is still listed as a finding. Redirect chains, loops and redirects off the site still count.
+- **History stays comparable.** Stored audits are rescored once at startup from their saved page findings, so the trend shows no jump on update day; the previous value is kept in the summary as `healthScoreV1`. The new score is never lower than the old one on the same audit, so rescoring cannot trigger a low-score alert. No schema change.
+- Hovering the score explains how it is calculated; the Markdown export says the same.
+
+### Added — Cannibalization: real "winner changes", a site picker in Related intent, MCP on the shared computation
+
+- **Daily winner changes work.** Related intent's "daily winner changes" read the query+page rows, which are one 90-day total per pair on a single date — so it was always 0, and the 10% of the confidence score it feeds never counted. The sync now also stores per-day query + page rows for the last 28 days (new `QueryPageDaily` table, paged past 25 000 rows, replaced on every sync). Volumes still come from the 90-day totals; only the day-by-day winner is read from the new rows. The tab says which 28 days it used, or that the data arrives with the next sync.
+- **Run `npx prisma db push` once after updating** (the standard update already does). Until then the sync skips the new step with a log line, Related intent shows the signal as unavailable, and the schema banner names the missing table.
+- **Site picker on the Related intent tab**, with each site's conflict counts; one selection shared by both tabs. Related intent is computed per site and cached until the next sync (a 251-site portfolio: 3.5 s the first time, 0.14 s after).
+- **MCP `get_striking_distance` and `get_cannibalization`** use the same computation as the screens: one site or `site: "all"`, every pair of every site, `window` / `dailyWindow` dates, `estGainClicks` for striking distance, share and each page's top query for cannibalization. The `days` argument is gone: it could only hide data — a `days` shorter than the time since the last sync returned nothing at all.
+
+### Fixed — Striking distance and Cannibalization: fake period, rollup rows eating the budget, small sites left out, truncated sync
+
+- **The period selector (30/60/90/180 days) changed nothing.** Query+page rows are stored as one 90-day total per pair, dated on the sync day, so every choice showed the same 90 days. The selector is gone; both reports say which 90 days they cover ("Search Console, 90 days: Jul 11 – Oct 9").
+- **Rollup rows ate the row budget.** Both queries let the site-level rollup and per-day page rows into their `take` (200 rows for Striking, 10 000 for Cannibalization) and filtered them out afterwards — on a portfolio, fewer real rows or none. Only query+page rows are read now.
+- **Small sites were left out of portfolio reports.** One `take` for the whole portfolio let the biggest sites fill it. Every site now contributes all of its rows (Related intent: its own 30 000-row budget per site instead of 30 000 for everyone).
+- **Sync dropped the long tail.** Query+page rows stopped at 25 000 per site. Search Console returns them by clicks, so what was dropped was exactly the impressions-without-clicks tail Striking distance looks for. They're paged now (up to 200 000 per site). Takes effect on the next sync.
+- **Striking distance:** all pairs in the band with pagination (was 200), a free **Est. +clicks** column (extra clicks at position 3 with today's impressions, benchmark CTR — sorts thousands of rows before paying for volumes; the default order), a minimum-impressions filter, CSV, full URLs with copy, translated proximity labels. Paid volume lookups are limited to the top 300 filtered keywords (it was every row, harmless at 200 rows, not at thousands). "Select all" for link purchases selects the rows on screen.
+- **Cannibalization:** every group (was 60), keyed by site + query so the same query on two sites no longer opens and closes together; pagination, severity chips with counts, minimum impressions, expand/collapse all, CSV (one row per competing page, with share and the page's own top query), full URLs with copy, share bars that show each page's real share. Brand filter ignores ports and 1–2-letter labels (a 1-letter brand dropped every query containing that letter).
+- **Site picker on /striking and /cannibalization**, the same one as /decay: search, tags, per-site counts, worst-first; a row's site badge narrows to that site. Cannibalization results are cached per site and dropped on every sync, so a large portfolio is computed once per sync. Site pages (Optimize tab) get the same tables.
+- Both endpoints accept POST (the site selection can be long); GET still works. No schema change.
+
+### Fixed — Content Decay: the decaying-pages table compared a partial month, saw only 20 pages, and showed URLs you couldn't open (#28)
+
+- "Last 2 months" was the last two calendar buckets with the current one included: on Oct 11 it compared 11 days of October plus September against all of July and August, so almost every page read as decaying. It now compares two equal, complete windows (8 weeks vs the 8 before, or 2 vs 2), ending at the site's latest synced day minus the 2 provisional days Search Console is still filling in. The dates are shown above the table.
+- Every page is examined, not just the top 20 by traffic. A "Min. before" floor (default 5 clicks / 100 impressions) keeps 2 → 1-click noise out. New status **Lost**: a page that had traffic and has had none for the last 14 days — after a migration, the old URLs. Sorted by traffic lost, not by percentage. YoY is filled in when page data reaches back a year.
+- URLs are links to the full address (new tab), with a copy button and the full URL on hover — in the table and in the heatmap. Copying also works on instances opened over plain http.
+- **HTTP status check**, per row or for the whole filtered list (20 at a time, with progress and Stop): the first status, every redirect hop and where the chain ends — `301 → 200`, `301 → 404`, `301 → ✕` (dead target, with its address), `×3` for chains worth flattening, loops. Only URLs Search Console reported for that site are fetched, every hop goes through the private-address guard, and it needs the "act" permission (viewers and share links see the table without it).
+- Filters (status, HTTP result, URL text), sortable columns, real pagination (10–100 rows), clicks/impressions and 8-/2-week toggles. **CSV** exports exactly what the filters show across all pages, with HTTP status, final status, redirect target and hop count.
+- **/decay site picker** for large portfolios: search, tags, "only sites with declining pages", and every site's Lost/Critical/Warning counts and total loss, sorted worst-first. The selection filters the table and the heatmap; clicking a site badge in a row narrows to that site. Sites synced on the same day share their queries, so a 250-site portfolio computes in under a second.
+- The site page (Optimize → Content Decay Map) gets the same table.
+- Sync: page-level daily rows are now fetched with paging (they stopped at 25 000 rows, silently dropping the low-traffic tail on sites with a few hundred pages) and for 120 days instead of 90, which the two 8-week windows need. Takes effect on the next sync.
+- The heatmap could show no pages at all on a large portfolio (site-level rollup rows filled its top-N query) and repeated React keys across sites with the same paths; both fixed.
+- MCP `get_content_decay` uses the same computation: all pages, Lost status, window dates, per-status counts, `min_previous` and `status` arguments. The per-bucket `history` field is gone.
+- No schema change.
+
+### Fixed — Client Reports: Top queries / Top pages showed ~90 days of data for any period (#27)
+
+- A 7-day report quoted 133 clicks / 1 371 impressions for a query the dashboard showed at 7 / 13 for the same week, and the homepage at 341 / 5 155 instead of 25 / 254. The tables read every stored row that had a query or a page — including the query+page rows the sync keeps as **90-day totals** dated on the sync day. Any period containing that day therefore counted 90 days (queries were also summed across every page they ranked on), and Top pages added those totals on top of its real per-day rows. The `www.` URLs in the report were the same leak: old addresses from 90 days back.
+- Both tables now come from Search Console for the report's exact dates — the same request the dashboard makes — so they match it. If Search Console can't be reached, Top pages falls back to the stored per-day page rows (exact for the last 90 days), and Top queries is left out rather than showing wrong numbers: the database has no per-day query data to fall back on.
+- Traffic, Top queries and Top pages now cover the same dates as the dashboard: the chosen period ending two days ago, because Search Console data lags ~2 days. Each of these sections says which dates it covers. Uptime, backlinks, indexing and reviews keep the period ending today.
+- Digests had the same flaw in "winning / losing queries": every query looked like a winner by its full 90-day clicks, and losers were always empty. Both lists now come from Search Console per site for the digest's two periods. The digest's striking-distance list read the same 90-day totals — it now uses those same Search Console rows, with the period's own impressions and average positions. Each site's top 5 000 queries are read, so a near-page-1 query with many impressions but few clicks is not cut off on large sites.
+- Reports and digests already sent stay as they were; the next preview or run uses the corrected numbers. No schema change.
+
+### Fixed — Toxicity dashboard counted every clean donor as "not enough data" (#26)
+
+- The run classified correctly (its response said 42 clean / 7 suspicious / 1 unknown), but the dashboard folded each donor's rows starting from "unknown", and "unknown" deliberately outranks "clean" so an unjudged donor never reads as clean. A donor whose rows were all clean therefore never left the seed: 42 clean became 0 clean / 43 "not enough data". The fold now starts from the first row's own level (`worseLevel`, pinned by a test). Not DataForSEO-specific — every provider's clean donors were affected. No data was wrong; refreshing after the update shows the right counts without re-running anything.
+
+### Fixed — «Export all backlinks» follows the selected provider (#26)
+
+- The button was hard-wired to Ahrefs: with DataForSEO selected it still quoted an Ahrefs export (≈ $3.33 for ~1 660 links on the reporter's site) for a profile DataForSEO exports for a few cents. It now exports from the provider selected in Settings → SEO Metrics — Ahrefs, DataForSEO or Keys.so — and names it on the button, in the quote and in the result line. Semrush and Majestic have no per-link export, so with either selected it stays on Ahrefs and says "Ahrefs".
+- The quote is in the provider's own currency (dollars for DataForSEO, credits for Keys.so, units for Ahrefs), and the note names what the pricing read actually cost instead of a fixed "50 units". Key and balance errors are named per provider (401/402/403).
+- The separate «Links from DataForSEO» button on the Toxicity tab is gone — the main button covers it. The «Links from Keys.so» loader stays while another provider is selected (a second market, not a duplicate) and hides when Keys.so is the selected one.
+
+## [1.9.2] — 2026-10-10
+
+### Added — DataForSEO: a fifth backlink provider, pay-as-you-go (#26)
+
+- Settings → SEO Metrics: DataForSEO joins Ahrefs/Semrush/Majestic/Keys.so. It reuses the credential SERP and keyword demand already read (`seoKey_dataforseo`, `login:password` or the Base64 token), so nothing new has to be connected. Official host only — there is no reseller. The free `appendix/user_data` is the key check and shows the account balance in dollars; 401 (bad credentials), 402 (balance) and 403 (Backlinks API not enabled on the account) each get their own message.
+- Billing is DataForSEO's own: $0.024 per request + $0.000036 per row since the 2026-07-01 pricing update (no monthly minimum). The meter counts micro-dollars, so the existing reserve → reconcile → monthly cap machinery works unchanged, and every screen shows DataForSEO spend in dollars, never in "units". Each pull is reconciled to the `cost` DataForSEO reports, including overages.
+- Backlink profile: a DataForSEO tab (summary + every referring domain, paged by 1 000, live/lost by diffing as for the other providers) and a `Rank·DFS` column in the merged table. DataForSEO rank is requested on the 0–100 scale and is never shown as Ahrefs DR. The tab also shows the profile's spam score and broken-backlink count, and two priced one-request buttons: **12-month history** (monthly totals backfilled into the trend, never overwriting a day this instance measured) and **new / lost by week** (last 12 weeks, cached).
+- Holding a DataForSEO key for SERP does not make "Refresh all" spend on DataForSEO: the merged view includes it only once DataForSEO is the chosen metrics provider or a DataForSEO profile already exists.
+- Per-link export: `/api/backlinks/sync` takes `provider: "dataforseo"` (live AND lost links via `backlinks_status_type: all`, paged by `search_after_token`), priced by a `limit: 1` read before anything else is spent. Rows are restated in the Ahrefs all-backlinks shape, so new/lost events, the digest and toxicity work unchanged. The Toxicity tab gets a «Links from DataForSEO» loader.
+- Toxicity: DataForSEO's per-link spam score is stored in the new nullable `SiteBacklink.apiSpamScore` and becomes the `provider_spam` signal (score ≥ 70, weight 30) — enough to make a donor suspicious, toxic only together with one of our own signals.
+- Optional weekly auto-refresh (off by default): summary + referring domains for every site, or that plus the per-link export, always inside the user's monthly cap. The lost-link alert now also covers DataForSEO pulls (labelled `DFS`, not `DR`).
+- Domain metrics and MCP (`get_domain_metrics`, `get_backlink_profile`) accept `dataforseo`. Keyword-side calls refuse it (`isKeywordCapable`) — DataForSEO keyword data keeps its own path.
+- **Schema:** one nullable column, `SiteBacklink.apiSpamScore`. Run `npx prisma db push` (the updater and the Docker entrypoint already do).
+
+### Fixed — 369Team (magiclinks.online) purchases match the API spec v1.1; homepage links added
+
+- Article price now follows the vendor's volume tiers (`price_tiers` from `GET /balance`): the tier is picked by the whole order's paid count, exactly as the service charges. The quote used to multiply by `price_per_placement` — the first-tier price — so large orders showed more than would be charged and could be blocked as "not enough tokens" when the balance was in fact sufficient.
+- The +30% bonus per row is shown (estimate in the quote, the exact `bonus_count` from the order), and order lists show paid + bonus and the `refunded` amount. The old code claimed 369Team had no bonus.
+- Article languages leave in the form the spec documents (`English`, `German`, `Dutch`, `Русский` …) instead of native names (`Deutsch`, `Nederlands`); the picker still shows native names.
+- The final status `partially_completed` now stops the placement tracker polling (it only knew `partial`). `no_websites_available` (422) gets its own message: nothing was charged.
+- New provider «369Team · links» — homepage links (`POST /link-orders`, flat `link_price`, +20% bonus): optional one-line surrounding text with `$LINK`, anchors up to 200 characters, each validated before anything is charged. Orders, detail view, CSV (donor homepage) and the placement tracker cover it; ledger rows use provider `magic369links`, no schema change.
+- Publication URLs of 369Team orders now appear in the order detail on /magiclinks (previously only in the CSV).
+
+### Fixed — Leads: the Orbitra tracker connection accepts the admin/MCP link
+
+- Operators paste the tracker's address bar (`…/admin.php`) or MCP link (`…/mcp.php?k=…`) into the Leads connection field; the panel then built `…/admin.php/api.php`, which PHP answers with the admin page instead of the API. `normalizeOrbitraUrl` now strips the trailing `*.php` file — at save time and again on every request, so already-stored values heal without re-saving. Tracker calls abort after 15 s instead of hanging until the reverse proxy's 504, and a failed connection check shows the HTTP status instead of a bare "(error)".
+
+### Fixed — scheduled digests reach every notification channel, not only Telegram/Slack (#25)
+
+- The digest cron selected only users with a Telegram bot or a Slack webhook, so a workspace with just the SMTP e-mail channel (or Discord, Teams, webhook, push) never got its scheduled digest, even though delivery itself already fanned out to every channel. The cron now asks `deliverableChannels(userId, "digest")` (same participation rules as `notifyUserDetailed`: channel on, Digest event allowed) and skips the user BEFORE building — an AI summary for nobody would spend credits.
+- Digest page: "Send" is enabled by any such channel; the warning and schedule note no longer say a Telegram bot is required. History records which channels actually accepted it (`sentTo` = "email", "telegram, email", …).
+
+### Added — Keys.so: a fourth metrics provider for the Yandex/Runet market
+
+- Settings → SEO Metrics: Keys.so joins Ahrefs/Semrush/Majestic with official (`api.keys.so`) and reseller (`keysso-api.groupbuyseo.org`) modes. The key travels in the `X-Keyso-TOKEN` header, never in the URL. The free `/limits/all` doubles as the key check: remaining credits on success, a named cause on 401 (wrong key) or 402 (out of credits).
+- Backlink profile: a Keys.so tab with its own live/lost history, and a `DR·KS` column in the merged table that appears only once a Keys.so pull exists. Keys.so's DR never lands in the Ahrefs DR column; the placard tags the source "Yandex / Runet".
+- Domain metrics: `domain_dashboard` + two one-row totals reads (3 credits). Keys.so DR goes to `dr` under provider `keysso`; Yandex visibility / top-50 stay in `payload` — no invented organic-traffic equivalent.
+- Transport: HTTP 202 ("report is building") is polled with its own back-off (3/6/12/24 s) and never treated as success; two requests in flight per key (in the live probe three of six parallel calls answered 429). Field mapping pinned against live gateway answers — notably `outlinks_count` is the donor's own outbound total and is not used as the link count to the target.
+- MCP: `get_domain_metrics` and `get_backlink_profile` accept `provider: "keysso"` (the latter also gains `provider` for every index — it used to read Ahrefs rows only).
+- Keyword-side calls answer `provider_unsupported` on any non-keyword provider (guard `isKeywordCapable`), so Yandex data can never fill a Google keyword screen; the warmup cron falls back to an Ahrefs/Semrush key the same way it does for Majestic.
+
+### Added — Yandex AI answers (Keys.so)
+
+- Visibility hub gets a «Yandex AI» sub-tab, shown only when a Keys.so key is configured — nothing changes for anyone else. It lists the queries whose Yandex AI answer already cites the site (top 100 by exact Wordstat frequency), our cited page and its place among the answer's source domains, and the ten domains cited beside us. Two credits per refresh; the stored report renders free.
+- MCP: `get_yandex_ai_answers` (local) returns the stored report — queries, cited URL and rank among sources, competitors (registry now 95 tools).
+- The answer HTML is never rendered — only its source links are read. Storage reuses `DomainMetricCache` under the pseudo-provider `keysso_ai` (no schema change); usage is metered on `keysso`.
+
+### Added — Keys.so across the Yandex market (phase 2)
+
+Every surface below appears only for users with a Keys.so key; nothing changes for anyone else.
+
+- **Backlink toxicity gets Runet anchors.** «Links from Keys.so» on the Toxicity tab loads the site's live backlinks with anchors from Keys.so's index (priced first: 1 credit, then 1 credit per 100 links, confirmed by the user), then re-scores toxicity. Rows are restated in the Ahrefs all-backlinks shape, so the existing writer, toxicity, disavow and recovery work unchanged. `POST /api/backlinks/sync` takes `provider: "keysso"`. Follow semantics: no `rel` → dofollow; any `rel` code → not passing weight (Keys.so does not document the codes).
+- **Competitor gap: a «Yandex (Keys.so)» market.** Competitors (`organic/concurents`, 1 credit) and their keywords (`organic/keywords`, 1 credit per 100, best positions first) — and "ours" comes from the site's OWN Yandex positions (top 1 000, refreshed weekly for up to 10 credits), never GSC, so close/weak/missing compares Yandex with Yandex. Stored under the `yandex` market, apart from every Google country. Volume = Wordstat exact; no KD.
+- **Keyword demand: the same market.** Seed + similar phrases (`keyword_dashboard` + `similarkeys`), verdicted against the own Yandex positions, cached like any search. Remembered apart from `seoMetricsCountry`, which other screens read as a Google country.
+- **Ads tab: Yandex Direct.** Below the Google Ads Transparency sections, for the same researched domain: top ads (landing URL without per-click query noise, query reach) and the queries its ads show on. 2 credits, cached 7 days in `AdIntelCache` (`yandex_direct`).
+- MCP: `get_competitor_gap` and `get_keyword_demand` accept `country: "yandex"` with the same Yandex-vs-Yandex join; `get_ads_intel` documents the `yandex_direct` section; `get_backlink_toxicity` sees Keys.so anchors once loaded.
+
+### Added — Yandex region for Keys.so
+
+- Settings → SEO Metrics → Keys.so gets one extra control: the Yandex region (the 20 Yandex bases Keys.so documents; Moscow by default; Google bases and Dzen left out). It drives the Yandex market in Competitors and Demand and the Yandex Direct block; the market selectors show the region next to «Yandex (Keys.so)».
+- Results are stored per region (`yandex` for Moscow, as before; `yandex_spb` …), including the site's own Yandex positions, so regions never overwrite or mix. Yandex AI answers stay Moscow-only (the only base Keys.so serves them for); DR and links are region-independent.
+- MCP: `get_competitor_gap` / `get_keyword_demand` accept `yandex_<code>` for other regions.
+
+### Added — «Export all backlinks» button (the missing UI for `POST /api/backlinks/sync`)
+
+- Backlinks tab header and the Toxicity tab: the full per-link inventory (anchors, donor DR, snippets) is what Toxicity classifies, and the server-side Ahrefs export for it existed with no button — a site with an Ahrefs key and no CSV had an empty toxicity report and no way to fill it. The button asks for the price first (`≈ N links · ≈ M units · ≈ $X`, the route's own estimate), starts the run only after confirmation, shows progress, picks up a run already in flight after a reload, and recalculates toxicity (local, free) when the run ends.
+
+### Fixed
+
+- Backlink profile, Semrush tab: the RD/backlinks chips and the change figure read Ahrefs' snapshot history instead of Semrush's own.
+- Referring-domains pull (Ahrefs): a response with fewer rows than the `limit` asked for (reported on a reseller gateway: 12 rows on a 648-domain profile; the cause on the gateway side is not established — a probe against a healthy profile returned full pages and honoured `offset` and the cursor) was read as "end of profile", so the refresh reported `complete: true` on a stub and marked every unseen domain as lost. A short page no longer ends the pull — the end is an empty page, or a short page that reaches the provider's own `live_refdomains`. Offset now steps by the rows actually received; a gateway that ignores `offset` on a profile that fits one page is detected and the pull switches to the cursor (and remembers it). A pull that ends far short of the provider's count (more than max(5, 10 %) missing) keeps its rows but is never complete, and the UI says "N of M" instead of the generic filtered-pull notice.
+- Full backlink export: same short-page-is-the-end assumption in both offset and keyset paging; same fix, plus a guard against an ignored offset (the same edge rows twice) and a sample being reported as a complete export. The loops moved to `lib/seo/exportPaging.ts` so they are tested against fake gateways without a database.
+
+## [1.9.1] — 2026-10-07
+
+The R+ wave: the v1.9.0 features grow the anti-footprint and repeatability layers the operator asked for after reviewing them.
+
+### Added — Geo-grid presets: scans become a measurement, not a snapshot
+
+- A preset saves point + radius + grid + **answer language** + an optional cron schedule. The language defaults to the profile country's but is overridable per preset (and per one-off scan): tourists search "thessaloniki airport transfer" in EN/RU/DE while the profile country stays GR — the wrong `hl` shows the wrong SERP. The `hl` actually used is stored on every `GridScan`.
+- The scheduler (15-min tick, `lastFireAt` high-water) follows the audit-family semantics: a first sighting only adopts the marker without firing, and a missed tick is **skipped, never back-filled** — a run costs `gridSize²` queries, which the preset card says out loud. A zombie "running" row older than 2 h counts as abandoned so it can't silence a preset.
+- Per-preset dynamics: avg position and in-pack share across the preset's scans (chart + list in the Local tab). MCP: `local_grid_presets`, `local_grid_preset_create`, `local_grid_preset_delete`, `local_grid_preset_run` (registry now 94 tools).
+
+### Added — Publishing gates: connection types, uniqueness, jitter, anchors
+
+- **Connection types** (`own_satellite` / `money_site` / `external_platform`, default `own_satellite` — fail-closed: existing connections lose respin until retyped, visibly). **Respin is only allowed for external platforms**, enforced server-side in the shared flow (routes and MCP both pass through it). Own satellites each get their own post — per-connection source selection in the publish dialog (`items[]` API form).
+- **Uniqueness gate at send time**: the post is compared against every published post **in the whole instance** (latest 300) with the same trigram engine as `analyze_text`; `uniquenessScore = 1 − maxSimilarity` is stored. Block at ≥ 0.3, warn at ≥ 0.15 — **provisional thresholds**: the calibration run found the local dev db empty (0 articles, 0 posts), so the numbers are the operator's documented prior; re-run `npx tsx src/lib/publish/calibrate.ts` after ~20 publications and re-derive (the distribution table lives in `src/lib/publish/gate.ts`). The UI states the gate's honest limit: it catches textual near-duplicates, not paraphrases. No bypass parameter exists anywhere.
+- **Jitter scheduling**: publications spread over a configurable window (hours/days); posts are created as `scheduled` with the offset fixed at planning time (visible, editable), and a scheduler pass sends due posts through the same per-post path — respin and the uniqueness gate run at send time. A deferred post that gets blocked **fires a `publish_blocked` alert** (existing alert engine, deduped per site per day, 7 languages) instead of dying as a status change.
+- **Anchor & footprint review**: pre-publish summary of anchor → target across the network (flagging identical exact anchors on several satellites), warnings on shared title skeletons among the planned batch and on scheduledAt hour-clustering — from signals that actually exist; the panel never promises theme/credential fingerprinting the app can't see. MCP `publish_post` gains `items[]`, spread windows and gate results with scores.
+
+### Added — AEO domain lists: the classifier learns your market
+
+- Editable per-category domain lists (InstanceSetting `aeo_domain_lists`, editor co-located with the sentiment toggle) merged **over** the built-ins: brand/competitor still win (identity beats taxonomy), the operator's overlay beats defaults. Wired into both the write path and the read-time reclassification, so editing the lists re-tags the stored history.
+- **Greek starter set built in** (Kathimerini, To Vima, Proto Thema, Naftemporiki, in.gr, Newsit, Ta Nea, Ethnos, Skai, Efsyn; forums Insomnia/adslgr; aggregators Skroutz/BestPrice; sansimera as reference) — every host verified live; two candidates were dropped as unverifiable.
+- **"other: NN%" chip** on the categories block, warning above 30% (threshold printed next to the number) — the signal to extend the lists. MCP share-of-voice gains `otherShare`.
+
+### Changed
+
+- **`dev.db` is no longer tracked.** The repo is public and the db carries real site data and tokens; it is gitignored now and stays on disk untouched. ⚠️ **Deploy note (VPS):** the production dev.db is locally modified, so the next pull will refuse to fast-forward past the untrack commit until you do: `cp dev.db ~/dev.db.prod.bak && git checkout -- dev.db && git pull --ff-only && cp ~/dev.db.prod.bak dev.db`. Old copies remain in git history — scrubbing history is a separate, explicit decision.
+- `Claude outputs/` (the operator's wave-plan archive) is excluded via `.git/info/exclude` on this machine.
+
+### Deploy
+
+`npx prisma db push` (new table `GridPreset`; new columns `GridScan.presetId/hl`, `BlogConnection.connectionType`, `PublishedPost.scheduledAt/uniquenessScore`) + `npx prisma generate` + build + `pm2 restart` — plus the dev.db pull recipe above, once.
+
+## [1.9.0] — 2026-10-07
+
+### Added — Publishing: generated posts go out on their own (`/publishing`)
+
+- **WordPress first, satellites later.** A generated article (text/landing in SEO Tools history) publishes straight to the site's WordPress over the REST API with an application password — no OAuth app to register. The adapter registry (`src/lib/publish/`) is built for the satellite platforms to come (Dev.to, Hashnode, Blogger) — one `BlogAdapter` interface (`verify` + `publish`), per-platform credentials documented in one place. Markdown → HTML is a server-safe serializer with the money-site links deliberately left dofollow (the whole point is the donor link).
+- **Respin — the publishing AI task.** Its own slot in the task registry (tier *cheap*, visible in Settings → SEO Tools with zero extra wiring — the registry renders both surfaces), resolved server-side the same way `dropsHistory` is, so keys never travel to the browser. One structured call per platform: tone and length adapt, facts, structure and links are pinned in the prompt contract; the token budget follows the writer's own words×8 rule with a cheap-slot cap. A failed respin is an honest failure — no post row pretending it was published.
+- **The loop closes the other way around.** Every successful publish files a `SiteBacklink` row with `source: "self"` (a fifth writer under the Backlinks v2 contract: identity + source/sources only, never `check*`/`api*`/`tox*`), so our own satellite post rides the same placement checker, event history and toxicity pass as a bought one. Target resolution is honest: explicit `targetUrl` → first money-site link inside the post → site root, commented as the fallback it is. Retry re-sends the stored markdown — a finished respin is never re-billed.
+- **Connections page.** Always-visible manual forms (the only path in v1 — house rule), Verify against `/wp/v2/users/me`, masked credential previews, per-connection status chips with verbatim errors; one connection failing never aborts its siblings in the same batch. Publish action lives on the history rows and detail pages; the nav entry sits next to Magic links — there you pay somebody else to place posts, here you place your own.
+- MCP: `publish_list_connections`, `publish_post` (confirm-gated when respin is on; description states the per-platform cheap call), `publish_list_posts` — the same shared flow the routes run, never a parallel implementation.
+- Deploy: `npx prisma db push` (new tables `BlogConnection` / `PublishedPost`) + `npx prisma generate`.
+
+### Added — Geo-grid local rank scans (Local tab)
+
+- Local-Falcon-style visibility: one keyword checked at N×N coordinate points (3×3 / 5×5 / 7×7, radius in km) around the business. Each point reuses the existing rank-check path with `location: "lat,lng"` — the infrastructure already extracted local packs; the grid is an orchestrated batch over it, not a new engine. The pack at each point is matched against the profile's business name and host.
+- **Honest cost before the button.** The estimate says `queryCount = gridSize²` on the configured SERP provider — free on a personal A-Parser instance, metered elsewhere; no caps, the operator decides. ScrapingRobot is refused up front (no geo parameter) rather than failing mid-scan; a profile without coordinates and none passed is an explicit ask, never a guessed city. `gl` comes from the profile's country, geography from the explicit centre.
+- Points persist progressively (a running scan shows partial results when polled), a failing point is isolated into its cell, and the heatmap prints each cell's number so colour is never the sole carrier — theme tokens, tooltips carry the matched business name. Summary: average position and in-pack share.
+- MCP: `local_grid_scans` (free), `local_grid_scan_run` (paid, cost note in the description).
+- Deploy: same `db push` (new table `GridScan`).
+
+### Added — AEO citation classification: who crowds you out, by name
+
+- Every domain an engine cites instead of you is now classified — deterministically, free, no new APIs: **12 domain categories** (forum, social, video, developer, e-commerce, reviews, reference, institutional, editorial…; brand and competitor win over platform rules, matched against the site's host and the `aeoCompetitors` list) and **11 page types** (listicle, how-to, comparison, review, product, docs, forum thread…), plus a dedicated **Reddit & communities** cut with subreddit extraction.
+- Classified at write time in the tracker **and re-derived on read** — the classifier's verdicts are a function of the current competitor list, so editing it re-tags the whole stored history for free, the same recompute contract share of voice already promises. Zero schema change: classification lives inside the existing `citations` JSON.
+- UI: category badges next to cited domains (both in the live tracker and in share of voice), a "Citation categories" chart, and the Reddit block where forum citations exist. MCP: `categoryCounts` + `reddit` in the visibility and share-of-voice results, described as the heuristic it is.
+
+### Added — Site context (Project Memory): one shared AI memory per site
+
+- **The store.** Every AI surface — the MCP tools, the agent skills, the Context card — now reads the same per-site context before working: business overview, current goal, positioning, writing preferences (typed markdown sections), custom sections as the pressure valve, the curated competitor list, key pages (money/hub/spoke) and a research log. Idea adapted from OpenSEO's "Project memory" design; our unit is the site, and competitors deliberately live in `Site.aeoCompetitors` — the same list AI share of voice reads — so there is one list, not two drifting copies. Every row carries provenance (`user` / `mcp`); the operator inspects and corrects everything the AI believes in the site's Settings → Context card.
+- **MCP `get_site_context` / `update_site_context`** (both free/local; the registry is now 85 tools). Read returns the whole context plus `missingSections` — the agent's to-do list — and a rendered markdown digest. Write takes a batch of patch ops (sections, competitors upsert-by-domain, key pages upsert-by-url, research log); one bad op skips itself with a reason, the batch still applies.
+- **The research log stops re-buying research.** Rule: the same research within 30 days is reused, not re-bought; entries prune past 90 days. `research_keywords` appends its own entry automatically (seed, market, verdict, spend), so the log has something to check even when the agent forgets.
+- **Every site-scoped agent skill got the context preamble** (7 skills): read context first, do a minimal inline fill of the sections this skill needs (never a full interview), check the log before paid tools, write durable learnings back on finish.
+- Deploy: `npx prisma db push` (new tables `SiteContextSection` / `SiteKeyPage` / `SiteResearchLog`; `Site.aeoCompetitors` gains optional `notes` on its JSON entries) + `npx prisma generate`. Before push, reads return the empty context and writes skip — absent, not broken.
+
+### Added — Magic links: buy posts from striking distance, watch them on the traffic chart
+
+- **Purchase flow from the striking-distance table.** A per-row Buy button and a bulk bar over selected rows open a buy window that prefills query + URL, quotes before charging, and submits through one of two connected services: **FieldLink** (two-step — free task creation, server-side quote, `X-FieldLink-Expected-Credits` header re-checked at the pay boundary so a moved price is a 409, never a surprise deduction) or **369Team** (one-shot order, price re-checked from `/balance` immediately before the create call; an unanswered create is reported as "the order may exist" instead of inviting a blind retry). The window preselects the provider with the larger live balance; language is suggested by TLD but never guessed into the order. Client code adapted from [gsc-hub](https://github.com/izzipizzy/gsc-hub) (MIT), without its affiliate referral header.
+- **Anchor editor in the buy window.** Every row's anchor is editable, with four one-click presets — exact (the query), diluted (query – domain), URL (the naked target URL), domain. The presets are mechanical on purpose — no invented words, nothing language-dependent — and every row stays editable after one lands. A batch of identical exact-match commercial anchors is an over-optimization footprint; the anchor now defaults to a deliberate choice, not a habit. The ledger keeps storing the striking query separately from the anchor, so bought-pair marking in striking is unaffected by a custom anchor.
+- **Purchase ledger (`MagicPurchase`)** — one row per accepted brief of a **paid** order only; FieldLink rows are re-read from the service's own saved briefs so a replayed submit cannot double-record. Raw-SQL accessed like `Annotation` (graceful degradation before `prisma db push`). The striking table marks already-bought query+URL pairs ("✦ n") so round two is a decision, not an accident.
+- **`/magiclinks` page** — both providers' orders in one list: progress, indexing state (FieldLink), amounts, per-row detail with publication URLs, CSV export. The page explains itself when no token is set, and provider errors never blank the other provider's half.
+- **Purchases on the site's own timeline.** One purple marker per order on the main traffic chart (line and candle modes, snapped to the axis like algo markers), and purchase events inside the annotations timeline — derived on read from the ledger, scored against `DailyMetric` with the same before/after windows as every annotation, scoped to the order's target pages. The order's date is the UTC day the money moved, not a claim the placements are live.
+- **Settings** — a Magic links card in SEO Tools for both tokens, testing what was typed against the live provider before persisting (`seoKey_fieldlink` / `seoKey_magic369`, env fallbacks `OPENGSC_FIELDLINK_TOKEN` / `OPENGSC_MAGIC369_TOKEN`). Purchases are deliberately absent from MCP: an agent holding a key must not be able to spend the balance.
+
+### Added — Purchased-placement tracking: bought links join the verification pipeline
+
+- **The loop closes.** A purchase used to end at a purple chart marker; whether the bought link actually stood was nobody's job. Now an order's publication URLs (FieldLink `result.destination`, 369Team articles) land in `SiteBacklink` with `source: "purchase"` plus provider/order provenance, and ride the same placement checker, event history and toxicity pass as every other donor. The import is a fourth writer under the Backlinks v2 contract: on a row Ahrefs already knows it only claims provenance and appends to `sources` — the `check*`/`api*`/`tox*` groups stay with their own writers. Opening an order's detail in `/magiclinks` imports immediately; the hourly pass polls the rest (2 h grace before the first poll, 45 d horizon, `MagicPurchase.trackedAt` marks an order done).
+- **Weekly auto-verification.** `SiteBacklink` rows unchecked or last checked more than 7 days ago re-run through the same `runPlacementVerify` the manual button uses — 2 sites × 60 rows per hourly tick, never-checked sites first, a running manual check keeps priority. The first check of a row is a baseline (no events), so a fresh import can never arrive as a wall of false losses.
+- **`purchased_link` alert.** Lost, re-anchored, rel-downgraded or re-targeted bought placements fire one message per site per day through the existing alert engine (default on, silent until placements are imported). No full-export gate, unlike `backlink_loss`: our own donor check is a direct observation, not an inference from absence in a crawl. `anchor_changed` also joins the favourite-link vocabulary. Alert text in all 7 notification languages.
+- **Pulse on `/magiclinks`.** Per provider: how many bought placements stand, are gone, are unconfirmed (`blocked` — a WAF refusal is not a death) and not yet checked, plus the last check date. Unconfirmed is never folded into gone.
+- Deploy: `npx prisma db push` (new columns `SiteBacklink.purchaseProvider` / `purchaseOrderId`, `MagicPurchase.trackedAt`) + `npx prisma generate`.
+
+### Security
+
+- Next.js patched to **16.3.8**; login lockout (5 attempts → 15 min lock, escalating), password-change session revocation (`pwdAt` — every session dies when the password does), hardened response headers. Cherry-picked from the vincent-lxc fork's security work.
+- `create-owner.mjs` fixed on Prisma 7 — it silently broke when the client construction changed; it now builds the client through the better-sqlite3 adapter (the owner-password reset path works again). The login form grew a show/hide eye and says how a forgotten password is reset.
+
+### Changed
+
+- **Agent working plans left the repository.** Wave plans and task splits (`docs/*-PLAN.md`, `docs/tasks/T*.md` and friends) are working documents, not product docs — they now live outside the repo. The two `CONTRACT.md` files stay: schema comments cite them as the source of truth for the SiteBacklink writers contract.
+- **Install/update hardening.** A swap guard runs before `next build` (the Rust toolchain peaks ~2.4 GB and `NODE_OPTIONS` doesn't help), and the updater stops PM2 around the build so a cold Turbopack compile can't crash-loop into a 502 window; both READMEs state the real memory requirements.
+
+### Fixed
+
+- **Drops — «Recount data + AI» decided only the first of the selected rows and capped the selection at 5.** Root cause: the whole selection went into one request covered by a single 40-second deadline; the first domain (CDX + three archived pages + one model call) ate the budget and every remaining row came back "did not fit into the time budget". The pass now walks the whole selection in batches of 5 — each batch is its own request with a fresh budget and all its rows in parallel — so every selected row gets a verdict. The ≤5 selection cap is gone: how many domains to spend LLM credits on is the operator's decision, behind one confirm that shows the count. While the walk runs the button becomes a Stop button, a transport-dead batch is reported by name instead of aborting the walk, and progress shows decided/total. MCP `drops_history_ai` mirrors the semantics: up to 25 domains per call (was 5), sequential, same free-classifier gate.
+
+## [1.8.1] — 2026-09-25
+
+Волна «Ноябрь»: весь бэклог одним релизом. На деплое: `npm i` (новая зависимость `web-push`),
+`npx prisma db push` (новые модели Footprint/BacklinkTox/Local/Trend/Plagiarism/Report/Lead/
+PushSubscription/Ext) и `npx prisma generate`.
+
+### Added — wave «Ноябрь»: footprints, backlink toxicity/disavow, local rank + Local SEO/GBP, trend radar, plagiarism + `site:`, AI sentiment + AI Overviews, client reports, audit widget/leads, PWA/push, browser extension
+
+- **N1 — Network footprints + hreflang generator.** The `/footprint` report reads only your local data (free, zero external calls) and lists title/H1/meta-description templates shared across several sites of the portfolio — a footprint a manual check sees and an algorithm links. The found templates become a guard in the Outline generator (banned from being reproduced), and SEO Tools gains a hreflang generator: the `<link rel="alternate">` block, the sitemap `xhtml:link` variant and the HTTP-header variant from a URL+language list. Doc: `docs/FOOTPRINT.md`. MCP: `get_footprints`.
+- **N2 — Backlink toxicity, disavow, recovery.** Three questions about your own link profile that were never asked before: which donors are toxic *for this site* — the score knows the site's own niche, so a gambling site's casino anchors are not toxic while pharma and adult are; what goes into the Google Disavow file — only links you marked by hand, never automatic, with reasons as comments; and which lost link to win back first, ranked by value. Free: local math over your imported rows; deep checks are plain HTTP from your server. Doc: `docs/BACKLINK-TOXICITY.md`. MCP: `get_backlink_toxicity`, `get_disavow_file`.
+- **N3 — Local rank positions.** A tracked keyword can carry a city or coordinates (`Thessaloniki, Greece` or `40.5197,22.9709`); the check runs geolocated and the local-pack place (1–3) is stored as its own number, never written into `position` — graphs, `bestPosition` and the rank-drop alert keep their meaning. Providers without geo answer `location_unsupported` instead of silently substituting the country; changes ship a once-a-day `local` notification. Doc: `docs/LOCAL-SEO.md`.
+- **N4 — Local SEO: business profile, NAP, schema, directories, GBP.** New **Local** menu. The business profile is the source of truth (schema.org type, address, E.164 phone, hours, coordinates, service areas; «fill from site» parses the homepage JSON-LD/meta), the free NAP check compares it against your own site (homepage + up to 10 contact pages + footer; phones by digits, addresses by fold + Jaccard), citations are re-checked weekly against the directories you list, and the LocalBusiness JSON-LD generator validates against Google's requirements and diffs against what the site serves. Google Business Profile: separate OAuth scope, reviews synced every 6 h with replies from the UI, scheduled posts, photos by public URL — API access is granted by Google upon request, and until approved (quota 0) the card says exactly that instead of erroring. MCP: `get_local_profile`, `check_nap`. Doc: `docs/LOCAL-SEO.md`.
+- **N5 — Trend radar.** Rising queries from your own Search Console (7 days vs 28) plus Google autocomplete hints per seed (up to 20 seeds per site) — two free sources no paid trends API has; a digest line included. MCP: `get_trends`. Doc: `docs/TRENDS.md`.
+- **N6 — Plagiarism check + `site:` index estimation.** Both run exact queries through any configured SERP provider (Serper / DataForSEO / ScrapingRobot / A-Parser), with the price shown before the run and a provider failure reported as an error, never a quiet empty result. The plagiarism check verifies text by exact quotes (≤ 10 fragments) and a finished article links straight to it («Check plagiarism»); the `site:` check estimates indexation for up to 200 URLs of sites that are not in GSC — the drops catalogue included. MCP: `check_plagiarism`, `serp_index_check`. Doc: `docs/PLAGIARISM.md`.
+- **N7 — Sentiment + AI Overviews.** Every brand mention in an AI answer carries a sentiment (auto-assessment off by default), and **AI Overviews** joins the engine list: the question goes through Google's live SERP and the overview block becomes the answer — DataForSEO key or your A-Parser; `no_overview` is its own state, not «not cited». Doc: `docs/VISIBILITY.md`.
+- **N8 — Client reports.** A per-site report constructor: sections toggled (summary, traffic, queries, pages, positions, local positions, indexing, audit, uptime, backlinks, AI visibility, reviews, work done, next steps), white-label branding (name, accent, logo), and every send **freezes an HTML snapshot** (+ PDF when the server has a browser) that never re-renders — not when branding changes, not when data changes. Scheduled weekly/monthly e-mail over the workspace SMTP channel, or a client link `/share/report/<token>` that can be rotated or revoked. MCP: `list_reports`. Doc: `docs/REPORTS.md`.
+- **N9 — Audit widget, leads, proposals.** An embeddable «check your website» iframe (`/embed/audit`): the visitor types a domain, sees a score and the top problems from the same audit rules, and leaves an e-mail — the workspace receives a lead with the findings attached, plus a one-click proposal document drafted from the audit. The public contour is rate-limited per IP, Turnstile-gated, SSRF-guarded (`allowPrivate: false`) and stores only a salted IP hash. MCP: `list_leads`. Doc: `docs/LEADS.md`.
+- **N10 — PWA + web push.** OpenGSC installs on the phone as an app, keeps the last dashboard data readable offline, and gains **Web Push** as a notification channel (VAPID keys in Settings, per-device event filters; alerts, digests, uptime and lead events already flow to it). Push works only over HTTPS — on `http://` the UI explains why instead of showing the button. Doc: `docs/PWA.md`.
+- **N11 — Browser extension (Chrome/Edge MV3).** Unpacked install, no store — it talks to your self-hosted instance. «This page in OpenGSC» shows a portfolio URL's clicks/impressions/position, top queries, index status, audit issues and ranks; a quick DOM audit runs inside the extension (title/description lengths, H1, canonical, robots, hreflang, JSON-LD, OG, links, images without alt — nothing leaves the browser); «Send to OpenGSC» routes by context: a portfolio URL becomes an index-check priority, a foreign URL an Outreach prospect, selected text opens `/seo-tools/outline?keyword=…` pre-filled, a table selection downloads CSV. Token-authenticated `/api/ext/*` (401 without one), extension-ID allowlist on your side. Doc: `docs/EXTENSION.md`.
+- **Integration (R).** `/seo-tools/outline` accepts `?keyword=`, `?note=` and `?gl=` — the Local service-area handover and the extension arrive by plain link now; a finished article links to its plagiarism check; `sendEmail` gained envelope options (`to`, `html`, attachments for PDF reports) and the report/lead e-mails ride it instead of their own transports; 106 new i18n keys × 7 locales.
+- **Dashboard.** The site's uptime status moved from the name row (favicon → dot → name) into the card footer as an online/offline tag beside market and tags: tinted chip with the status word and the animated dot, theme-aware colours (light and dark), the full story (status · since · 24 h) in the tooltip; absent when the site has no monitor.
+
+## [1.8.0] — 2026-09-25
+
+### Added — wave «Октябрь»: monitoring, indexing, visibility, audit, meta tags
+
+- **Generated meta tags now fit the audit band by code, not by hope.** Titles came out 66–80 characters and descriptions up to 181 — the audit flagged them red on ~40 production pages in 10 days — because length rules lived only in the prompt and the generator picked the first title option instead of the first one that fits. Lengths are now counted in code (Unicode code points) against one shared `metaLimits.ts` source, options that fit are reordered to the front at the outline stage, the text/rewrite pipelines fit the head block deterministically (trailing-clause trim, keyword and brand protected, nothing out-of-band ever returned), and up to two AI repair calls run only when the deterministic pass can't. Existing records get a «Мета-теги» plaque with `57/60 ✓` and a «Подогнать мету» button (free attempt first, AI rewrite only with confirmation); audits get a «Предложить исправленную мету» button on title/description issues. MCP: `fit_meta`.
+- **Uptime monitor — a status dot for every site.** A scheduler HTTP-checks each site every 1–60 minutes and the dashboard shows a dot (online / slow / offline), lifts offline sites into a «Требуют внимания» group above everything else, adds an offline filter and an offline-count badge. Alerts fire only on transitions (down after N consecutive failures, and back up with downtime duration), never for a site that was already down when monitoring started, and never when the server's own network is down (≥80% of monitors failing with network causes in one tick = «проверка недоступна», not 50 false alarms). Raw checks kept 7 days, uptime % and latency history forever, incident list per site, per-site monitor settings (accepted codes, keyword, thresholds) and workspace auto-enroll; a heartbeat URL covers the «who watches the watcher» case via healthchecks.io. Free — runs on your own server. MCP: `get_uptime`.
+- **Notification channels: Discord, Microsoft Teams, e-mail (SMTP) and generic webhook.** Everything (alerts, digests, uptime, indexing, mentions) can now go to more than Telegram/Slack. Each channel has its own event-type filter; webhook payloads are HMAC-signed (`X-OpenGSC-Signature`); e-mail is plain SMTP (Gmail app password works); Teams uses the Workflows webhooks. Webhook URLs are validated against SSRF before sending (internal addresses and redirect bypasses are refused), secrets never leave the server unmasked, one failed channel never blocks the others. MCP behavior unchanged.
+- **Automatic index checks on Google's free URL Inspection quota.** The quota is 2,000 URLs/day per property (resets at midnight Pacific) and was being spent only when someone pressed the button. A scheduler now spends it continuously on a priority queue (never checked → changed → not indexed → indexed re-checks), pacing itself across the day and round-robin across sites, writing verdicts, coverage history and a daily coverage snapshot (indexed / not indexed / unknown, with reasons). Manual checks, MCP `inspect_url` and the auto queue share one ledger, so the queue can't starve the button — and an exhausted day fails fast instead of hammering 429s. Pages with traffic that drop out of the index raise one alert per site per day. Free · Google quota. MCP: `get_index_coverage`.
+- **Audit rule pack: hreflang, page↔query alignment, PageSpeed sample, mobile rendering.** Twelve new rules, the scoring ones being hreflang validity/no-return/bad-target, non-responsive viewport, internal links to redirects; informational ones (missing self-reference, x-default, `<html lang>` mismatch, images without dimensions, huge HTML, title/H1 missing the page's main search query, poor Core Web Vitals) never lower the health score. The main-query rule uses your own GSC data (top query by impressions per page) — evidence names the query. PageSpeed Insights now runs on a sampled page per template (max 5) with field data when Google has it, shown as a card, gracefully «not run: no key» without one. Meta thresholds all read the same shared limits file as the generator.
+- **Brand mentions: Google News + Wikipedia/Wikidata, daily.** A new «Упоминания» subtab on the renamed «Видимость» tab watches exact-phrase brand terms (with `mustInclude` context words for ambiguous names) across Google News RSS (7-day window), Wikipedia articles and external links to your domain, and the Wikidata entity (edits surface as new rows). Mentions without a link to you are flagged as outreach opportunities — one click expands the Google News redirect (never automatically), checks for a link and sends the row to Outreach. First (historical) run never notifies; after that, one digest per site per day. Free · public sources. MCP: `get_brand_mentions`.
+- **AI share of voice vs competitors — from answers you already paid for.** The «Видимость» tab's new «Доля голоса» subtab aggregates stored AEO answers: how often AI names you vs up to 10 competitors (mention share, citation share, per-engine table, weekly trend), and which domains AI actually cites for your questions (ranked, with your/competitor flags, one click to Outreach). Adding a competitor recomputes the whole history with zero new AI calls. Question ideas from your GSC data (question-like queries by impressions, one click to track) and a fifth engine, **Gemini** (grounded search, paid on your key, opt-in like the others). MCP: `get_ai_share_of_voice`.
+
+### Security
+
+- **Google is no longer a public login once the owner has a password** ([#20](https://github.com/fenjo26/OpenGSC/issues/20)). Settings has always said that setting a password turns Google back into a data connection, but the server kept accepting the owner's Google sign-in. It is now refused in the NextAuth `signIn` callback — not just hidden — with `?error=use_password`, so `/api/auth/signin/google` leads nowhere for anyone who is not already signed in as the owner. Connecting and re-authorising Search Console / Analytics accounts from **Settings → Google accounts** works as before. An owner without a password keeps Google as their only way in; `OPENGSC_ALLOW_GOOGLE_LOGIN=true` reopens it after a lost password. The login page asks the new public `/api/auth/login-options` which doors are open: after setup it shows the password form straight away and drops the stale "Google OAuth only — no passwords" copy.
+- **`OPENGSC_OWNER_EMAIL` restricts who can claim a fresh instance.** Without it the first Google sign-in still becomes the owner; with it, only the listed (verified) addresses can.
+
+### Fixed
+
+- **Pre-update backups no longer pile up until the disk is full.** Every `update.sh` run writes a full database copy into `data/backups/` first, and nothing ever removed the previous ones — on 2026-09-22 ~50 of them (12 GB) filled a 33 GB VPS and the next update could not back up at all (`ENOSPC`, aborted safely before touching anything). The backup script now keeps the newest `OPENGSC_BACKUPS_KEEP` (default 3) copies, checks free space *before* copying (pruning down to one copy if the disk is too full, and failing with the numbers spelled out if even that is not enough), removes partial files and orphaned sidecars left by failed attempts, and no longer trips over two runs landing in the same second.
+- **The Activation tab had no door.** Assets are created when catalogue rows are marked bought — the API action existed since the module landed, but no UI exposed it, and the panel had no manual entry: the tab showed its pipeline description to everyone, forever. The catalogue's bulk actions now include **«Куплено»** (stops the watch, moves the rows to the acquired stage, creates the activation cards), and the empty Activation tab has an add-domain field that creates the asset and runs the first Wayback harvest in one step.
+- **Google sign-in ignored ownership transfers.** `auth.ts` treated the first user by id as the owner while the rest of the app reads `User.isOwner`. After a transfer, the previous owner could still sign in through Google as the owner, and the new owner could not connect a Google account — their session never matched. Sign-in now resolves the owner through `workspaceOwner()` (moved to `src/lib/team/owner.ts`). A connected Google account that is not the owner's no longer refreshes its tokens from an anonymous sign-in attempt either.
+
+## [1.7.1] — 2026-09-18
+
+### Added
+
+- **Hard vetoes in the drops score — the buyable cut.** Two new veto flags join `spam_period` and dead-over-2-years: `dr_drop` fires when the self-accumulated monthly DR series falls ≥5 points first→last (the same rule `drops_dr_history` applies — a penalty signature, not lost links), and `pbn_profile` fires when Majestic Trust Flow sits 20+ points below a DR of 20 or higher (DR says authority, TF says nobody trusts the links). A veto still means "do not buy regardless of score", caps the score at 0, and is stored on the row (`DropCandidate.veto`), so the catalogue gains a «Без вето» filter, a red chip on the row naming its own evidence, a `veto` column in the CSV export, and a `noVeto` filter on the MCP `drops_list`. Existing rows pick their veto up on the next enrichment rescore. Deploy requires `prisma db push` (the `veto` column).
+- **Drops Activation — reviving acquired drop domains.** The drops funnel's `acquired` stage now has a continuation in `/drops`: harvest the domain's legacy URLs from Wayback CDX and GSC, build the deploy bundle (sitemap.xml, robots.txt, the IndexNow key file, and an nginx snippet whose location order is the difference between working and silently doing nothing), submit the sitemap to Search Console through your own OAuth, push IndexNow in 10,000-URL batches, and accelerate re-crawl through the indexer network — which enqueues **donor** URLs only, never the asset (the «дорвей → домен» edge must not exist). A doorway qualifies by confirmed Google crawl — at least 1,000 hits over 30 days, recomputed from live indexer stats on every run, never a stored list. Crawl is measured by pasting the asset host's nginx access log: the parser counts Googlebot hits (total, 7-day window via UTC midnights, last seen) onto the asset and skips garbage lines instead of erroring. Four new models (`DropAsset`, `DropLegacyUrl`, `DropDonor`, `DropDonorPlacement`) plus an Activation tab and its API routes; runbook in `docs/DROPS-ACTIVATION.md`. Deploy requires `prisma db push` and `npx prisma generate`.
+- **Quick provider switch on the Positions tab.** The provider chip in Rank Tracker's Positions tab opens a menu with the fallback choice too — a provider acting up mid-day is two clicks to reroute, not a round-trip through Settings.
+- **Site Audit flags too-short title and meta description (2026 thresholds).** `title_too_short` (< 50 chars) and `description_too_short` (< 150) fire as score-affecting warnings, mirroring the existing too-long cutoffs (65 / 165); empty tags stay a `*_missing` problem alone, so nothing is double-flagged. Evidence carries the actual text, and export FIXES follow the 2026 rules (keyword-first title with USP/geo, a 150–160-char description ending in a CTA). Old audits are not recalculated — rescan to see the new warnings.
+- **Indexer queue: jump-to-page and page size.** The queue footer gains a jump-to-page input (Enter/blur commits, clamped to the real page range) and a persisted page-size selector (15/30/50/100); the footer is locale-neutral now, with keys ×7.
+
+### Fixed
+
+- **The drops panel counted verdicts for domains that were never in the catalogue.** The availability counters summed verdicts received instead of rows written, so a stray line in a manual paste — a domain nobody was tracking — still moved the panel's stage counters. The counters now reflect rows actually written, which are scoped by owner and domain.
+- **A-Parser Position checks hardened against the parser's real behavior.** `bulkcheck` answers are parsed in the flat-triplet shape `SE::Google::Position` 1.2.3643 actually returns (verified by a live probe), `keepUnique` is sent as the task requires, captcha-solving presets are inherited from `SE::Google`, the broken `tld` matchtype is replaced with an exact domain + `www.` twin for every host, and the timeout is raised to 240 s to cover solver latency.
+
+## [1.7.0] — 2026-09-17
+
+### Added
+
+- **Rank Tracker can run on your own A-Parser.** Positions are checked with `SE::Google::Position`,
+  which stops at the results page where the site is found — a keyword in the top 10 costs one page,
+  only a keyword below the requested depth costs all ten. The tracker picks the query so that the
+  parser's idea of "your site" equals its own: a registrable domain is asked in `tld` mode (the
+  host and every subdomain, `www.` ignored), a tracked subdomain is asked together with its `www.`
+  twin in exact mode. A link the parser credits you with but that sits on another host is stored as
+  an error, never as a position, and a "not found" is trusted only when the parse really went the
+  full depth. Pick it in Settings → SEO Tools → Rank Tracker provider; `docs/RANK-TRACKER-APARSER.md`
+  and `scripts/aparser-position-probe.ts` let you verify your instance's preset and raw answers
+  before switching. The schema gains a nullable `RankCheck.provider` column — the updater's
+  `prisma db push` adds it.
+- **One retry and a fallback provider for every position check.** A transient failure (a captcha'd
+  proxy, a 503, a timeout, ScrapingRobot's "try again later") is retried once after 10 seconds on
+  the same provider, and anything still failing goes to an optional fallback provider of your
+  choice. This applies to every provider, not just A-Parser — on one instance the last month held
+  ~250 ScrapingRobot failures that nobody ever retried. Each stored check records which provider
+  answered it; hover a position to see. Rank Tracker's provider chip shows the fallback, and the
+  batch size drops to 5 on A-Parser, whose checks take longer.
+- **SERP Monitor: per-project A-Parser preset and a retry pass.** Each project can name the
+  SE::Google preset to run under, and transient A-Parser failures get a second pass whose progress
+  is visible while the run is going.
+
+### Fixed
+
+- **"Check all" no longer multiplies paid checks.** The server counted every keyword as unchecked
+  on every call, so a forced check-all ran the client's full 30 rounds — on 79 keywords up to 600
+  paid checks instead of 79. A forced run now pins the keyword set to the moment the loop started,
+  and each keyword is checked once.
+- **SERP Monitor reads A-Parser's answers more defensively.** An answer whose link contradicts its
+  title is rejected instead of stored, each SE::Google request gets its own JS-check browser (a
+  shared one caused "redirect error: mismatch"), the flat result list A-Parser 1.2.3640 actually
+  returns is mapped correctly, mis-resolved pages are retried, and batch tasks from the console use
+  the documented `addTask` shape with server-side result download.
+- **The SERP Monitor market table tells the truth about exits.** Hosts that left the compared depth
+  are named rather than folded into the crowd, platform domains stay out of the leaders, and one
+  chip format carries real moves across the whole compared depth.
+
+## [1.6.3] — 2026-09-16
+
+### Fixed
+
+- **An update could replace your database with an empty one.** `dev.db` is a tracked file in this
+  repository — an empty schema template — and `.env.template` shipped
+  `DATABASE_URL="file:./dev.db"`. Anyone who installed by copying the template was running their
+  live instance out of a path git owns, and `update.sh` does `git reset --hard`, which restores
+  tracked files. The pre-update backup made this recoverable, not acceptable. The updater now
+  relocates such a database to `data/` — gitignored, and therefore out of reach of the reset —
+  before touching the working tree, verifying the copy before repointing `.env` and deleting
+  nothing. Installs on Docker (`/data/prod.db`), on `install.sh` (absolute `data/prod.db`) or on
+  any other absolute path were never affected and are skipped. The template default is now
+  `file:./data/dev.db`.
+- **A domain days from release was watched as if it had years left.** The watch loop accelerates
+  to a 15-minute check for `pendingDelete` and an hourly one for `redemptionPeriod`, matching the
+  EPP spelling WHOIS returns. RDAP returns the same statuses spaced (`pending delete`), so for
+  every row answered by RDAP the acceleration never fired — on exactly the domains the module
+  exists to catch. The table had the same blind spot: a name paid up to 2027 and a name being
+  deleted this week both read as "taken". Such rows now carry a badge with the registry date.
+- **The check counters showed the previous run.** The DNS and registry progress lines accumulate
+  one pass and were never cleared, so the last run's totals stayed on screen until the first
+  slice of the next one returned — up to 35 seconds, during which they described a catalogue that
+  rows had since been deleted from. Both reset when a pass starts, and both now say they count
+  that pass rather than the catalogue.
+
+### Added
+
+- **SERP Monitor: whole-SERP watching per market.** A new `/serp-monitor` module snapshots the
+  entire top-100 for every keyword of a project — one market is engine · country · language ·
+  device plus a keyword set — and diffs snapshots by host: who entered the top-100, who dropped
+  out, who moved, with a noise threshold that grows with position so the tail does not shout.
+  Each run's volatility is scored against the project's **own** baseline, flagging "storms"
+  (robust z ≥ 3 plus ≥ 30% of keywords above their own usual churn; the first 7 runs are
+  calibration, not a clean bill). A storm sends one Telegram/Slack notification — the five most
+  shaken keywords, the five hosts with the most entrances and exits — with a test button in the
+  project settings; a domain catalogue tracks first-seen dates, registration age (RDAP/WHOIS),
+  DR and referring-domain counts (through the instance's own SEO-metrics key), with
+  new/young/rising/falling/bounced tags and CSV export. The SERP source is the
+  instance's own A-Parser (`SE::Google`): self-hosted, no per-request cost, which makes
+  A-Parser a SERP provider of the app in its own right — and a fallback SERP source for the
+  Rank Tracker as well. Failed snapshots (burned proxy, captcha) are recorded as
+  failures and never enter a comparison, so they cannot fake mass exits. Requires
+  `npx prisma db push` on deploy: the `Serp*` tables do not exist before it, and the UI says so
+  instead of erroring.
+- **A registrar can confirm a free name.** A registry answers "is there a record"; a registrar
+  answers "will anyone sell you this", and for reserved and premium names those differ by the
+  price. With a Dynadot key (`DYNADOT_API_KEY`, or Settings → the Registrar panel on `/drops`),
+  names the registry called free get a second opinion. It may confirm `available` and may never
+  turn it into `taken` — a registrar's "no" can mean reserved, premium or a zone it does not
+  carry, and reading that as registered would drop good domains out of the funnel silently.
+  Premium is flagged rather than hidden, because "free" there can mean four figures.
+- **RDAP goes to the registry, not through a redirector.** Zones without a hand-written profile
+  were asked through rdap.org, whose 404 means both "no such name" and "no route for that zone" —
+  so it could never corroborate anything. Endpoints now come from IANA's own bootstrap
+  (`dns.json`, RFC 9224), cached daily, falling back to the previous behaviour when unreachable.
+
+## [1.6.2] — 2026-09-10
+
+### Added
+
+- **The drops catalogue became a pipeline.** `/drops` now shows the five stages it always had —
+  import, proxies, DNS pre-filter, registry check, free domains — as a strip with live counts,
+  reading the current step off the funnel rather than off the last button pressed, plus a "how
+  this works" panel that finally explains where the input file comes from and why DNS runs
+  before the registry. The page used to be a flat row of buttons with the order and the reasons
+  invisible.
+- **Ahrefs exports are read by column.** An "Outgoing links" export puts the source URL before
+  the target URL, so the old "first field that looks like a domain" rule imported the donor site
+  once and 143 000 duplicates after it — the published method for finding drops could not pass
+  through the importer at all. Columns are now matched by header with a deny list, quoting
+  follows RFC 4180 (anchors carry commas and newlines), and the file's DR and referring-domain
+  columns land on the candidate at import, so those rows never need paid enrichment. The screen
+  shows which columns will be read before the import runs, and lets you override each one.
+- **A proxy pool for the registry stage.** Politeness is enforced per address, so the per-zone
+  interval is now held per (zone, proxy) pair: several proxies may query one zone at once while
+  a single proxy still may not. SOCKS5 carries WHOIS (port 43 is raw TCP and HTTP proxies refuse
+  CONNECT to it); HTTP proxies carry RDAP. The pool is optional — with none configured the check
+  behaves exactly as before — and when every proxy is resting the run continues directly rather
+  than stalling.
+- **`.gr` is answered through a registrar API.** The zone has no RDAP endpoint and no public
+  WHOIS server: IANA publishes empty `whois:` and `refer:` fields for it, and `gr` is absent
+  from the RDAP bootstrap. easy.gr is wired as an availability source behind
+  `EASY_GR_USERNAME` / `EASY_GR_PASSWORD`; its calls never go through the proxy pool because the
+  service is IP-allowlisted. The registry's own table is parsed too — the expiry date of a taken
+  `.gr` is the date of a future drop, and it now feeds the watch loop.
+- **Manual verdicts.** Export the domains of a zone nobody can ask, check them in a registrar
+  panel or your own tool, paste the answers back. A row without a verdict is dropped rather than
+  read as free, and a manual verdict is never marked corroborated.
+- **Export.** The catalogue as CSV under the current filter, paged server-side with the row cap
+  written into the file, or as a plain domain list for an external checker.
+- **Range filters, group sections and Majestic TF/CF in the catalogue**, with per-domain backlink
+  counts and bulk actions that apply to the whole filter rather than the visible page.
+
+### Fixed
+
+- **Select-all is a scope, not a list of rows.** The header checkbox was a three-step cycle whose
+  middle state rendered as a stray dash; it is now two states, one click each way. Unchecking a
+  row after "select everything" used to collapse the selection to whatever rows happened to be on
+  screen, silently dropping every selected row on the pages you never opened — the filter-wide
+  scope now survives and carries the unchecked rows as exclusions all the way to the server.
+  Changing a filter drops that scope, so a later Delete cannot take rows you never saw.
+- **A zone with no registry is a stage, not a weekly retry.** Rows in a zone the checker cannot
+  ask were parked for a week but left in the pending stage, so the funnel advertised them as
+  waiting forever and re-marked them every week for nothing.
+- **The Wayback gap is counted in calendar days.** It was computed from raw milliseconds, so a
+  gap spanning a daylight-saving change was an hour short and lost a day — the same domain read
+  as a day less dead depending on the server's timezone, and that number feeds the score a
+  purchase is sorted by.
+- **The backlinks units figure without a monthly cap** reported spend as though it were the
+  remaining balance.
+- **Charts no longer warn on every mount**: full-height responsive containers are seeded with an
+  initial dimension, which recharts 3.x needs.
+
+### Changed
+
+- `safeFetch` accepts an outbound proxy connector. The private-address guard is unchanged: the
+  target is still resolved and still refused if private, so a proxy cannot become a hop into the
+  local network.
+- The dashboard traffic figure renders as a metric slot rather than a floating chip.
+
+## [1.6.1] — 2026-09-09
+
+### Added
+
+- **Majestic as a third metrics provider.** Trust Flow, Citation Flow, referring domains and
+  backlink counts through the groupbuyseo gateway (official `api.majestic.com` speaks the same
+  protocol, so the official/reseller/custom key modes all work). Majestic serves the backlink
+  side — profile pull, domain link counts, snapshots, per-domain Trust Flow — while keyword
+  tools resolve off it onto an Ahrefs or Semrush key automatically, because Majestic has no
+  keyword data at all.
+- **Backlink profile provider tabs.** The Backlinks tab gains All / Ahrefs / Majestic / Semrush
+  views. All merges every provider into unique donors with each metric in its own column (DR,
+  TF/CF, Authority Score) and an A/M/S provenance badge; a provider tab keeps that source's
+  strict live/lost verdicts and history. Refresh pulls per view from that provider's own key,
+  cap and unit currency — no trip to Settings, and per-provider failures report separately.
+  Semrush joins as a profile source through the gateway's backlinks API (40 units/row — priced
+  on the button as the expensive option it is).
+- **Ads Intelligence in the crawler.** Point /crawler at any domain and an optional panel shows
+  what Google Ads Transparency knows about how it advertises: which advertisers run Google ads
+  for the domain, the ad copy with each title's run window, weekly ad-count activity per
+  advertiser and country, the image creatives, and a keyword search that maps who else is
+  buying ads in the niche. Every section prices itself in credits before it is pressed and
+  caches independently for 7 days.
+- **Self-hosted DR history.** The panel accumulates its own monthly DR series for free: every
+  fresh measurement from the free Ahrefs endpoint also writes a monthly snapshot, drops and the
+  site header grow DR sparklines with a penalty flag (a fall of 5+ points is a filter, not lost
+  links), the watch loop refreshes watched domains monthly, and the drops_dr_history MCP tool
+  answers from the local series first — GoAnyAPI's paid history becomes a one-time backfill
+  rather than a subscription.
+- **Semrush Traffic Analytics as a second traffic source** (beta, ~1 unit per report):
+  estimated visits, users, bounce rate, pages per visit, a monthly series and channel shares
+  including GenAI — from the same gateway key as the metrics reports. The traffic cache keeps
+  one row per (domain, provider); the chip names its source and, with both keys configured,
+  switches vendors in one press.
+- **GoAnyAPI extras**: credit balance endpoint, and the DR-history tool with a free preview of
+  which months exist before any spend.
+- **Share-link popover on the dashboard toolbar** — create and copy the client link without
+  opening the Settings tab.
+- **Partner wall in the Support Developer modal** — Pay2.House & GroupBuySEO.
+- **Real setup docs for the health-check keys**: per-key steps in Settings plus a guide.
+
+### Changed
+
+- **Unit prices refreshed to the reseller's September 2026 rate card**: Ahrefs rose fourfold to
+  $0.0001/unit; Majestic joins at $0.000002/unit — which is why the third provider earns its
+  place. Domain metrics are metered at each provider's own price (Semrush had been metered at
+  the Ahrefs rate).
+- **The traffic chip is always visible for the owner** and honest about failure: without a key
+  it says which key to enter and links to Settings, per-provider failures render next to the
+  button, and "no data for this domain" is stated as an answer rather than arriving as a silent
+  502.
+- Model-catalogue probes pass the provider endpoint override; A-Parser auth failures name the
+  host and credential source; the Wayback client sends a User-Agent, matches by host and
+  reports throttling honestly.
+
+### Fixed
+
+- Majestic GetRefDomains mapping: links-to-target now comes from the per-target
+  `BackLinks_<target>` column (the donor's own backlink total was being quoted — 400 000 links
+  from one blog), first-seen dates arrive from `FirstLinkDate_<target>`/`FirstCrawled`, and
+  dofollow%, which the command does not provide, stays null instead of a fabricated 100%.
+- API metric pulls overwrite what they just measured: the CSV-safe keep-semantics had also
+  protected wrong values from ever being corrected by a re-pull.
+- The GoAnyAPI client follows the documented `api.goanyapi.com` host.
+- sc-domain: properties resolve in health checks; PageSpeed lab runs get 45 s instead of 20 s;
+  the dashboard period dropdown is no longer clipped at 360px; insufficient-scope sync errors
+  flag the account for re-auth instead of failing silently; per-tab copy chips show the
+  "Copied" feedback.
+
+## [1.6.0] — 2026-09-07
+
+### Added
+
+- **The /drops expired-domain catalogue.** A full drop-screening funnel: paste a list (or feed it
+  from Ahrefs/crawler exports) and every row is normalised to its registrable apex, the delegated
+  names are retired by a free DNS pre-filter, and the registries are walked for availability at
+  each zone's own pace — RDAP first, WHOIS as the corroborating source, refusals on a
+  6h→12h→24h backoff ladder, and zones without a public registry (like .gr) marked instead of
+  silently stuck. Enrichment: free Ahrefs Domain Rating that loads itself (the visible page fills
+  in like the dashboard cards, a finished import starts a run-wide background sweep, and the key
+  is resolved server-side, so it works in any browser), Wayback snapshot counts with a per-domain
+  archive link, and paid refdomains behind an explicit confirm. A veto score down-weights
+  spam-history and long-idle names, the AI history pass asks an LLM what the domain used to be,
+  and the table is sortable, striped and filterable down to a DR band — filter "≤ 5", select all
+  by filter, delete: that is the garbage sweep. Nine new MCP tools (drops_list, drops_ingest,
+  drops_prefilter, drops_check, drops_enrich_dr, drops_enrich_wayback, drops_enrich_refdomains,
+  drops_history_ai, drops_watch) and a drops-research skill mirror the UI flows.
+- **Watch loop for taken domains.** Mark a taken or still-resolving name as watched and a
+  five-minute scheduler re-checks it on a per-registry cadence (15 minutes for pendingDelete, an
+  hour for redemptionPeriod), alerting once when it actually frees. A corroborated free ends the
+  watch; a single-source free gets a silent one-hour re-check before celebrating.
+- **Self-hosted A-Parser as a SERP and GEO provider**, with a console page and a batch queue
+  (addTask / poll / results) over a detailed proxy list.
+- **Provider call log and provider alerts.** Every outbound provider call is recorded per
+  request; the hourly alert engine learned balance_low and provider_down against that merged log —
+  a 5xx or a transport failure is a failure, a 4xx the provider actually answered is not.
+- **GEO audit of your own page**: the audit compares an AI answer against a URL you control, adds
+  a verdict card and markdown export to the report.
+- **URL-addressable views.** Site tabs ("?tab="), seo-tools tabs and modes, and the history,
+  humanize and analysis views all live in the query string — a refresh or a shared link
+  reproduces the exact view.
+- **Workspace-wide audits history**: every site's audit runs in one table.
+- **Invisible-marks scrub.** Generation and rewrite output is deterministically stripped of
+  zero-width, bidirectional and other invisible Unicode characters; quoted text is spared.
+- Picking a country in the research tools now preselects its market language (Ukraine 2804 →
+  uk/ru, instead of a 40501 from Labs).
+- Text generation jobs report real phase progress (chunks, FAQ, fact-check, volume, mechanics,
+  judge) instead of a bar stuck at 5%.
+
+### Fixed
+
+- The dashboard's portfolio metrics could end up showing one site's numbers: a slow discovery
+  response arrived last and clobbered the merged state. Responses now merge by id.
+- Digests and the portfolio-wide MCP site resolution skip hidden and archived sites, matching
+  what the dashboard already did.
+- GEO search calls to openai/kie providers stream instead of hanging past proxy timeouts, and the
+  wall-clock cap names what it killed.
+- A-Parser paired credentials: an explicitly entered credential now wins over the environment for
+  both halves of the pair, not just one.
+- The /audits page stretched past the layout width.
+
+## [1.5.2] — 2026-08-29
+
+### Changed
+
+- Every period control in the app survives a refresh, and the windows that matter can travel
+  in a link. Ten controls across seven screens were bare component state with hardcoded
+  defaults: setting the dashboard to 12 months and reloading put you back on 7 days, opening
+  a site from a 12-month portfolio landed on a 7-day site page, and nothing could carry the
+  window you were looking at. The GSC window (dashboard and site page now share one value)
+  lives in the URL as `?period=` and in the browser as the last-used window, whichever the
+  link or history provides; chart granularity and comparison mode persist per browser; the
+  report panels (Striking Distance, CTR Benchmark, Cannibalization, Related Intent, Content
+  Decay) keep their analysis window across screens and refreshes. The standalone report pages
+  accept the window as a query param (`/striking?days=180`, `/decay?period=week`,
+  `/digest?days=30`) so a report shared with a client opens at exactly the window it was read
+  at. All of it is validated against each control's real option list — a hand-edited URL
+  falls back to the default instead of rendering a selector that shows nothing.
+
+### Fixed
+
+- Hiding a site was a browser illusion. The hidden set lived in React state only, so the next
+  page load un-hid everything; favorites were forgotten just as fast, and of the three things
+  the dashboard promised to remember ("your last sort order, pin the important projects, hide
+  the dead ones") only the sort order actually survived a refresh. Both flags are now real
+  columns on the Site row (`hidden`, `pinned`) flipped through the existing site PATCH
+  endpoint — a workspace property rather than one browser's secret — with the toggles updated
+  optimistically and rolled back if the write fails. Nothing about the dashboard's structure
+  changed: hidden sites still sit in their collapsed 🙈 group at the bottom, one click from
+  coming back.
+
+- The portfolio-wide reports counted sites you had shelved. Striking Distance,
+  Cannibalization and Content Decay, asked for `siteId=all`, selected every site of the user
+  unconditionally — a hidden property still fed the report, and so did an archived one, even
+  though the dashboard, the metrics warmup and the alert scheduler all already treat archived
+  as excludable. All three (plus the position-decay chart, where dead sites were also burning
+  the 10-site live-API budget) now select only live, unhidden sites. Picking a site
+  explicitly from the report's own selector still works for hidden and archived properties —
+  the exclusion applies to the portfolio sweep, not to a deliberate choice.
+
+## [1.5.1] — 2026-08-24
+
+### Changed
+
+- The referring-domains pull no longer has a row ceiling. The 50–1000 "domains" selector is
+  gone: a refresh now pages through every referring domain the provider will return, offset or
+  keyset — whichever the gateway actually supports, probed once per host per day exactly like
+  the full backlink export. The product stopped deciding how much of a link profile an SEO is
+  allowed to look at; the only ceiling left is the monthly unit cap the owner configured
+  themselves. The price of the whole pull is computed from the profile's real domain count
+  (one floored `backlinks-stats` call) before a single page is spent, shown where the selector
+  used to be, and the meter is reconciled to what the gateway actually billed — a pull that
+  stops midway keeps its fresh pages, is flagged partial, and still cannot prove a link lost.
+  The domain table renders everything stored now too, paginated 100 rows at a page instead of
+  a silent first-200 slice.
+
+## [1.5.0] — 2026-08-24
+
+### Added
+
+- **Backlinks v2** — a rework of the backlinks tab around the question the money was spent on:
+  *is our link still standing on the page we paid for?* The old `check-alive` only answered
+  "does the donor page respond 200", so a donor that stripped the link but kept the page showed
+  a green check. The new `SiteBacklink` model stores the two answers in independent columns —
+  `pageStatus` (unknown/alive/dead/blocked for the donor page) and `checkStatus`
+  (unchecked/found/missing/blocked/error for our link on it) — and never derives one from the
+  other. A live page with the link gone is now a red row, not a green one; a 403/429 from a WAF
+  is amber "blocked", never a false "missing" that would send a client to fight with a donor
+  site over our user agent.
+
+- **Placement verification** (`Check placements`). A background runner that fetches every donor
+  page in the list — the whole filtered selection, not a silent first-200 like `check-alive` —
+  and looks for our link with a real HTML tokenizer (`linkPlacement.ts`, derived from
+  izzipizzy/backlink-finder, MIT): anchors with entities and nested tags, `rel` parsed into
+  nofollow/sponsored/ugc, image links via `alt`, `<base href>`, CP1251/UTF-16 bodies, punycode
+  domains. Concurrency 4 with per-host serialization and a 150 ms politeness delay, retries only
+  on transient failures, optional retry of expired-certificate donors without TLS verification
+  (rows fetched that way are visibly marked), and when Ahrefs found the link only via JS
+  rendering the row is flagged instead of being reported as gone.
+
+- **Full Ahrefs export** of your own backlinks into the new table, as a background job with
+  progress and heartbeat. The gateway's `offset` support is probed once per host per day
+  (~100 units) and offset or keyset paging is chosen from the answer; pages of 1000 rows at the
+  confirmed 20-fields/20-units price. Losses come from Ahrefs' own `is_lost` with
+  `history=all_time`, never computed locally from "did not arrive in this pull". The price is
+  estimated from the profile size and shown for confirmation before a single unit is spent, and
+  `complete=false` partial runs are refused the right to prove any link lost.
+
+- **The tab itself**: server-side pagination and filtering (status, rel, source, donor domain,
+  DR range, favourites, lost-per-Ahrefs) with stats counted over the whole selection rather
+  than the visible page; favourites live in the database, not the browser; import of a pasted
+  list or CSV/TSV with column detection, preview and invalid-URL reporting; mass actions operate
+  on the filter, and destructive ones say how many rows they will touch before running. CSV
+  export gains the anchor, rel, placement status, source and favourite columns.
+
+- **Data-source placard** above the profile table: provider, host, official/reseller/custom
+  mode, update time and the live unit balance from Ahrefs' free
+  `/v3/subscription-info/limits-and-usage` endpoint (cached 10 minutes), with the local
+  `ApiUsage` estimate shown and labelled as such when the provider balance is unreachable.
+  Provider errors stopped collapsing into one "failed": 401 names the host and the
+  reseller-key-on-official-host trap, 402 adds a top-up link, 403 says the product is not
+  enabled, 429 and 502 get their own wording.
+
+- **Digest and alerts**. The digest gains a Links section: appeared/lost/returned counts from
+  `SiteBacklinkEvent` for the window, favourite losses listed by name even when it is one link,
+  rel downgrades as their own line (invisible in a total link count, but the weight is gone),
+  and top donor domains by losses. Anomalous loss is judged against the site's own baseline
+  from `BacklinkSnapshot` — three times the usual rate or 5% of the profile, whichever bites
+  harder — and stays quiet while there is less than two weeks of history. Two new alert rules:
+  unusual backlink loss, and any `lost`/`rel_downgraded`/`target_changed` on a favourite link,
+  which has no threshold because one is already the story. Until a complete export has finished,
+  the digest reports losses not at all.
+
+### Fixed
+
+- Unit accounting no longer overcharges: routes that reserved units via `recordUsage` before the
+  request now release them on failure and reconcile to the rows actually returned, matching what
+  the gateway really bills (4xx/5xx answers cost nothing). `estimateUnits` learned the `_prev`
+  and `_merged` suffixes and the full 15/10/5/1 field tariff table, so `volume_prev` is no
+  longer priced at 1 unit.
+
+- Instances that manage schema with `prisma db push` (this repo's install.sh, update.sh and
+  Docker image) never run migration files. The old-link transfer now ships as
+  `scripts/backfill-site-backlinks.ts` as well — re-runnable, dry-run by default, `--apply` to
+  write — so those instances get their existing links carried into the new table instead of an
+  empty tab.
+
+## [1.4.1] — 2026-08-12
+
+### Added
+
+- **Competitor crawler** (`/crawler`, next to Digest). An X-ray of any site on the internet, run
+  from inside your own console: technical state judged by the same rule registry as Site Audit,
+  what the site is built with (CMS, framework, WordPress theme and plugin slugs, exposed usernames,
+  reachable `xmlrpc.php`), where it is hosted (A/AAAA, nameservers, MX, CDN), how big it is
+  (sitemap URL count, hreflang languages) and whether it lets AI crawlers in.
+
+  The part a single-site checker cannot do: every scan stores the identity signals a site leaks —
+  GA4, Universal Analytics, Tag Manager, AdSense, Yandex Metrica, Meta Pixel, Hotjar, Clarity,
+  nameservers, IPs — and each new scan is matched against the ones before it. An analytics property
+  or ads publisher id is billed to one person, so a match there is reported as strong evidence of
+  shared ownership; a shared nameserver or IP only means a shared host and is marked weak. Redirect
+  targets are recorded too, which is how a dropped domain merged into another shows itself.
+
+  It also runs the Googlebot View comparison on every scan: the page is fetched a second time as
+  Googlebot Smartphone arriving from a Google search and diffed against the browser view. A doorway
+  that cloaks by User-Agent looks perfectly ordinary to a scanner that only identifies as itself,
+  and this is what sees through it — different status, different final URL, different title or word
+  count, or a site that refuses Googlebot outright.
+
+  Ahrefs/Semrush figures for the scanned domain are read from the local cache for free on every
+  scan. Fetching fresh ones is a separate click that states the cost first and spends the owner's
+  own units, per the rule that nothing bills anyone by opening a page.
+
+  One page plus the paths a site publishes anyway (robots.txt, sitemap, llms.txt). Nothing is
+  brute-forced, no credential is tried, and the WordPress paths are only requested when the page
+  already looks like WordPress. Reports download as Markdown.
+
+### Fixed
+
+- **The pre-update SQLite backup could hang forever on a busy instance.** `better-sqlite3`'s
+  `.backup()` copies page by page and restarts whenever the source is written to, so on a
+  production database with schedulers running it never finished — an update sat on that line for
+  fifteen minutes with no output and no error, which is worse than a failure because it cannot be
+  told apart from slow. The backup now uses `VACUUM INTO`: one statement, one read snapshot, no
+  restart on concurrent writes — measured at 0.4 s for a 21 MB database while 617 writes landed in
+  it. A copy of the database and its WAL sidecars is the fallback, the result is opened and
+  integrity-checked before the update proceeds, and the updater caps the step at ten minutes so it
+  can never block again.
+
+
+### Changed
+
+- **Site Audit no longer asks how many pages to crawl.** It crawls the site. The number survives as
+  an optional safety ceiling for deliberately sampling something enormous, and the report says
+  plainly whether it was reached — "the whole site as far as the crawler could reach it" or
+  "stopped at the limit, so the site may have more". Asking for a page count up front was asking a
+  question nobody can answer before the crawl, and guessing low truncated the audit silently.
+- **Long tables are paginated** — the audit page list and the scan history both stopped being a
+  scroll bar pretending to be a table. Scanner cards are two per row rather than four, where the
+  values wrapped mid-word.
+- **The audit export is now a work order rather than a page list.** Every finding carries the value
+  that triggered it (`og:image, og:description` instead of an empty column) — captured during the
+  crawl and stored, which it previously was not. A finding on 80% or more of the pages is labelled
+  site-wide and shown once with an example, because that is one template to fix and not two hundred
+  pages. Each of the 31 rules carries a one-line fix, long lists move to an appendix, and the report
+  explains why a health score can stay high while an informational finding affects every page.
+- **The public Free SEO Checker is gone**, replaced by the competitor crawler above. It was a
+  lead-generation page on an application whose whole premise is that nothing is public; the engine
+  survives inside a tool that does more, for people who are signed in. `/free-seo-checker`,
+  `/api/public/seo-check`, the anonymous rate bucket and the Turnstile options no longer exist.
+
+## [1.4.0] — 2026-08-12
+
+Everything below closes the same loop: find a problem, act on it, and prove afterwards that the
+action worked. Existing tools keep their own data, screens and logic — **Site Audit**, **AI
+Visibility** and **SEO Tools → GEO** were not merged into anything.
+
+**Before you update.** The schema change is additive and the updater takes a verified SQLite backup
+before touching anything, so the upgrade path is the usual one. Two features in this release reach
+outside the instance for the first time and are worth trying on something disposable before you
+rely on them: **Content Operations** creates branches and pull requests in a GitHub repository you
+connect yourself, and **Source Audit** reads that repository. Both require you to add a
+fine-grained token explicitly, neither touches your base branch, and nothing is merged
+automatically — but they are new, and a first run against a scratch repository will tell you more
+than this paragraph can. Everything else in the list reads data this instance already has.
+
+### Added
+
+- **Team collaboration.** A workspace is the owner's account, and members act on the owner's data
+  with a role: viewer reads, editor runs free actions and edits content, admin may also spend the
+  owner's API credits and manage people, and the owner keeps keys, Google connections, updates and
+  deletions. The owner cannot be removed or demoted, and ownership transfer is a separate explicit
+  action so the workspace survives someone leaving.
+
+  **Sign-in no longer goes through Google at all.** Identity and data are separate concerns:
+  `npm run create-owner -- --email you@example.com` creates the owner from the server console, and
+  `npm run set-password` is the recovery path when nobody can get in. Google OAuth keeps doing the
+  only job it should ever have had — pulling Search Console and Analytics data into the workspace.
+  Nothing is taken away: the owner can keep signing in with Google, and after setting a password
+  both doors work. What closed is the other case — a Google account that is not the owner's no
+  longer attaches itself to the instance, and connecting one is an owner action from inside a
+  session. Owners still on Google see a single dismissible prompt suggesting a password, with the
+  SSH command included; it never returns once one exists.
+
+  **Members sign in with an email and a password, never with Google.** An employee's Google account
+  carries their own Search Console properties, and signing them in that way would pull personal
+  sites into an agency workspace — in both directions the wrong thing. An admin either sets a
+  starting password (the member must change it at first sign-in, so the admin's copy stops being a
+  credential) or sends a single-use invite link valid for 72 hours. Suspension takes effect on the
+  next request, and the members screen explains on-screen what each role can do, including which
+  ones can spend money. MCP tokens inherit the holder's role, so a viewer's agent cannot start a
+  paid job.
+
+- **Audit Verification** re-crawls the same scope and separates resolved findings, persistent
+  findings, regressions and inconclusive pages in the UI, API and MCP. A page that could not be
+  re-fetched is reported as inconclusive rather than fixed.
+- **Site Audit rule registry**, now executable and 30 rules wide: redirect chains and loops,
+  canonical and robots conflicts, viewport and language, JSON-LD validity, social metadata,
+  mixed content and security headers.
+- **Outreach Workspace** inside Link Monitor: campaigns, evidence snapshots, stage history,
+  follow-ups, localized pitch drafts, Backlink liveness linkage and four local MCP actions.
+  It prepares outreach; it never sends it.
+- **Related Intent** as a second mode of the existing Cannibalization report — clusters different
+  query formulations, explains page roles, position gaps and daily winner changes, and recommends
+  review only. No LLM, live SERP or paid call. Exact-query stays the default.
+- **Content Operations**: an editorial queue above the existing generators with approval, review,
+  deterministic preflight, an encrypted fine-grained GitHub token, a diff you must confirm, and a
+  pull request that is never auto-merged.
+- **Post-deploy outcome**. A merged pull request is not a deployment: OpenGSC fetches the target
+  URL and starts measuring only on a real HTTP 200, then links the page into Indexing and, when a
+  keyword is set, into the Rank Tracker. Windows close at 7, 30 and 90 days against a 28-day
+  baseline, captured once each from your own Search Console rows, with the reporting lag accounted
+  for — an empty row means *not measured yet*, never zero traffic.
+- **Source Audit**, a read-only tab in Content Operations that checks a bounded snapshot of a
+  connected GitHub branch before deployment (80 files, 256 KiB per file, 4 MiB total, in memory).
+  It stores findings, never source bodies or secret values, and marks a truncated scan as
+  incomplete. Exposed read-only over MCP as `get_source_audit`.
+- **Public Free SEO Checker** at `/free-seo-checker`: one homepage, the shared audit registry and
+  SSRF-safe fetch, consequence-and-action wording, seven locales, an anonymous rate bucket, a
+  15-minute cache and optional Turnstile. No session, no stored report.
+- **Sitemap Inventory** in the Indexing tab: recursive sitemap index, gzip and image/video/news
+  extensions, source sitemap, `lastmod` reliability, first/last seen, and a disappearance rule that
+  needs two fully successful syncs — a failed child sitemap never marks a URL missing.
+- **`seo-production` agent skill**: task card, demand evidence, outline first, a claim ledger,
+  deterministic verification, and a package handed to Content Operations. It forbids inventing
+  first-hand experience and does not optimize for AI detectors.
+- **45 MCP tools** (37 local), including the Outreach and Source Audit contours.
+
+### Security
+
+- **A Google sign-in that is not the owner's is now refused.** Previously any Google account that
+  reached the login page was attached to the instance as an additional Search Console connection —
+  no session was granted, but a stranger's properties and OAuth tokens landed in someone else's
+  database. Linking a new Google account now requires an active owner session, which is what the
+  "add account" button in Settings already provides.
+- Every API route resolves identity through one workspace resolver instead of reading the session
+  directly, and membership is re-read on each request, so revoking access is immediate despite
+  30-day JWT sessions.
+- User-controlled HTTP fetches resolve and pin public addresses, re-check every redirect, reject
+  private and reserved IPv4/IPv6 targets, and cap time, redirects and response bytes.
+- `OPENGSC_ALLOW_PRIVATE_TARGETS=1` is the one deliberate exception, for operators auditing a
+  staging site on their own machine or LAN. It is off by default and the public Free SEO Checker
+  ignores it regardless.
+- The updater now takes a verified SQLite backup **before** `git reset --hard`, not after. A local
+  install left on the template default (`file:./dev.db`) previously had that file restored from the
+  repository during an update; production installs point `DATABASE_URL` at `data/prod.db` and were
+  never affected.
+- `.gitignore` covers local databases, WAL sidecars and the updater's backup directory, so a real
+  database cannot be committed by accident.
+
+### Changed
+
+- Job lifecycle and heartbeat fields are shared by audit and paid SEO jobs; an interrupted free
+  audit recovers, and a paid call is never retried automatically.
+- Settings → Members is a real feature now and no longer behind a flag. The remaining Teams and
+  Super Sites screens are still mockups and stay behind `NEXT_PUBLIC_EXPERIMENTAL_TEAM_UI=1`.
+- SQLite is documented as the supported database; MySQL/MariaDB remains experimental.
+- `.env.template` ships with the repository again — `.gitignore` had been swallowing the file both
+  install guides tell you to copy.
+- New screens use the shared `globals.css` layer instead of component-scoped styles, so light and
+  dark themes follow the same tokens as the rest of the app.
+- `npm run check` also verifies release metadata and seven-locale key parity.
+
+## [1.3.0] — 2026-08-09
+
+### Fixed
+
+**AI Visibility reported "not cited" for questions ChatGPT visibly cites you on**
+
+The check asked `gpt-4o-mini` with `tool_choice: "auto"`, which on a mini model usually means
+the search tool is never called: the answer comes from weights, carries no citations, and the
+tracker records an absence. It also asked from nowhere in particular, while the browser answer
+a user compares it against is geolocated — for a local-intent question the two were not looking
+at the same web at all. And because only a boolean was stored, a disagreement could not be
+investigated; the only available conclusion was that the tool was broken.
+
+The search is now forced rather than suggested, runs at `search_context_size: high`, carries a
+`user_location`, and uses a model you pick (default `gpt-5`, live list from your own key) with a
+fallback ladder so an older account degrades instead of erroring. Perplexity gained the same
+context/location options. Claude and Grok were not searching the live web at all and now do, via
+Anthropic's `web_search` tool and xAI Live Search respectively — so all four columns finally
+measure the same thing.
+
+### Added
+
+**AI Visibility shows its work**
+
+Every check now stores the full answer, each citation, which model produced it and whether a
+live search actually ran. Expanding a question shows the answer text, the cited domains with
+yours highlighted and your rank among them, so "not cited" is something you can read rather than
+a claim you have to take on faith. A row where the model never searched is flagged as such
+instead of being counted as an absence.
+
+A third verdict, **mentioned**, separates "the brand is named in the prose" from "the answer
+links to you" — previously both collapsed into the same grey dash, or, when brand terms happened
+to match, into a false green tick.
+
+**"Cited instead of you"** counts the domains the engines returned across all your tracked
+questions — the pages your answer has to displace.
+
+**Per-site check settings** (model, country, city, answer language) live on the tab. Country
+falls back to the site's search market and can be cleared back to "no location", which is a
+different question to ask an answer engine than "United States".
+
+### Changed
+
+**Model ids are resolved from your account, not hardcoded**
+
+`gpt-5` was written literally into the GEO audit page, its stored default and the server-side
+audit fallback; `gpt-4o-mini` into the audit's second pass. That kind of staleness is silent: the
+id keeps resolving, the call keeps succeeding, and the tool quietly runs a generation behind
+whatever you are comparing it against. A new `lib/seo/models.ts` ranks whatever `/v1/models`
+returns for your own key — newest generation first, then by size tier, previews last — and
+resolves an *intention* (`quality` / `balanced` / `cheap`) into an id from that ranking. A saved
+model the provider has since retired is replaced rather than 404-ing. Hardcoded ids survive only
+as the fallback for "no key, nothing to list".
+
+**You can see which model each tool runs, and where it is set**
+
+The SEO Tools header had an unlabelled "Settings" button. It now names the model that will
+actually run — e.g. `OpenAI · gpt-5.6-terra` — and expands into a panel listing every AI task the
+current page performs, what each one does, and **which settings level the value came from**
+("set for this task" / "from the SEO Tools model" / "no model sent — provider decides"). The
+fallback chain is three deep, and until now a user whose per-task model appeared not to take had
+no way to tell a failed save from an override.
+
+Some pages were running tasks nobody had been told about: **Links** runs the `analysis` task, and
+the **GEO audit's** second pass runs the new `utility` task. Both are now visible in the header
+and configurable like everything else.
+
+**Two routes had their own private copy of the LLM client — deleted**
+
+`/api/gsc/branded` (brand-term detection) and `/api/gsc/setup` (One-Click Setup clustering) each
+carried a hand-rolled multi-provider client, forked from `lib/llm.ts` and then left behind. They
+were still asking for `gpt-4o-mini`, `gemini-1.5-flash`, `claude-3.5-haiku` and `glm-4.5-air`,
+and nothing ever failed, because a stale model id keeps resolving. They also knew four providers
+where the shared client knows nine, and had no retry at all — so a routine `429` came back as
+"no brand terms found" or a silent fall back to algorithmic clustering, on your paid key.
+
+Both now call `fetchLLM`, which brings retries, the full provider list, and real error detail.
+The model comes from the new **Utility passes** task, so it is visible and configurable like
+everything else.
+
+**Default model ids live in one table**
+
+`lib/providerDefaults.ts` holds the per-provider default for chat and vision. They were
+previously written inline at every call site and aged separately — the drift above is what that
+looks like in practice. Anything you choose still wins outright; this table only answers
+"nothing was chosen and we still have to put a string in the request".
+
+One default was actively wrong: a **custom OpenAI-compatible endpoint** with no model configured
+was sent `gpt-4o-mini` — an OpenAI id to a gateway that may never have heard of OpenAI. The 404
+that came back looked like your server's fault. It now fails with "no model configured", which
+is the actual problem.
+
+**Per-task model is a picker, not a text box**
+
+Settings → SEO Tools let you type a model id by hand for each task, which is how you end up
+pinned to something the provider retired. It now lists the chosen provider's live models, keeps a
+free-text escape hatch for endpoints with no `/models` listing, and never discards a saved id it
+cannot find in the list. Each row explains what the task does, which tools use it, and what it
+resolves to. Two tasks were missing from that table entirely: **Landing page** (so
+`seoTaskModel_landing` could be read but never written) and the new **Utility passes**.
+
+The task list, the tool-to-task mapping and the settings table now come from one registry
+(`lib/seo/aiTasks.ts`), so they cannot drift apart again.
+
+**Background AEO checks are now opt-in per site**
+
+A check spends your own AI credits — four billed calls per question, each with live web search.
+On an instance with a large portfolio the scheduler was quietly doing that for every site with
+tracked questions. It now only visits sites where **Check automatically once a day** is switched
+on; everything else waits for the button. Adding questions no longer triggers a check either:
+pasting thirty questions and paying for a hundred and twenty API calls are separate decisions.
+
+## [1.2.3] — 2026-08-06
+
+### Added
+
+**Content tools now use whichever keyword source you actually pay for**
+
+Writing an outline with a Serper SERP key and an Ahrefs key used to produce no keyword data at
+all, because every content tool was hard-wired to DataForSEO and said nothing when that key was
+absent. Worse, the outline prompt kept its "split keywords by frequency: ВЧ → H1, СЧ → H2, НЧ →
+H3" instruction regardless, so the model applied it to an imaginary frequency breakdown — an
+outline that looked methodically correct built on numbers that did not exist.
+
+A new `keywordSource` layer routes a seed through Ahrefs → Semrush → DataForSEO by which key is
+configured, reading the shared cache first and for free. Outline, landing and cluster were
+moved onto it; the standalone `keywords.ts` (DataForSEO-only, uncached) and a fourth private
+DataForSEO client in `generate.ts` were deleted. When no source is configured, the outline and
+landing pages now show an explicit "keywords not loaded: source not configured" banner instead
+of staying silent, and the prompt drops the frequency rule rather than running it on nothing.
+
+A new selector in **Settings → SEO Metrics** lets you lock the source (`auto` / `ahrefs` /
+`semrush` / `dataforseo` / `off`) and shows which one `auto` resolved to. Every paid call quotes
+its own price in units and USD on the button before it is pressed.
+
+**Rewrite now keeps the ranking phrases it was asked to keep**
+
+`RewriteBody` gained an optional `targetKeywords` field, and a new deterministic
+`keywordCoverage` check (next to `uniquenessPct` and `factDrift`) reports, per target phrase,
+how many times it appeared in the source vs the rewrite. A phrase that quietly disappeared from a
+two-thousand-word text — the same class of invisible risk `factDrift` catches for numbers — is
+now surfaced explicitly. The UI has a target-keywords input and a coverage panel under each
+variant.
+
+**Portfolio cache warm-up**
+
+With 210 sites and 0.8% keyword-metric coverage, loading volumes page by page is not realistic.
+A new **warm-up** panel prices the whole striking-distance gap for a site, tag or market up front
+and fills it in one button — the 1 714 uncovered striking-distance terms on the live server cost
+≈ $0.56 in one click. Grouped by market, with the sites it skipped (unknown market) listed
+separately.
+
+**Per-site market selector**
+
+Keyword data is bought and cached per country, so the market a site targets is a correctness
+property, not a preference. A new amber chip on each site card shows the resolved market (from an
+override, then the ccTLD, then `unknown`), and an inline editor sets it. `Site.market` is a
+nullable column; a backfill script (`scripts/backfill-site-market.ts`) fills the ~170 inferable
+ones from the ccTLD and leaves the rest for a human. **Run `npx prisma db push` after updating,
+then `npx tsx scripts/backfill-site-market.ts --apply`.**
+
+**Semrush now works on the Competitors screen**
+
+`fetchOrganicCompetitors` and `fetchOrganicKeywords` no longer return `provider_unsupported` for
+Semrush — they call `domain_organic_organic` (40 units/line) and `domain_organic` (10 units/line,
+`Kd` included at no surcharge). The gap route's cap check now uses the provider's own rate, so a
+Semrush call is quoted honestly before it runs. Backlinks stay Ahrefs-only (Semrush 40 units/line
+against Ahrefs' 5) and the UI still says so.
+
+### Changed
+
+**Unknown country is now an error, not a silent default to the US**
+
+Three independent code paths (`demand.ts`, the deleted `keywords.ts`, `generate.ts`) turned an
+unknown country code into US location 2840 with no warning, so keyword research for the 18-site
+Bosnian cluster silently returned American volumes. The Balkans (`ba`, `me`, `mk`, `al`, `si`)
+are now in the location table, and every other unknown code returns `unsupported_country` rather
+than a wrong answer. `country` is a required argument in all five `metrics.ts` entry points
+(including the Semrush one, where the parameter is named `database`).
+
+**`readKeywordCacheAny` reads across all providers**
+
+A row bought from Ahrefs was invisible to a query configured for Semrush, and vice versa. The new
+cache reader spans providers and prefers a row with `difficulty` over a fresher one without it,
+so a cheap volume refresh cannot bury a KD that cost ten times as much.
+
+**MCP `research_keywords` can use Ahrefs**
+
+It was DataForSEO-only. It now routes through the same `keywordSource` layer, and the provider is
+folded into the `DemandSearch` cache key as a prefix (`ahrefs:seed|…`), reusing the namespace
+pattern `aeo/mentions` already established with `llm:` — no schema migration needed.
+
+## [Unreleased]
+
+### Added
+
+**Properties removed from Search Console now leave the dashboard**
+
+Delete a property in Search Console and it used to stay on the dashboard forever. Replacing
+nine banned domains left nine dead cards sitting among the live ones, dragging the portfolio
+totals down and showing a flat line nobody could act on.
+
+The cause was that site discovery only ever inserted. `GET /api/gsc/sites` upserted everything
+Google returned and did nothing at all about rows Google had stopped returning, and there was no
+way to remove a site by hand either — no endpoint, no button. Once a row was in the `Site` table
+it was there for good.
+
+Sites Google no longer lists are now moved to an **Archive** group, collapsed at the bottom of
+the dashboard. Archiving is soft on purpose: everything already collected for that domain —
+metrics, audits, tracked keywords, backlinks, Clarity snapshots — stays in the database and stays
+queryable, which matters when the domain was replaced rather than abandoned and you still want to
+compare the new one against it. Each row has **Restore**, and **Delete** for permanent removal
+once the history is genuinely not needed. New `Site.archivedAt` — **run `npx prisma db push`
+after updating**.
+
+Reconciliation runs in two places, so it does not depend on anyone opening a browser: in the
+dashboard's own site fetch, and in `runGscSync()`, which means a scheduled sync on a headless
+instance keeps the list honest by itself. It works in both directions — a property that comes
+back (re-verified, or the same domain added again) leaves the archive on the next pass.
+
+It will not archive on a partial read. Every linked account has to have answered without error
+and the list has to be non-empty, and in `runGscSync()` a failed `sites.list` disqualifies that
+user entirely rather than just the one account. The alternative is a dashboard that empties
+itself because a token expired overnight, which looks exactly like losing your data.
+
+### Changed
+
+**Archived sites are excluded from the background schedulers**
+
+A dead domain was still being checked on schedule. The rank scheduler spent paid SERP calls on
+it, the AEO scheduler spent AI calls, Clarity collection logged a daily failure against a project
+receiving no traffic, and the alert scheduler fired a traffic-drop alert on every run — because
+traffic going to zero is precisely what a removed property does.
+
+All four now skip archived sites, as does the per-site metric work in `/api/gsc/portfolio`, which
+returns a zeroed payload for them instead of running two queries and a sparkline calculation that
+can only ever draw a flat line. Archived rows are still sent to the client, because that is what
+the Archive group lists.
+
+`runGscSync()` itself never touched them — it walks Google's list, and they are not on it.
+
+## [1.2.2] — 2026-08-05
+
+### Added
+
+**Four new interface languages: French, Spanish, German, and Simplified Chinese**
+
+The app now ships in seven languages instead of three. Pick any of them from the language switcher on the login screen or in **Settings → Preferences**; the choice also drives the language Telegram/Slack alerts and digests are written in.
+
+- 🇫🇷 Français, 🇪🇸 Español, 🇩🇪 Deutsch, and 🇨🇳 简体中文 join 🇬🇧 English, 🇷🇺 Русский, and 🇺🇦 Українська.
+- All 2,659 UI strings are translated for each new locale, with the same key coverage as the existing translations.
+- Server-side notification templates (alerts and the daily/weekly digest) were translated too, so a French/Spanish/German/Chinese user gets their alerts in their language rather than silently falling back to English.
+- The browser language is auto-detected on first visit for the new locales as well.
+
+Terms that practitioners use in English stay in English across every language — **CTR**, **SEO**, **GSC**, **sitemap**, **canonical**, **Core Web Vitals**, and the like are not translated, because no working SEO specialist says them differently. Brand and product names (Google, Search Console, OpenGSC, Ahrefs, Telegram…) are left untouched.
+
+## [1.2.1] — 2026-08-04
+
+### Added
+
+**Automatic sync on a schedule (Settings → Preferences)**
+
+Pick an hour and the instance syncs Search Console once a day by itself, so the dashboard is
+current before the working day starts instead of after a manual click and a twenty-minute wait.
+
+The hour is stored in the operator's own time zone, not in UTC as the digest does it. The
+setting is chosen against a working day — "ready before I sit down at ten" — and a UTC hour
+drifts an hour away from that at every DST change, silently, at the one moment nobody is
+watching. The browser fills the zone in on first save.
+
+Due once per local day, from the configured hour onwards rather than only exactly at it: a
+server that was restarting or mid-deploy at nine would otherwise skip the day entirely and leave
+the dashboard a day stale with nothing to explain it. `lastRunAt` is written after the run, so a
+run that dies halfway is retried on the next tick instead of counting as done. New
+`src/lib/syncSchedule.ts` (settings and the due rule), `src/lib/syncScheduler.ts` (a fifteen
+minute tick, same in-process pattern as the digest and rank schedulers) and
+`User.syncSettings` — **run `npx prisma db push` after updating**, or the schedule saves nothing
+and the feature stays off.
+
+The schedule is stored per user, but `runGscSync()` is instance-wide: it walks every connected
+Google account of every user. On a single-operator instance the distinction never surfaces; with
+two operators the earlier hour wins and the second finds the day's run already done.
+
+The stale "API keys have moved" card in Preferences is gone — the move it announced was two
+releases ago.
+
+### Changed
+
+**Sync walks five sites at a time instead of one**
+
+A sync of 200 properties took tens of minutes because sites were fetched strictly in sequence:
+three Google calls each, at a second or two per call, one after another. Google is nowhere near
+that conservative — Search Analytics allows 1,200 queries per minute per user and per site, and
+a whole run of 200 sites is about 600 calls.
+
+Sites now go through a pool of five. The three calls within one site stay sequential, and the
+pool is deliberately small rather than unlimited: the binding constraint is not QPS but the load
+quota, which is measured in ten-minute chunks and grows with the date range and with grouping by
+page and query. A `quotaExceeded` reply now waits and retries — starting at twenty seconds,
+since a one-second retry against a ten-minute bucket just fails again — instead of losing that
+site's data for the run.
+
+Progress is logged as one line per site rather than five as it goes, because interleaved lines
+from five sites in flight are a log you have to reassemble by hand. The final line now carries
+the elapsed time: `Done in 4m12s. sites=201 …`. That number is what settles the question the old
+logs couldn't answer — "it's stuck" and "it takes twenty minutes" looked identical from the
+browser.
+
+**The Sync button no longer gives up before the sync does**
+
+The page polled for fifteen minutes and then stopped, whatever the server was doing. A run
+longer than that left the spinner switched off, the timestamp unwritten and the data arriving
+minutes later with nothing to say so — indistinguishable from a sync that had failed and taken
+the fresh data with it. The watcher now stops when the server says the run is over, and gives up
+only on five solid minutes of no reply, which means "lost track", not "finished". Opening or
+reloading a page mid-run picks the spinner back up rather than showing an idle button.
+
+### Fixed
+
+**"Last synced" survives a restart**
+
+The dashboard read the timestamp from a module-level variable, so any deploy or `pm2 restart`
+forgot a sync that had really happened. The effect was two screens disagreeing about the same
+event: Settings showed the scheduled run from that morning, read from the database, while the
+button on the dashboard still showed a manual sync from two days earlier.
+
+`runGscSync` now writes its completion time into `User.syncSettings` for every account it
+covered, and the sync endpoint falls back to that when its own memory is empty. A restored
+timestamp comes back with zero counts, because those genuinely are not known any more, and the
+label only ever asked "when".
+
+**Installs and updates now check that the install is usable, not just that npm exited 0**
+
+npm 12 blocks a dependency's lifecycle scripts unless the root package lists that exact version
+in `allowScripts`. better-sqlite3 builds its native binding in one of those scripts, so a
+blocked install leaves the package on disk and unloadable: npm reports success, and the failure
+turns up later at boot as a module that will not load. The pins are exact by design, which also
+means a dependency bump silently stops matching them.
+
+`scripts/check-native-deps.mjs` compares the pins against the lockfile and then loads
+better-sqlite3 for real, because the comparison suggests a cause while the load is the thing
+that actually matters. Run by `update.sh` and `install.sh` right after npm, so the message names
+the problem instead of the build reporting something unrelated three minutes later.
+
+**Bing sitemap submission no longer falls back to an endpoint that has been dead since 2022**
+
+Submitting a sitemap to Bing without an API key tried `https://www.bing.com/ping?sitemap=`,
+which Bing retired in 2022 after spammers abused anonymous submission. It answers 410 Gone, so
+that path never did anything. It also hid the real failure: because the API call fell through to
+the ping on any error, a wrong API key was reported as "Bing ping failed with status 410"
+instead of InvalidApiKey.
+
+The ping is gone. A key is now required, and its absence says so, along with the alternative
+(list the sitemap in robots.txt). Errors from `SubmitSitemap` go through the same reader the
+stats calls use, so InvalidApiKey and InvalidSiteUrl come back as themselves.
+
+Unrelated but worth recording, since it prompted the check: Bing is retiring its SOAP and POX
+endpoints on 31 August 2026. OpenGSC is unaffected — all five Bing calls already use
+`api.svc/json/`.
+
+**MySQL: the provider no longer has to be edited by hand after every update**
+
+Reported in [#2](https://github.com/fenjo26/opengsc/issues/2). Prisma rejects `env()` in the
+datasource provider, so running on MySQL meant editing `provider = "sqlite"` in
+`prisma/schema.prisma` — a tracked file, which every `git pull` and every `update.sh` run (it
+does `git reset --hard`) quietly reverted. The failure that follows is unhelpful: `prisma
+generate` rebuilds the client for SQLite without complaint and the app dies later with "the
+Driver Adapter `@prisma/adapter-mariadb` is not compatible with the provider `sqlite`", which
+reads like a broken adapter rather than a file that changed underneath you.
+
+`prisma.config.ts` is TypeScript and runs before the CLI reads anything, so it now picks the
+schema itself: for a `mysql://` or `mariadb://` connection string it derives a copy with the
+provider swapped and points the CLI at that. The copy sits beside the original — `output` in the
+generator block resolves relative to the schema file, so a copy one directory deeper would
+generate the client into the wrong place — is gitignored, and is rewritten on every CLI run, so
+it cannot drift from the real schema. SQLite installs are untouched: same file, same path, no
+copy made.
+
+MySQL support is still unproven end to end; this only removes the trap that made it impossible
+to keep testing across updates.
+
+**"Last synced" could roll backwards after a page reload**
+
+The timestamp under the Sync button lived only in `localStorage`, written one line after the
+React state update and inside a promise chain that ended in an empty `.catch()`. When
+`localStorage.setItem` threw — a full store is the usual reason — the label showed the correct
+time until the page was reloaded, then reverted to whatever was written last time it worked.
+Nothing was logged, so it looked exactly like a sync that had silently failed and taken the
+fresh data with it, which is a bad thing for a dashboard to imply when the data is in fact
+there.
+
+The label now comes from the server, which already recorded it: `runGscSync` stores
+`completedAt` and GET `/api/gsc/sync` returns it. `localStorage` stays as a fallback for the
+one case the server can't answer — the result is held in memory, so a restart forgets it — and
+a failed write now says so in the console instead of vanishing. The completion time also comes
+from the server rather than from `new Date()` at the moment the browser noticed, which was up
+to one 15-second poll late. New `src/lib/syncedAt.ts`, used by both the dashboard and the site
+page, which had their own copies of the same logic.
+
+**`npm run build` failed with "adapter-mariadb is not installed" on machines that had it**
+
+Reported in [#2](https://github.com/fenjo26/opengsc/issues/2), where the build claimed the
+package was missing seconds after `prisma db push` had used it to create the schema.
+
+The adapter's package name is assembled at runtime so a SQLite install — every install today —
+isn't asked to carry a MySQL driver. That keeps the name away from the bundler's static
+analysis, but the `require` doing the loading was still *the bundler's*: inside a Turbopack
+chunk a non-literal specifier throws `Cannot find module as expression is too dynamic` whether
+the package is installed or not, and the `catch` around it reported that as "not installed".
+The build was telling people to install something it had no way of loading.
+
+The load now goes through `createRequire` from `node:module`, which is Node's own resolver and
+looks at `node_modules` on disk rather than at the chunk graph. The failure message no longer
+claims "not installed" either — it prints the underlying resolver errors, since that claim was
+wrong in the first case that actually occurred. SQLite installs are unaffected: the MySQL branch
+is still only reached when `DATABASE_URL` names MySQL or MariaDB.
+
+This fixes the *build*. Running OpenGSC on MySQL is still unproven — the schema's provider is
+fixed to `sqlite`, and no one has yet run the app against a MySQL server.
+
+**MCP `get_capabilities` reported a stale version**
+
+It returned a hard-coded `1.1.0`, a release behind what Settings → System showed. It now reads
+`package.json`, so there is one version string to bump instead of two.
+
+## [1.2.0] — 2026-08-03
+
+### Added
+
+**AI Crawlability check (Site Audit)**
+
+A site-wide companion to the page-level audit that answers the one question GEO Audit and the
+AEO Tracker can observe but never explain: *why* is an AI engine not crawling/citing the site.
+Runs automatically with every audit (no separate button) and reports, per AI crawler
+(GPTBot, OAI-SearchBot, PerplexityBot, ClaudeBot, Google-Extended, CCBot, Bytespider), whether
+the bot is allowed/blocked/unknown under a root `Disallow: /` in `robots.txt`, plus whether
+`/llms.txt` exists. A root block on GPTBot is a silent reason ChatGPT never cites the site;
+this surfaces it as a fixable lever. Stored in the audit summary's `aiCrawlability` key
+(free-form JSON, no migration). `src/lib/audit/aiCrawl.ts`.
+
+**JS-rendered page detection (Site Audit)**
+
+New `js_rendered` issue: flags pages whose raw HTML is a near-empty JS app shell (low text +
+≤1 internal link + a SPA marker / large bundled script). On such pages `thin_content` and
+`h1_missing` are suppressed — they describe the empty shell, not the rendered DOM, and would
+send a user to fix content that exists. The flag is informational (blue), not a fault. Keeps
+the audit dependency-free (detection via HTML signals, no headless browser).
+
+**Demand — growth sort & rising filter**
+
+The 12-month trend sparkline is now a selection criterion, not just decoration. A sort toggle
+(Volume / Growth) and a "Rising only" checkbox surface growing markets that volume-sort would
+bury — a niche growing +300% no longer ranks below a stagnant high-volume one. Growth is
+last-3-months vs previous-3-months (smooths one-off spikes).
+
+**Global Privacy Blur**
+
+The Privacy Blur toggle now reaches the components it used to silently skip
+(KeywordCannibalization, StrikingDistanceKeywords, ContentDecayMap, DemandDomain,
+BacklinkProfile, demand/links pages). Driven by a CSS class (`.privacy-sensitive` /
+`.privacy-blur-all`) gated on a `data-privacy` attribute on `<html>`, so new tools opt in by
+adding a class to their table — one toggle, no per-component React subscription.
+
+**Global Layout toggle (Wide/Default)**
+
+The Wide/Default layout toggle now actually works on the dashboards it used to ignore
+(main dashboard, SEO Tools, Indexer, Site Audit). Previously each set its own hardcoded
+`maxWidth` (1600px / 1280px / 1400px) that overrode the toggle. Now all read
+`--page-max-width` / `--page-padding` CSS variables that the toggle sets on `:root`.
+
+### Changed
+
+**Backlinks liveness — retry & "blocked" status**
+
+`check-alive` was a single fetch: a 5xx blip or a Cloudflare WAF 403 marked a live link dead.
+Now retries transient failures (429/408/5xx/network) up to 3× with backoff, and a 401/403/429
+hiding the page is recorded as a separate `blocked` status (not dead). `isAlive` maps
+blocked → null (unknown) for back-compat. New `aliveStatus` column on `Backlink`
+(`prisma db push` to apply).
+
+**Core Web Vitals — INP replaces FID**
+
+FID (First Input Delay) was retired as a Core Web Vital in March 2024. The health check now
+pulls `interaction-to-next-paint` (INP) instead of the deprecated `max-potential-fid` audit,
+with the INP "good" threshold (≤200ms). Existing snapshots still render; a fresh check
+populates INP.
+
+**Site dashboard i18n — ~60 hardcoded strings localized**
+
+The site detail page (`/site/[id]`) had ~60 user-facing strings hardcoded in English (plus two
+Russian strings leaking into all locales): period labels, dimension/filter names, operation
+types, status messages, country names. All now run through `t()`; country names use
+`Intl.DisplayNames` so ~80 names translate without per-country keys. Also fixed a real bug: a
+loop variable `t` in `ClusterTable` shadowed the translation function, so its tab labels never
+translated.
+
+**Removed: dead `Sidebar.tsx`**
+
+The `Sidebar` component was an orphan — imported nowhere, rendered nowhere, its toggles
+(Privacy/Dark/Layout) were non-functional local-state copies of the real ones in
+`DashboardShell`. Deleted to remove the confusion (it looked broken but was simply never
+mounted).
+
+### Added
+
+**Demand — a new tool** (`/seo-tools/demand`)
+
+Keyword discovery, which is the one thing Search Console structurally cannot do: every other
+screen starts from queries the site already appears for, and this one starts from the market.
+
+- **By keyword** — a seed goes to DataForSEO Labs and returns volume, difficulty, CPC, intent
+  and a 12-month trend, then every row is verdicted against the site's own GSC history: *within
+  reach* (top 30 — improve that page), *wrong page* (impressions but nothing winning), *no
+  content* (write it). The join reuses the logic already proven in the Competitors screen.
+- **By domain** — estimated organic traffic, keyword count, position-band distribution, ranking
+  keywords ordered by the traffic they bring, and the pages carrying them. Works on any domain,
+  not only a connected one; comparing against one of your sites is optional.
+- **Three discovery modes** (`related` / `suggestions` / `ideas`) plus `auto`, which walks them
+  in order and stops at the first source with enough terms rather than merging all three —
+  each source is a separate charge and the overlap is mostly duplicates.
+- **Google Ads fallback** for the ~120 countries DataForSEO Labs does not cover. Those rows
+  carry no difficulty and no intent, and the UI says so rather than rendering empty columns.
+- Runs on the **existing** `seoKey_dataforseo` credential — no new provider to configure.
+  Without it the tab still shows whatever is already stored.
+- Searches cached 14 days, domain overviews 7. Prices shown before the click, monthly cap
+  enforced server-side, clickstream refinement opt-in and labelled with its 2× cost.
+- Discovered keywords are written to the shared `KeywordMetricCache`, so weights appear in
+  Striking Distance and Rank Tracker without paying twice for the same number.
+
+**Brand visibility in AI answers** — a second source inside the AEO Tracker
+
+- A panel under the live citation table, reading DataForSEO's LLM Mentions index: how often the
+  brand comes up in AI answers, in which questions, and which of its pages get cited.
+- **Share of voice** against up to 9 competitors in one call — the number the live tracker
+  structurally cannot produce, because it only ever asks on your own behalf and has no way to
+  know how often a competitor was named instead.
+- Matching by **domain** (answers that linked to you) or by **brand name** (answers that named
+  you without linking) is an explicit choice, since the two return different numbers.
+- Kept as a separate panel rather than merged into the table above. The table is a live check on
+  your own keys, today, for questions you chose; this is an index refreshed roughly monthly,
+  covering questions you never thought to track. It also covers ChatGPT and Google AI Overview
+  only — Claude and Grok exist in the live tracker alone, and a zero here is not evidence of
+  invisibility there.
+- Cached 7 days, priced before the click, same monthly cap as the rest of the DataForSEO surface.
+
+**MCP** — two tools, bringing the registry to 40
+
+- `get_keyword_demand` (local, free) — stored research joined against GSC positions; with no
+  seed, an index of what has already been researched.
+- `research_keywords` (**paid**) — discovery from a seed, gated behind `confirm: true`. The
+  third paid tool and the only synchronous one: its result is written to the cache before the
+  tool returns, so an abandoned call still leaves a search that replays for free.
+- New agent skill `keyword-research` in `.agents/skills/`.
+
+### Changed
+
+- **Competitors moved into SEO Tools** (`/seo-tools/competitors`), next to Demand. Both buy
+  data from outside the instance, which is the line SEO Tools draws — everything left in the
+  main nav reads what OpenGSC already holds. Old URLs redirect.
+- **Missing tables are now reported instead of looking like missing data.** Every route in the
+  metrics layer catches an absent table and returns an empty result so the dashboard survives an
+  un-migrated database — but that made "you have not loaded anything yet" and "the table does not
+  exist" identical on screen. A banner now names the tables and the command
+  (`GET /api/system/schema`, `SchemaBanner`).
+- **The competitor keyword pull verifies its own write.** If keywords come back from the provider
+  and the table still reads empty, the reply says so rather than succeeding silently — the
+  signature of a relative `DATABASE_URL`, where the CLI and the running app resolve to different
+  database files.
+
+- **`src/middleware.ts` is now `src/proxy.ts`**, following the Next.js 16 rename. Same logic, but
+  the runtime changes from Edge to Node.js (proxy's runtime is fixed and not configurable). The
+  MCP token check stays in the route rather than moving into the gate: the obstacle that forced it
+  out was Prisma's incompatibility with Edge, but the gate runs on every request to every path,
+  and a database lookup there to serve one endpoint is not worth it.
+- **All upserts go through one builder** (`src/lib/db/upsert.ts`) instead of 15 hand-written
+  statements. Behaviour is unchanged — the `COALESCE` guards, the freshness check and the
+  accumulating counters are declared rather than repeated — and adding a second SQL dialect is now
+  one function. `scripts/check-upsert-sql.ts` prints and checks the generated statements.
+- Quieter output: the Prisma client no longer logs its database path on every boot and build
+  (set `DEBUG_PRISMA=1` to bring it back — it is the fastest way to diagnose an app and a CLI
+  pointing at different files). The MCP SQL tool's dynamic imports are marked `turbopackIgnore`,
+  which removes the "Encountered unexpected file in NFT list" build warning.
+
+### Fixed
+
+- **Google algorithm update markers on the site chart.** Two independent reasons they never
+  appeared. The list of updates was hardcoded and stopped at March 2026, so recent windows had
+  nothing to draw; updates now come from Google's own feed
+  (`status.search.google.com/incidents.json`) via `/api/gsc/algo-updates`, merged with the built-in
+  list and cached for an hour, falling back to the built-in list when the feed is unreachable. And
+  markers were positioned by a computed label string, which Recharts silently drops when no data
+  point carries that exact label — a daily gap in Search Console was enough to erase a marker.
+  They now snap to the first real point on or after the update date.
+- **The Updates view in the Annotations tab did nothing.** `viewMode` was read only to colour the
+  two buttons, so switching to Updates left the same list of notes on screen. It now scores
+  Google's update dates through the same before/after pipeline as a hand-written note, so you can
+  see where a site went after each one.
+- **Annotations no longer opens on invented data.** The tab blurred itself and displayed four
+  fabricated notes from 2024 before the real ones had loaded. The fake rows are gone, and the
+  onboarding panel waits until the request comes back genuinely empty.
+- **Indexing tab: "auto" is now the default doorway target.** The queue endpoint always understood
+  `all` (round-robin across every doorway), but the site page offered no such option, and its
+  select started with empty state while the browser displayed the first domain — so Submit
+  answered "choose a domain first" about a domain that was visibly selected.
+- **Indexer queue: you can tell which site a row belongs to.** The two columns were "Domain" and
+  "URL Path" and both concern domains: the first is the doorway hosting the link, the second had
+  its host stripped. Now "Doorway" and "Target URL", with the target's host shown.
+
+- **Node.js 24 (Active LTS) instead of Node 20.** `install.sh` and the Dockerfile both pinned
+  Node 20, which reached end of life on 30 April 2026 and no longer receives security patches —
+  so every fresh install was landing on an unmaintained runtime. `package.json` now declares
+  `engines.node >= 22.12`, which it never did, so npm can say something about it.
+
+  **Existing installs:** upgrading the runtime is not automatic. Install Node 22 or 24, then
+  `npm rebuild better-sqlite3` — it is a native module compiled against the running major, and
+  skipping the rebuild makes the app fail on start.
+
+- **Install scripts are now allow-listed** (`allowScripts` in `package.json`). npm 11 warns about
+  unreviewed install scripts and npm 12 blocks them by default; without the list, `better-sqlite3`
+  would silently skip its native build and the app would fail on first database access. The six
+  entries are the packages whose install script *is* their installation — native binaries and
+  Prisma engines. The list is version-pinned by npm's own design, so bumping any of them brings
+  the warning back for a fresh review, which is the point.
+
+### Database
+
+- New model `DemandSearch` (search cache). Run `npx prisma db push` after updating.
+
+## [1.1.0] — 2026-07-30
+
+The headline is a new **metrics layer**: search volume, keyword difficulty, backlink profiles
+and competitor keyword gaps, brought in from Ahrefs/Semrush and — more usefully — crossed with
+your own Search Console data.
+
+Nothing in this release is required. With no key and no imports, OpenGSC behaves exactly as it
+did in 1.0: the free Domain Rating on dashboard cards is untouched, and every new column simply
+shows an em dash.
+
+### Added
+
+**Metrics layer** ([docs/METRICS-SETUP.md](docs/METRICS-SETUP.md))
+
+- **Keyword weights in Striking Distance and Rank Tracker** — volume, KD, CPC and a *Potential*
+  column (what a keyword could bring near the top of page one, minus what it brings now), with
+  sorting by opportunity instead of by current exposure. Impressions measure demand filtered
+  through your visibility; volume measures the market.
+- **Competitors** — a new section. Find competitors, pull one's keywords, and the join with your
+  GSC data splits every row into three verdicts: *within reach* (you rank, improve the page),
+  *wrong page* (impressions but nothing wins — intent mismatch), *no content* (write it).
+- **Backlink profile** on the site Backlinks tab — referring domains live and lost, with stored
+  history. Sits above the manual list rather than replacing it: one answers "what points at me",
+  the other "did the link I built survive".
+- **Demand column in Content Decay** — checks the page's top query's search-volume trend on
+  request. Clicks falling with demand flat is a ranking problem; clicks falling *with* demand is
+  the market, and no rewrite fixes that.
+- **Domain health chip in the Indexer** — DR and referring domains per network domain, so a
+  burnt drop is caught before you build on it.
+- **Lost-backlink alert** — fires when a referring domain above a DR threshold disappears. Reads
+  stored rows only, never calls a provider. Off by default.
+- **CSV import** (`Settings → SEO Metrics`, and on each site's Settings tab) — the free path. Upload an Ahrefs/Semrush export
+  and it fills the same cache the API does, so every feature above works with no key at all. The
+  report type is detected from the column headers.
+- **Four MCP tools** — `get_keyword_metrics`, `get_domain_metrics`, `get_backlink_profile`,
+  `get_competitor_gap`, all in the `local` tier. They read and never fetch: an agent cannot
+  spend your credits, and an empty result means "not loaded", never "zero".
+- **Backlink profile on share links** — clients see the link graph read-only; the endpoint
+  refuses to fetch for a share-token caller regardless of what is sent.
+
+**Cost controls**, because this layer is the first one that spends money per row:
+
+- Every button prices itself *before* it is pressed (units and ≈ USD).
+- Keyword Difficulty is an opt-in checkbox — it roughly doubles the price per keyword.
+- A monthly unit cap in settings; requests are priced server-side and refused above it.
+- Nothing fetches on render. Loading is always an explicit action.
+
+### Changed
+
+- **Link Monitor** now honours the custom base URL from the metrics settings, so a single Ahrefs
+  key works across the whole app instead of needing a second, official one.
+- **Settings** — Ahrefs/Semrush keys moved out of *API Keys* and the *Indexing API* screen into
+  their own **SEO Metrics** section, together with the access mode (official / reseller /
+  custom gateway), host and spending cap. One integration was previously configured in three
+  places; it is now configured in one.
+- **Site Audit** fixes.
+- **Content Rewriter** and the **AI-Fingerprint Lab / humanizer** in SEO Tools are now formally
+  part of the release. They have been available for a while; 1.1 is where they are documented
+  and supported rather than shipped quietly.
+- Dashboard site cards can show referring domains and organic traffic beside Domain Rating when
+  that data has been loaded.
+
+### Fixed
+
+- **One key cell was shared by every access mode.** A key typed under "Reseller" also appeared
+  under "Official API", because both wrote to the same storage slot — so switching modes kept a
+  key the new host would reject while the screen still read "Connected". Keys are now stored per
+  mode, with the official one keeping its historical name so existing installs are untouched and
+  a pre-existing gateway key still resolves.
+- **Metrics settings were not backed up.** The key matched the sync rules and survived a restore,
+  but the access mode and host did not, so they silently reverted to "official". The whole
+  `seoMetrics*` group is now part of the snapshot.
+- The metrics screen now shows the host a key will be sent to, directly under the field.
+- **"No data in file" was misleading.** A header-only export — what Ahrefs produces when a filter
+  or date range matches nothing — reported the same error as an unreadable file, so it read as
+  "wrong format". It now says the report *was* recognised and that it simply has no rows.
+- **SEO Tools tile grid was out of order** and missing an entry: the tab bar and the tile grid
+  each held their own copy of the tool list. Both now render one shared array.
+- The site picker in the import panel is searchable — a plain dropdown is unusable at a few
+  hundred sites, let alone a thousand.
+- Assorted bug fixes across the app.
+
+### Upgrading
+
+```bash
+git pull
+npm install
+npx prisma db push   # seven new tables
+npm run build
+pm2 restart opengsc
+```
+
+`prisma db push` is required — the metrics layer adds `KeywordMetricCache`,
+`DomainMetricCache`, `RefDomainRow`, `BacklinkSnapshot`, `CompetitorKeyword`,
+`KeywordVolumeHistory` and `ApiUsage`. Every one of them is read through code that degrades to
+an empty result if the table is missing, so a missed migration will not take a page down — it
+will just look like nothing has been loaded yet.
+
+## [1.0.0]
+
+Initial public release.

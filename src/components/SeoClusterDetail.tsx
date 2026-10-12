@@ -38,22 +38,50 @@ export function suggestPageType(name: string, kws: string[]): string {
 const TYPE_TPL: Record<string, string | null> = { main: "brand_main", generic: null, ...Object.fromEntries(PAGE_TYPES.map(p => [p.id, p.tpl])) };
 const TYPE_IDS = ["main", ...PAGE_TYPES.map(p => p.id), "generic"];
 
+// The "cluster" record's payload as this page reads it: genCluster's data block (generate.ts),
+// plus the page-plan fields (page_type, outline_done) this component itself writes back.
+interface ClusterKeyword {
+  keyword: string;
+  volume: number;
+  overlap: number;
+}
+interface ClusterRow {
+  name: string;
+  intent: string;
+  volume: number;
+  keywords: ClusterKeyword[];
+  top_domains?: string[];
+  page_type?: string;
+  outline_done?: boolean;
+}
+interface ClusterData {
+  params?: {
+    gl?: string;
+    hl?: string;
+    threshold?: number;
+    total_keywords?: number;
+    clustered?: number;
+    failed?: string[];
+  };
+  clusters?: ClusterRow[];
+}
+
 export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
   const { t } = useLanguage();
   const router = useRouter();
   const [copied, setCopied] = useState<string>("");
-  const data = item.data || {};
-  const clusters: any[] = Array.isArray(data.clusters) ? data.clusters : [];
+  const data = (item.data || {}) as ClusterData;
+  const clusters: ClusterRow[] = Array.isArray(data.clusters) ? data.clusters : [];
   const p = data.params || {};
 
   // Plan state: selection + editable page types (persisted into the history item).
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [types, setTypes] = useState<Record<number, string>>(() =>
-    Object.fromEntries(clusters.map((c, i) => [i, c.page_type || suggestPageType(c.name, c.keywords.map((k: any) => k.keyword))])));
+    Object.fromEntries(clusters.map((c, i) => [i, c.page_type || suggestPageType(c.name, c.keywords.map(k => k.keyword))])));
   const [batch, setBatch] = useState<{ done: number; total: number; current: string } | null>(null);
   const [err, setErr] = useState("");
 
-  function persistData(next: any) { updateHistory(item.id, next); }
+  function persistData(next: unknown) { updateHistory(item.id, next); }
 
   function setType(i: number, v: string) {
     setTypes(prev => ({ ...prev, [i]: v }));
@@ -68,12 +96,12 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
     dst.volume = (dst.volume || 0) + (src.volume || 0);
     clusters.splice(from, 1);
     persistData({ ...data, clusters });
-    setSel(new Set()); setTypes(Object.fromEntries(clusters.map((c, i) => [i, c.page_type || suggestPageType(c.name, c.keywords.map((k: any) => k.keyword))])));
+    setSel(new Set()); setTypes(Object.fromEntries(clusters.map((c, i) => [i, c.page_type || suggestPageType(c.name, c.keywords.map(k => k.keyword))])));
   }
 
-  function toOutline(c: any) {
+  function toOutline(c: ClusterRow) {
     sessionStorage.setItem("seoClusterSeed", JSON.stringify({
-      keyword: c.name, additional: c.keywords.slice(1).map((k: any) => k.keyword).join(", "), gl: p.gl, hl: p.hl,
+      keyword: c.name, additional: c.keywords.slice(1).map(k => k.keyword).join(", "), gl: p.gl, hl: p.hl,
     }));
     router.push("/seo-tools/outline");
   }
@@ -100,11 +128,11 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
         const { jobId, error } = await startJob("outline_auto", {
           keyword: c.name,
           gl: p.gl, hl: p.hl, country: p.gl, language: p.hl,
-          serpProvider: serp.provider, serpKey: serp.apiKey, firecrawlKey: getFirecrawlKey() || undefined,
+          serpProvider: serp.provider, serpKey: serp.apiKey, serpBaseUrl: serp.baseUrl, firecrawlKey: getFirecrawlKey() || undefined,
           aiProvider: ai.provider, aiApiKey: ai.apiKey, model: ai.model || undefined, aiBaseUrl: ai.baseUrl || undefined,
           policy,
-          additionalKeywords: c.keywords.slice(1).map((k: any) => k.keyword).join(", "),
-          keywordsData: c.keywords.map((k: any) => ({ keyword: k.keyword, volume: k.volume || 0 })),
+          additionalKeywords: c.keywords.slice(1).map(k => k.keyword).join(", "),
+          keywordsData: c.keywords.map(k => ({ keyword: k.keyword, volume: k.volume || 0 })),
           customTemplate: tpl ? tpl.body.replace(/\{year\}/gi, String(new Date().getFullYear())) : undefined,
           pageGoal: "commercial",
           useRag: true,
@@ -120,14 +148,14 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
         }
         c.outline_done = true;
         persistData({ ...data, clusters });
-      } catch (e: any) { setErr(`${c.name}: ${String(e?.message ?? e)}`); }
+      } catch (e) { setErr(`${c.name}: ${String((e as Error)?.message ?? e)}`); }
     }
     setBatch({ done: picked.length, total: picked.length, current: "" });
     setTimeout(() => setBatch(null), 3000);
   }
 
-  function copyCluster(c: any) {
-    navigator.clipboard.writeText(c.keywords.map((k: any) => k.keyword).join("\n"));
+  function copyCluster(c: ClusterRow) {
+    navigator.clipboard.writeText(c.keywords.map(k => k.keyword).join("\n"));
     setCopied(c.name); setTimeout(() => setCopied(""), 1200);
   }
 
@@ -179,7 +207,7 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
       {clusters.map((c, i) => (
         <div key={i} className="panel" style={{ borderColor: sel.has(i) ? "rgba(191,90,242,0.5)" : undefined }}>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "8px" }}>
-            <span onClick={() => setSel(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; })} style={{ cursor: "pointer", display: "flex" }}>
+            <span onClick={() => setSel(prev => { const n = new Set(prev); if (n.has(i)) n.delete(i); else n.add(i); return n; })} style={{ cursor: "pointer", display: "flex" }}>
               {sel.has(i) ? <CheckSquare size={17} color="var(--color-accent-purple)" /> : <Square size={17} color="var(--color-text-tertiary)" />}
             </span>
             <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{c.name}</span>
@@ -187,7 +215,7 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
             <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 9px", borderRadius: "20px", color: INTENT_COLOR[c.intent] || "var(--color-text-secondary)", background: `${INTENT_COLOR[c.intent] || "#888"}1a` }}>{c.intent}</span>
             <select value={types[i] || "generic"} onChange={e => setType(i, e.target.value)}
               style={{ fontSize: "11px", fontWeight: 600, padding: "3px 8px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)" }}>
-              {TYPE_IDS.map(id => <option key={id} value={id}>{t(`seoPt_${id}` as any)}</option>)}
+              {TYPE_IDS.map(id => <option key={id} value={id}>{t(`seoPt_${id}` as Parameters<typeof t>[0])}</option>)}
             </select>
             <span style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>{c.keywords.length} {t("seoClusterKws")} · {Number(c.volume).toLocaleString()}</span>
             <span style={{ marginLeft: "auto", display: "flex", gap: "6px", alignItems: "center" }}>
@@ -202,7 +230,7 @@ export default function SeoClusterDetail({ item }: { item: HistoryItem }) {
             </span>
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-            {c.keywords.map((k: any, j: number) => (
+            {c.keywords.map((k, j: number) => (
               <span key={j} title={`overlap: ${k.overlap}`} style={{ fontSize: "12px", padding: "3px 10px", borderRadius: "16px", border: "1px solid var(--color-border)", color: "var(--color-text-primary)", background: j === 0 ? "rgba(191,90,242,0.08)" : "transparent" }}>
                 {k.keyword}{k.volume ? <span style={{ color: "var(--color-text-tertiary)" }}> · {Number(k.volume).toLocaleString()}</span> : null}
               </span>

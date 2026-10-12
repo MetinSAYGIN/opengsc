@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
 
@@ -41,8 +40,7 @@ async function fetchSitesForAccount(account: {
 }
 
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
 
   if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -79,8 +77,8 @@ export async function GET() {
         entries.forEach((e) => {
           if (e.siteUrl) allSiteEntries.push({ siteUrl: e.siteUrl, accountId: account.id });
         });
-      } catch (err: any) {
-        errors.push(`Account ${account.id}: ${err.message}`);
+      } catch (err) {
+        errors.push(`Account ${account.id}: ${(err as Error).message}`);
       }
     })
   );
@@ -114,6 +112,46 @@ export async function GET() {
     });
   }
 
+  // ── Reconcile the archive against what Google actually returned ───────────
+  // Properties removed from Search Console used to linger on the dashboard forever,
+  // because this route only ever upserted. They are now flagged instead of deleted,
+  // so all history (metrics, audits, keywords) survives and can still be inspected.
+  //
+  // Guards — never archive on a partial or failed read. If Google is down, or one
+  // account's token expired, the missing properties are missing because of us, not
+  // because the user removed them, and archiving would blank the whole dashboard:
+  //   • every linked account must have answered without error
+  //   • the response must be non-empty
+  let archived = 0;
+  let restored = 0;
+  if (errors.length === 0 && allSiteEntries.length > 0) {
+    const liveSiteIds = new Set(allSiteEntries.map((e) => e.siteUrl));
+    const known = await prisma.site.findMany({
+      where: { userId },
+      select: { id: true, siteId: true, archivedAt: true },
+    });
+
+    // Both directions are diffed in memory and written as at most two updateMany
+    // calls. Doing it in the upsert loop above would mean a write per site on every
+    // dashboard load — a few hundred pointless writes for an account this size.
+    const toArchive = known.filter(s => !s.archivedAt && !liveSiteIds.has(s.siteId)).map(s => s.id);
+    const toRestore = known.filter(s =>  s.archivedAt &&  liveSiteIds.has(s.siteId)).map(s => s.id);
+
+    if (toArchive.length > 0) {
+      archived = (await prisma.site.updateMany({
+        where: { id: { in: toArchive } },
+        data: { archivedAt: new Date() },
+      })).count;
+    }
+    // A property can come back — re-verified, or the same domain added again.
+    if (toRestore.length > 0) {
+      restored = (await prisma.site.updateMany({
+        where: { id: { in: toRestore } },
+        data: { archivedAt: null },
+      })).count;
+    }
+  }
+
   const userSites = await prisma.site.findMany({
     where: { userId },
     orderBy: { createdAt: 'asc' },
@@ -122,6 +160,56 @@ export async function GET() {
   return NextResponse.json({
     sites: userSites,
     connected_accounts: googleAccounts.length,
+    archived_now: archived,
+    restored_now: restored,
     errors: errors.length > 0 ? errors : undefined,
   });
+}
+
+// ── Archive / restore / pin / hide a single site ────────────────────────────
+// PATCH  { id, archived? | pinned? | hidden? }  → flip one workspace flag by hand.
+// pinned and hidden are the dashboard's favorites and decluttering; they live on the Site row
+// (not in the browser) so they survive a reload and the site-wide reports can honor them.
+// DELETE ?id=<site.id>              → hard delete (cascades all of the site's data)
+
+export async function PATCH(req: Request) {
+    const userId = await workspaceUserId("write");
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const body = await req.json().catch(() => null);
+  const id = body?.id as string | undefined;
+  const flags: Record<string, unknown> = {};
+  if (typeof body?.archived === 'boolean') {
+    flags.archivedAt = body.archived ? new Date() : null;
+  }
+  if (typeof body?.pinned === 'boolean') flags.pinned = body.pinned;
+  if (typeof body?.hidden  === 'boolean') flags.hidden  = body.hidden;
+  if (!id || Object.keys(flags).length === 0) {
+    return NextResponse.json({ error: 'id and at least one of archived/pinned/hidden are required' }, { status: 400 });
+  }
+
+  const res = await prisma.site.updateMany({
+    where: { id, userId },
+    data: flags,
+  });
+  if (res.count === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  return NextResponse.json({ ok: true, id, ...body });
+}
+
+export async function DELETE(req: Request) {
+    const userId = await workspaceUserId("manageInstance");
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+  if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 });
+
+  // Scoped by userId so one user can never delete another's site.
+  // Every child table declares onDelete: Cascade, so metrics, audits,
+  // keywords, backlinks and Clarity snapshots go with it.
+  const res = await prisma.site.deleteMany({ where: { id, userId } });
+  if (res.count === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  return NextResponse.json({ ok: true, id });
 }

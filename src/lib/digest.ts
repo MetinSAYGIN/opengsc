@@ -4,13 +4,18 @@
 // show the FULL lists (all striking-distance queries, every attention site, etc.) and split
 // the view per search engine (Google / Bing / Yandex).
 //
-// Google numbers come from the local store (DailyMetric, TrackedKeyword). Bing/Yandex numbers
+// Google numbers come from the local store (DailyMetric, TrackedKeyword), except the query
+// winners/losers, which need per-period query data the store does not keep and are read from
+// Search Console live (issue #27). Bing/Yandex numbers
 // are fetched live (digestEngines.ts) only when requested — the page loads them lazily per tab.
 
 import { prisma } from "@/lib/prisma";
 import { buildEngineData, type EngineRow } from "@/lib/digestEngines";
 import { fetchLLM } from "@/lib/llm";
 import { NOTIFY_L, normalizeLang, type NotifyLang } from "@/lib/notifyI18n";
+import { buildBacklinkDigest, BASELINE_WINDOW_DAYS, type DigestBacklinks } from "@/lib/backlinkDigest";
+import { rawQuery, rawExec } from "@/lib/db/raw";
+import { getUserGoogleAccounts, queryGscStrict } from "@/lib/gscQuery";
 
 export interface DigestSettings {
   enabled: boolean;
@@ -33,6 +38,15 @@ export interface DigestQueryRow { q: string; cur: number; prev: number; d: numbe
 export interface DigestStriking { query: string; site: string; pos: number; impr: number }
 export interface DigestAttention { name: string; pct: number }
 export interface DigestRankMove { keyword: string; from: number; to: number; d: number }
+/** Trend radar (N5): one hottest query of the portfolio's window. */
+export interface DigestTrend {
+  query: string;
+  site: string;
+  source: string;   // gsc_rising | gsc_new | suggest
+  score: number;
+  growth: number | null; // ×1.0-style display factor; null for gsc_new/suggest
+  impressions: number | null;
+}
 
 export interface DigestData {
   tag: string;
@@ -50,12 +64,16 @@ export interface DigestData {
   strikingCount: number;
   attention: DigestAttention[];
   rankMoves: DigestRankMove[];
+  /** Trend radar (N5). null — таблиц нет или трендов за период не нашлось: секция не рисуется. */
+  trends: DigestTrend[] | null;
+  /** null — модуль ссылок ничего не знает про этот портфель, секция не рисуется */
+  backlinks: DigestBacklinks | null;
   engines: { bing: EngineRow[]; yandex: EngineRow[] };
 }
 
 export async function getDigestSettings(userId: string): Promise<DigestSettings> {
   try {
-    const rows: any[] = await prisma.$queryRawUnsafe(`SELECT digestSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ digestSettings: string | null }[]>(`SELECT digestSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.digestSettings;
     return raw ? { ...DEFAULT_DIGEST_SETTINGS, ...JSON.parse(raw) } : DEFAULT_DIGEST_SETTINGS;
   } catch {
@@ -64,7 +82,7 @@ export async function getDigestSettings(userId: string): Promise<DigestSettings>
 }
 
 export async function saveDigestSettings(userId: string, s: DigestSettings): Promise<void> {
-  await prisma.$executeRawUnsafe(`UPDATE "User" SET digestSettings = ? WHERE id = ?`, JSON.stringify(s), userId);
+  await rawExec(`UPDATE "User" SET digestSettings = ? WHERE id = ?`, JSON.stringify(s), userId);
 }
 
 const hasTag = (tagsField: string | null, tag: string): boolean => {
@@ -79,6 +97,18 @@ const hasTag = (tagsField: string | null, tag: string): boolean => {
 const clean = (u: string) => u.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/\/$/, "");
 const sign = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const day = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Run `worker` over `items` with at most `limit` in flight; a worker's failure is its own. */
+async function pooledEach<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const item = items[next++];
+      await worker(item).catch(() => undefined);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
 const fmtNum = (n: number) => {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -89,14 +119,29 @@ const pctStr = (cur: number, prev: number) => (prev > 0 ? `${sign(pctNum(cur, pr
 
 // How many items each section keeps in the FULL structured data (the page shows these,
 // with "show more"). Markdown uses much smaller sub-slices to stay Telegram-sized.
-const FULL = { movers: 50, queries: 50, striking: 200, attention: 50, rankMoves: 60 };
+const FULL = {
+  movers: 50, queries: 50, striking: 200, attention: 50, rankMoves: 60,
+  // Ссылки: избранные держим поимённо, доноров — верхушкой. Событий берём с запасом,
+  // потому что счёт потерь должен быть точным, а не «первой страницей».
+  backlinkFavorites: 50, backlinkDomains: 25, backlinkEvents: 20_000,
+};
+
+// Какие виды событий вообще попадают в дайджест. target_changed сюда не входит:
+// это повод для алерта по избранной ссылке, а не строка в сводке за неделю.
+const DIGEST_EVENT_KINDS = ["appeared", "returned", "lost", "rel_downgraded"];
+
+// Домен-цель BacklinkSnapshot: там ключ — голый хост, а не URL сайта.
+const targetOf = (url: string) => url.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/^www\./, "").split("/")[0];
 
 // ─── Build the structured data ────────────────────────────────────────────────
 export async function buildDigestData(
   userId: string, tag: string, days: number, lang: NotifyLang = "en",
   opts: { engineCap?: number } = {},
 ): Promise<DigestData> {
-  const allSites = await prisma.site.findMany({ where: { userId }, select: { id: true, url: true, tags: true } });
+  // Portfolio-wide means live properties the user actually works on: archived sites have no
+  // new data by definition, and a hidden one is shelved — same rule the dashboard's portfolio
+  // reports follow. Their rows would only overstate the totals the digest reports.
+  const allSites = await prisma.site.findMany({ where: { userId, hidden: false, archivedAt: null }, select: { id: true, url: true, tags: true, siteId: true } });
   const sites = tag ? allSites.filter(s => hasTag(s.tags, tag)) : allSites;
 
   const now = new Date();
@@ -112,11 +157,14 @@ export async function buildDigestData(
     period: { days, from: day(curStart), to: day(now), prevFrom: day(prevStart), prevTo: day(curStart), allTime: days === 0 },
     portfolio: { counted: 0, up: 0, down: 0, clicks: 0, prevClicks: 0, impr: 0, prevImpr: 0 },
     gainers: [], losers: [], topSites: [], winnersQ: [], losersQ: [], striking: [], strikingCount: 0, attention: [], rankMoves: [],
+    trends: null,
+    backlinks: null,
     engines: { bing: [], yandex: [] },
   };
   if (!siteIds.length) return base;
 
-  const dateOnly = { url: "", query: "" };
+  // Rollups are one row-kind per search type now — digests describe web traffic only.
+  const dateOnly = { url: "", query: "", searchType: "web" };
   const nameOf = new Map(sites.map(s => [s.id, clean(s.url)]));
 
   // ── per-site traffic (one grouped query per period; scoped to date-only totals so the
@@ -126,13 +174,15 @@ export async function buildDigestData(
     where: { siteId: { in: siteIds }, ...dateOnly, date: lt ? { gte, lt } : { gte, lte: now } },
     _sum: { clicks: true, impressions: true },
   });
+  // One grouped row per site: Prisma's groupBy output narrowed to the two sums this reads.
+  type SiteAggRow = Awaited<ReturnType<typeof siteAgg>>[number];
   const [curSites, prevSites] = await Promise.all([
     siteAgg(effectiveCurStart, undefined),
-    showDelta ? siteAgg(effectivePrevStart, effectiveCurStart) : Promise.resolve([] as any[]),
+    showDelta ? siteAgg(effectivePrevStart, effectiveCurStart) : Promise.resolve([] as SiteAggRow[]),
   ]);
-  const prevBySite = new Map<string, number>(prevSites.map((r: any) => [r.siteId, r._sum.clicks ?? 0]));
-  base.portfolio.prevImpr = (prevSites as any[]).reduce((s, r) => s + (r._sum.impressions ?? 0), 0);
-  const perSite: DigestSiteRow[] = curSites.map((r: any) => {
+  const prevBySite = new Map<string, number>(prevSites.map((r: SiteAggRow) => [r.siteId, r._sum.clicks ?? 0]));
+  base.portfolio.prevImpr = prevSites.reduce((s, r) => s + (r._sum.impressions ?? 0), 0);
+  const perSite: DigestSiteRow[] = curSites.map((r: SiteAggRow) => {
     const cur = r._sum.clicks ?? 0, prev = prevBySite.get(r.siteId) ?? 0;
     return { id: r.siteId, name: nameOf.get(r.siteId) ?? r.siteId, cur, impr: r._sum.impressions ?? 0, prev, d: cur - prev, pctNum: pctNum(cur, prev) };
   });
@@ -161,36 +211,60 @@ export async function buildDigestData(
   }
 
   // ── winners / losers queries across the portfolio/tag
-  const agg = (gte: Date, lt?: Date) => prisma.dailyMetric.groupBy({
-    by: ["query"],
-    where: { siteId: { in: siteIds }, date: lt ? { gte, lt } : { gte, lte: now }, query: { not: "" } },
-    _sum: { clicks: true },
-  });
-  const [curQ, prevQ] = await Promise.all([agg(effectiveCurStart, undefined), showDelta ? agg(effectivePrevStart, effectiveCurStart) : Promise.resolve([])]);
-  const prevMap = new Map<string, number>(prevQ.map(r => [r.query, r._sum.clicks ?? 0] as [string, number]));
-  const curMap = new Map<string, number>(curQ.map(r => [r.query, r._sum.clicks ?? 0] as [string, number]));
+  // Live from Search Console, per site, for exactly the digest's two periods (issue #27).
+  // DailyMetric holds no per-day query rows: the only rows with a query are sync step 4's
+  // 90-day query+page TOTALS stamped with the sync date. Grouping those by a date window put
+  // all 90 days into the current period and nothing into the previous one — every query
+  // became a "winner" by its whole 90-day click count, and losers were always empty.
+  const curQ = new Map<string, number>(), prevQ = new Map<string, number>();
+  const strikingCands: { query: string; site: string; pos: number; impr: number }[] = [];
+  const gscSites = sites.filter(s => s.siteId);
+  if (gscSites.length) {
+    const accounts = await getUserGoogleAccounts(userId).catch(() => []);
+    if (accounts.length) {
+      const yesterday = (d: Date) => day(new Date(d.getTime() - 86_400_000));
+      // "All time" = as far back as Search Analytics goes (16 months).
+      const curFrom = days === 0 ? day(new Date(now.getTime() - 486 * 86_400_000)) : day(curStart);
+      await pooledEach(gscSites, 4, async s => {
+        // Rows come back ordered by clicks, and the striking list below is fed from the same
+        // response: a 4–20 query with many impressions but few clicks sits deep in it. 5000
+        // keeps those on large sites; rowLimit costs no extra quota (one request either way).
+        const opts = { dimensions: ["query"], rowLimit: 5000 };
+        const [cur, prev] = await Promise.all([
+          queryGscStrict(accounts, s.siteId!, { ...opts, startDate: curFrom, endDate: day(now) }),
+          showDelta
+            ? queryGscStrict(accounts, s.siteId!, { ...opts, startDate: day(prevStart), endDate: yesterday(curStart) })
+            : Promise.resolve([]),
+        ]);
+        // A site whose either period failed is left out whole: half a comparison would show
+        // its every query as a winner (or loser) — exactly the bug this replaces.
+        if (cur === null || prev === null) return;
+        for (const r of cur) {
+          const q = r.keys?.[0];
+          if (!q) continue;
+          curQ.set(q, (curQ.get(q) ?? 0) + (r.clicks ?? 0));
+          // The same rows feed the striking-distance list below — no extra API call.
+          const pos = r.position ?? 0, impr = r.impressions ?? 0;
+          if (pos >= 4 && pos <= 20 && impr >= 20) strikingCands.push({ query: q, site: nameOf.get(s.id) ?? "", pos: Math.round(pos * 10) / 10, impr });
+        }
+        for (const r of prev) { const q = r.keys?.[0]; if (q) prevQ.set(q, (prevQ.get(q) ?? 0) + (r.clicks ?? 0)); }
+      });
+    }
+  }
   const qDeltas: DigestQueryRow[] = [];
-  for (const [q, c] of curMap) qDeltas.push({ q, cur: c, prev: prevMap.get(q) ?? 0, d: c - (prevMap.get(q) ?? 0) });
-  for (const [q, p] of prevMap) if (!curMap.has(q)) qDeltas.push({ q, cur: 0, prev: p, d: -p });
+  for (const [q, c] of curQ) qDeltas.push({ q, cur: c, prev: prevQ.get(q) ?? 0, d: c - (prevQ.get(q) ?? 0) });
+  for (const [q, p] of prevQ) if (!curQ.has(q)) qDeltas.push({ q, cur: 0, prev: p, d: -p });
   base.winnersQ = qDeltas.filter(x => x.d > 0).sort((a, b) => b.d - a.d).slice(0, FULL.queries);
   base.losersQ = qDeltas.filter(x => x.d < 0).sort((a, b) => a.d - b.d).slice(0, FULL.queries);
 
   // ── Striking distance (near-page-1 opportunities)
-  try {
-    const strk = await prisma.dailyMetric.groupBy({
-      by: ["siteId", "query"],
-      where: { siteId: { in: siteIds }, date: { gte: effectiveCurStart, lte: now }, query: { not: "" }, position: { gte: 4, lte: 20 } },
-      _sum: { impressions: true }, _avg: { position: true },
-      having: { impressions: { _sum: { gte: 20 } } },
-      orderBy: { _sum: { impressions: "desc" } },
-      take: FULL.striking,
-    });
-    base.strikingCount = strk.length;
-    base.striking = strk.map(r => ({
-      query: r.query, site: nameOf.get(r.siteId) ?? "",
-      pos: Math.round((r._avg.position ?? 0) * 10) / 10, impr: r._sum.impressions ?? 0,
-    }));
-  } catch { /* best-effort on huge portfolios */ }
+  // Same trap as winners/losers until #27: the only stored rows with a query are step 4's
+  // 90-day query+page totals, so a windowed groupBy served 90 days of impressions (summed
+  // across pages) with 90-day positions under this period's heading. The candidates collected
+  // above come from the same live per-period rows — the window's own impressions and positions.
+  strikingCands.sort((a, b) => b.impr - a.impr);
+  base.strikingCount = strikingCands.length;
+  base.striking = strikingCands.slice(0, FULL.striking);
 
   // ── Sites needing attention: biggest % traffic drops
   if (showDelta) {
@@ -210,6 +284,99 @@ export async function buildDigestData(
     .filter(x => x.d !== 0)
     .sort((a, b) => Math.abs(b.d) - Math.abs(a.d))
     .slice(0, FULL.rankMoves);
+
+  // ── Trend radar (N5): the portfolio's 5 hottest queries of the window, whichever site
+  // they belong to. "За период" = lastSeenAt inside the window — a trend the radar last saw
+  // before the window is last week's news. Rows hidden by the operator (dismissed) and rows
+  // their source dropped 14+ days ago never get here: the store hides them for the same reason.
+  try {
+    const hot = await prisma.trendItem.findMany({
+      where: { siteId: { in: siteIds }, dismissed: false, lastSeenAt: { gte: effectiveCurStart, lte: now } },
+      orderBy: { score: "desc" },
+      take: 5,
+    });
+    if (hot.length) {
+      base.trends = hot.map(r => {
+        const growth = r.impressions != null && r.prevImpressions != null && r.prevImpressions > 0
+          ? Math.round((r.impressions / r.prevImpressions) * 10) / 10
+          : null;
+        return {
+          query: r.query, site: nameOf.get(r.siteId) ?? "", source: r.source,
+          score: Math.round(r.score * 100) / 100, growth, impressions: r.impressions,
+        };
+      });
+    }
+  } catch { /* TrendItem ещё не мигрирована — секции просто нет */ }
+
+  // ── Links: what appeared and what went away.
+  // Counted from SiteBacklinkEvent rows inside the window — never from SiteBacklink itself,
+  // which holds a running total and would make every digest repeat the same losses forever.
+  try {
+    const baselineFrom = new Date(now.getTime() - BASELINE_WINDOW_DAYS * 86_400_000);
+    const targets = [...new Set(sites.map(x => targetOf(x.url)))];
+    const [rawEvents, syncs, completeSyncs, snapRows] = await Promise.all([
+      prisma.siteBacklinkEvent.findMany({
+        where: { siteId: { in: siteIds }, createdAt: { gte: effectiveCurStart, lte: now }, kind: { in: DIGEST_EVENT_KINDS } },
+        orderBy: { createdAt: "desc" }, take: FULL.backlinkEvents,
+      }),
+      // Прогоны, пересекающие окно: по ним событие привязывается к своему прогону
+      // и выясняется, была ли выгрузка полной.
+      prisma.siteBacklinkSync.findMany({
+        where: { siteId: { in: siteIds }, startedAt: { lte: now }, OR: [{ finishedAt: null }, { finishedAt: { gte: effectiveCurStart } }] },
+        select: { siteId: true, kind: true, status: true, complete: true, startedAt: true, finishedAt: true },
+      }),
+      // Был ли у сайта хоть один завершённый полный прогон — до этого о потерях молчим.
+      prisma.siteBacklinkSync.findMany({
+        where: { siteId: { in: siteIds }, status: "completed", complete: true },
+        select: { siteId: true }, distinct: ["siteId"],
+      }),
+      prisma.backlinkSnapshot.findMany({
+        where: { target: { in: targets }, date: { gte: day(baselineFrom) } },
+        select: { target: true, date: true, backlinks: true },
+      }),
+    ]);
+
+    // Один и тот же (target, date) может прийти от нескольких провайдеров — сначала
+    // схлопываем внутри цели, потом складываем цели в один портфельный ряд.
+    const perTargetDate = new Map<string, number>();
+    for (const r of snapRows) {
+      if (typeof r.backlinks !== "number") continue;
+      const k = `${r.target}|${r.date}`;
+      perTargetDate.set(k, Math.max(perTargetDate.get(k) ?? 0, r.backlinks));
+    }
+    const byDate = new Map<string, number>();
+    for (const [k, v] of perTargetDate) {
+      const date = k.slice(k.indexOf("|") + 1);
+      byDate.set(date, (byDate.get(date) ?? 0) + v);
+    }
+    const snapshots = [...byDate.entries()].map(([date, backlinks]) => ({ date, backlinks }));
+
+    // Событие знает только backlinkId; имя ссылки и признак «избранная» — в самой строке.
+    const ids = [...new Set(rawEvents.map(e => e.backlinkId))];
+    const linkRows = ids.length
+      ? await prisma.siteBacklink.findMany({ where: { id: { in: ids } }, select: { id: true, urlFrom: true, domainFrom: true, favorite: true } })
+      : [];
+    const linkById = new Map(linkRows.map(r => [r.id, r]));
+
+    const section = buildBacklinkDigest({
+      events: rawEvents.map(e => {
+        const r = linkById.get(e.backlinkId);
+        return {
+          id: e.id, siteId: e.siteId, kind: e.kind, origin: e.origin, createdAt: e.createdAt,
+          favorite: r?.favorite ?? false, urlFrom: r?.urlFrom ?? "", domainFrom: r?.domainFrom ?? "",
+        };
+      }),
+      syncs,
+      completeExportSites: completeSyncs.map(r => r.siteId),
+      snapshots,
+      periodDays: days || 1,
+      limits: { favorites: FULL.backlinkFavorites, lossDomains: FULL.backlinkDomains },
+    }, now);
+
+    // В режиме «всё время» окно накрывает всю историю: сравнивать такую сумму с суточной
+    // нормой бессмысленно, поэтому вердикт об аномалии там не выносится.
+    base.backlinks = section.hasData ? (showDelta ? section : { ...section, anomaly: null, baselineReady: false }) : null;
+  } catch { /* таблицы Backlinks v2 ещё не мигрированы — секции просто нет */ }
 
   // ── live Bing/Yandex (only when requested; bounded by cap)
   if (opts.engineCap && opts.engineCap > 0) {
@@ -262,6 +429,47 @@ export function renderDigestMarkdown(data: DigestData): string {
     for (const m of data.rankMoves.slice(0, 10)) lines.push(`  ${m.d > 0 ? "▲" : "▼"} ${m.keyword}: ${m.from} → ${m.to}`);
   }
 
+  // Trend radar (N5): ≤5 hottest queries of the window. The growth factor reads only for
+  // gsc_rising — a new query or a suggestion has no baseline, and printing "×—" would imply
+  // a measurement that was never made.
+  if (data.trends?.length) {
+    lines.push("", L.digestTrends);
+    for (const tr of data.trends.slice(0, 5)) {
+      const factor = tr.growth != null ? ` ×${tr.growth.toFixed(1)}` : "";
+      const volume = tr.impressions != null ? ` (${fmtNum(tr.impressions)})` : "";
+      lines.push(`  ${tr.query}${factor} — ${tr.site}${volume}`);
+    }
+  }
+
+  const B = data.backlinks;
+  if (B) {
+    lines.push("", L.dglSectionTitle);
+    // Потери показываем только когда их вообще позволено считать (CONTRACT §4).
+    if (B.lossesReported) {
+      // Минус здесь типографский (−), как и в остальной строке, а не дефис из sign().
+      const net = B.net > 0 ? `+${B.net}` : B.net < 0 ? `−${-B.net}` : "0";
+      lines.push(`  +${B.appeared} ${L.dglNew} · −${B.lost} ${L.dglLost} · ${net} ${L.dglNet}`);
+    } else {
+      lines.push(`  +${B.appeared} ${L.dglNew}`);
+      lines.push(L.dglNoFullExport);
+    }
+    // Избранные — всегда поимённо, даже если потеряна одна: дорогая ссылка не должна
+    // утонуть в агрегате.
+    if (B.favoriteLost.length) {
+      lines.push(L.dglFavoriteLost(B.favoriteLost.slice(0, 10).map(l => l.url).join(", ")));
+      if (B.favoriteLost.length > 10) lines.push(L.digestMore(B.favoriteLost.length - 10));
+    }
+    if (B.favoriteDowngraded.length) {
+      lines.push(L.dglFavoriteDowngraded(B.favoriteDowngraded.slice(0, 10).map(l => l.url).join(", ")));
+      if (B.favoriteDowngraded.length > 10) lines.push(L.digestMore(B.favoriteDowngraded.length - 10));
+    }
+    if (B.relDowngraded) lines.push(L.dglRelDowngrade(B.relDowngraded));
+    if (B.topLossDomains.length) lines.push(L.dglTopLossDomains(B.topLossDomains.slice(0, 5).map(d => `${d.domain} (${d.n})`).join(", ")));
+    if (B.lossesReported && !B.baselineReady) lines.push(L.dglBaselineBuilding);
+    if (B.anomaly?.anomalous) lines.push(L.dglAnomaly, L.dglAnomalyHint(B.anomaly.lost, B.anomaly.timesLabel));
+    if (!B.appeared && !B.lost && !B.relDowngraded) lines.push(L.dglNoChange);
+  }
+
   for (const [name, rows] of [["Bing", data.engines.bing], ["Яндекс", data.engines.yandex]] as [string, EngineRow[]][]) {
     if (!rows.length) continue;
     const tc = rows.reduce((s, r) => s + r.clicks, 0), ti = rows.reduce((s, r) => s + r.impr, 0);
@@ -286,14 +494,20 @@ export async function buildDigest(
 // user's own AI key (User.seoSettings); silently skipped when no key is configured.
 export async function aiSummary(userId: string, digestMarkdown: string, lang: NotifyLang = "en"): Promise<string | null> {
   try {
-    const rows: any[] = await prisma.$queryRawUnsafe(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ seoSettings: string | null }[]>(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
     const s = rows?.[0]?.seoSettings ? JSON.parse(rows[0].seoSettings) : null;
     if (!s) return null;
     const provider = s.seoProvider || s.aiProvider || "anthropic";
     const apiKey = s[`aiKey_${provider}`] || s.aiApiKey || "";
     if (!apiKey) return null;
     const model = s.seoModel || s[`aiModel_${provider}`] || undefined;
-    const langName = lang === "ru" ? "Russian" : lang === "uk" ? "Ukrainian" : "English";
+    const langName = lang === "ru" ? "Russian"
+      : lang === "uk" ? "Ukrainian"
+      : lang === "fr" ? "French"
+      : lang === "es" ? "Spanish"
+      : lang === "de" ? "German"
+      : lang === "zh" ? "Simplified Chinese"
+      : "English";
     const text = await fetchLLM(
       `You are a senior SEO analyst reviewing a multi-site portfolio digest. Write in ${langName}.\n\n` +
       `Rules:\n` +

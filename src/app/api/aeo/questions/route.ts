@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import { getUserAeoCreds } from "@/lib/aeoTracker";
-import { AEO_ENGINES } from "@/lib/seo/aeo";
+import { AEO_ENGINES, hostOf } from "@/lib/seo/aeo";
 
 async function ownedSite(userId: string, siteId: string) {
   return prisma.site.findFirst({ where: { id: siteId, userId } });
@@ -12,8 +11,7 @@ async function ownedSite(userId: string, siteId: string) {
 // GET /api/aeo/questions?siteId=…
 // List tracked questions with their latest per-engine citation state.
 export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
@@ -32,7 +30,10 @@ export async function GET(req: Request) {
   return NextResponse.json({
     engines: configured,
     hasAnyKey: configured.length > 0,
-    questions: questions.map((q: any) => ({
+    // The client highlights our own domain inside the competitor lists, so it needs the
+    // normalized host rather than the raw GSC property string.
+    host: hostOf(site.url),
+    questions: questions.map((q: { id: string; question: string; createdAt: Date; lastCheckedAt: Date | null; lastResults: string | null }) => ({
       id: q.id,
       question: q.question,
       createdAt: q.createdAt,
@@ -44,8 +45,7 @@ export async function GET(req: Request) {
 
 // POST /api/aeo/questions  { siteId, questions: string[] }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));
@@ -78,8 +78,7 @@ export async function POST(req: Request) {
 
 // DELETE /api/aeo/questions  { siteId, ids: string[] }
 export async function DELETE(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));

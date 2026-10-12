@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { workspaceUserId } from "@/lib/team/workspace";
+import { dbAny } from "@/lib/prisma";
 
-const audits = () => (prisma as any).geoAudit;
+const audits = () => dbAny.geoAudit;
 
 // GET /api/seo/geo/[id] — poll a single audit (status + full report when done).
 export async function GET(_req: Request, context: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id;
+  const userId = await workspaceUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await context.params;
   try {
@@ -22,8 +20,7 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
 
 // DELETE /api/seo/geo/[id] — remove an audit.
 export async function DELETE(_req: Request, context: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id;
+  const userId = await workspaceUserId("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await context.params;
   try {

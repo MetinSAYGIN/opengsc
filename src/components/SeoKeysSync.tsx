@@ -13,12 +13,51 @@ import { useSession } from "next-auth/react";
 import { syncHistoryFromServer } from "@/lib/seo/history";
 
 const EXACT_KEYS = [
-  "aiProvider", "aiApiKey", "seoProvider", "seoModel", "seoSerpProvider", "seoSerpProvider_rank",
+  "aiProvider", "aiApiKey", "seoProvider", "seoModel", "seoSerpProvider", "seoSerpProvider_rank", "seoSerpProvider_rankFallback",
   "seoActivePolicy", "seoPolicies",
   "seoAutoFactcheck", "seoAutoImages", "seoHardRedact", "seoFactSources",
-  "seoFactBearingOnly", "seoFactReuseCorpus",
+  "seoFactBearingOnly", "seoFactReuseCorpus", "seoMechanics", "seoMechanicsRepair",
+  // The scheduled warm-up is the only setting here a *server* process reads: the cron has no
+  // browser, so a value that lived only in localStorage would be invisible to the thing it
+  // configures. It rides the same mirror as everything else rather than getting its own endpoint.
+  "seoWarmupSchedule",
+  // Same reason, one step further: the provider log's body-capture switch is read by the logger
+  // inside every server process — API routes, the seven schedulers, the detached job runner —
+  // none of which has a browser to read localStorage from. Left out of this list the toggle would
+  // appear to work and change nothing at all.
+  "seoProviderLogBodies",
+  // The keyword-source selector and its behaviour flags — same reason the metrics layer is
+  // mirrored: restoring a browser without them silently reverts the content tools to "off".
+  "seoKwSource", "seoKwAuto", "seoKwLimit",
+  // The free Ahrefs DR key. Everything server-side that fetches DR (the drops auto-load, the
+  // sweep after an import, MCP enrich_dr) resolves its key from this mirror — leaving it out
+  // meant the browser's working key never reached the server and drops DR 401'd forever while
+  // the dashboard (which sends the browser's key in a header) kept working.
+  "ahrefsDrApiKey",
 ];
-const PREFIXES = ["aiKey_", "aiBaseUrl_", "aiModel_", "seoKey_", "seoTaskProvider_", "seoTaskModel_"];
+// `seoMetrics` covers the whole metrics layer: mode, base URL, monthly cap, active provider.
+//
+// It has to be here, and leaving it out was a real bug rather than a missing nicety. The key
+// itself matches `seoKey_` and so was already backed up and restored — but the host it must be
+// sent to was not. Restore then produced a reseller key pointed at the official API: the mode
+// silently reverted to "official", and every request 401'd for a reason nothing on screen
+// explained. Server-side code reads the same snapshot, so it had no way to learn the host either.
+//
+// `seoBaseUrl_` is here for exactly the reason above, one layer down. A SERP provider used to be
+// a key and nothing else, because every provider had a hardcoded public host. A self-hosted one
+// (A-Parser) has a host the app cannot know, and mirroring the password without it would
+// reproduce the metrics bug verbatim: server-side jobs would hold a valid password and no idea
+// where to send it. `seoAparser` covers that provider's own knobs (thread config, concurrency,
+// and the cached parser list the UI gates features on).
+const PREFIXES = [
+  "aiKey_", "aiBaseUrl_", "aiModel_", "seoKey_", "seoBaseUrl_", "seoTaskProvider_", "seoTaskModel_",
+  "seoMetrics", "seoAparser",
+  // Health-check keys (Safe Browsing / PageSpeed / VirusTotal). The health POST sends the
+  // browser's key in its body, but without this prefix the keys were never backed up — a
+  // cleared browser silently lost them, and the Settings copy promising team availability
+  // was wrong. Mirroring them also lets server-side callers resolve the same keys later.
+  "healthKey_",
+];
 
 function snapshot(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -66,13 +105,13 @@ function isTrackedKey(k: string): boolean {
 }
 
 let patched = false;
-let pushSoonTimer: any = null;
+let pushSoonTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Debounced immediate push: fires ~600ms after the last tracked-key write, instead of
 // waiting for the 20s interval or an actual tab-hide event. This is what makes freshly
 // saved keys show up right away (e.g. the AI Visibility "configured engines" badge).
 function pushSoon() {
-  clearTimeout(pushSoonTimer);
+  clearTimeout(pushSoonTimer ?? undefined);
   pushSoonTimer = setTimeout(() => { pushIfChanged().catch(() => {}); }, 600);
 }
 
@@ -96,7 +135,7 @@ export default function SeoKeysSync() {
   useEffect(() => {
     if (status !== "authenticated") return;
     patchLocalStorageOnce();
-    let timer: any;
+    let timer: ReturnType<typeof setInterval> | undefined;
     (async () => {
       try { await pullAndRestore(); } catch { /* offline / not migrated — silent */ }
       try { await pushIfChanged(); } catch { /* silent */ }

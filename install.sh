@@ -41,7 +41,7 @@ fi
 
 # ─── OS check ─────────────────────────────────────────────────────────────────
 if ! command -v apt-get &>/dev/null; then
-  error "Only Debian/Ubuntu supported. For other distros install Node.js 20+ manually."
+  error "Only Debian/Ubuntu supported. For other distros install Node.js 22+ manually."
 fi
 
 # ─── Auto-clone if running via curl | bash ────────────────────────────────────
@@ -71,7 +71,23 @@ fi
 # ─── Collect config ───────────────────────────────────────────────────────────
 header "Configuration"
 
-ask DOMAIN    "Domain or server IP (e.g. seo.example.com or 1.2.3.4): " "localhost"
+# The domain is not a label: Nginx server_name, the SSL certificate and the Google OAuth
+# redirect URI are all derived from it. Google Console must list exactly
+# https://<domain>/api/auth/callback/google under "Authorized redirect URIs", so a domain
+# left at the localhost default by mistake builds an app nobody can log into — the OAuth
+# client redirects to the real domain while the app announces itself as localhost.
+# Hence the explanation before the prompt and the confirmation loop when the default is kept.
+echo -e "  ${YELLOW}Enter the domain you will open the dashboard at in the browser.${NC}"
+echo -e "  For Google login to work, Google Console must list this exact redirect URI"
+echo -e "  under Authorized redirect URIs:"
+echo -e "  ${CYAN}https://<your-domain>/api/auth/callback/google${NC}"
+echo ""
+while :; do
+  ask DOMAIN "Domain or server IP (e.g. seo.example.com or 1.2.3.4): " "localhost"
+  if [[ "$DOMAIN" != "localhost" ]]; then break; fi
+  ask KEEP_LOCALHOST "No domain given — keep localhost? Google login works for local testing only [y/N]: " "N"
+  if [[ "${KEEP_LOCALHOST^^}" == "Y" ]]; then break; fi
+done
 ask INSTALL_NGINX "Install Nginx reverse proxy? [Y/n]: " "Y"
 ask SETUP_SSL "Setup SSL with Let's Encrypt? (only if real domain) [y/N]: " "N"
 APP_PORT=3000
@@ -106,13 +122,21 @@ apt-get install -y -qq curl git unzip build-essential
 
 success "System packages ready"
 
-# ─── Node.js 20 ───────────────────────────────────────────────────────────────
+# ─── Node.js 24 (Active LTS) ──────────────────────────────────────────────────
+#
+# Was 20, which reached end of life on 30 April 2026 — no more security patches. A version
+# pinned in an installer is a decision made on behalf of everyone who runs it, so it tracks
+# Active LTS rather than whatever worked when the line was written.
+#
+# The check below accepts 22 as well: it is still in maintenance until April 2027, and an
+# instance already running it does not need a major version change forced on it mid-install.
+# Anything older is replaced.
 header "Node.js"
-if command -v node &>/dev/null && [ "$(node -e "console.log(process.versions.node.split('.')[0])")" -ge 20 ]; then
+if command -v node &>/dev/null && [ "$(node -e "console.log(process.versions.node.split('.')[0])")" -ge 22 ]; then
   success "Node.js $(node -v) already installed"
 else
-  info "Installing Node.js 20 LTS..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
+  info "Installing Node.js 24 LTS..."
+  curl -fsSL https://deb.nodesource.com/setup_24.x | bash - > /dev/null 2>&1
   apt-get install -y -qq nodejs
   success "Node.js $(node -v) installed"
 fi
@@ -127,13 +151,11 @@ else
   success "PM2 installed"
 fi
 
-# ─── App dependencies ─────────────────────────────────────────────────────────
-header "App dependencies"
-info "Running npm install..."
-npm install --silent
-success "Dependencies installed"
-
 # ─── .env ─────────────────────────────────────────────────────────────────────
+# This must exist BEFORE `npm install`, not after: the package's postinstall runs
+# `prisma generate`, prisma.config.ts resolves env("DATABASE_URL") while loading, and on a
+# fresh machine with no .env the whole install dies with PrismaConfigEnvError. Existing
+# installs never saw this because their .env was already on disk.
 header ".env"
 if [ -f ".env" ]; then
   warn ".env already exists — skipping. Edit manually if needed."
@@ -161,7 +183,8 @@ else
   echo -e "${YELLOW}  Google OAuth credentials are required for login.${NC}"
   echo -e "  Create them at: ${CYAN}https://console.cloud.google.com${NC}"
   echo -e "  APIs & Services → Credentials → Create OAuth 2.0 Client ID"
-  echo -e "  Redirect URI: ${CYAN}${NEXTAUTH_URL}/api/auth/callback/google${NC}"
+  echo -e "  Add this exact URI to the client's ${BOLD}Authorized redirect URIs${NC}:"
+  echo -e "  ${CYAN}${NEXTAUTH_URL}/api/auth/callback/google${NC}"
   echo ""
   ask        GOOGLE_CLIENT_ID     "Google Client ID: " ""
   ask_secret GOOGLE_CLIENT_SECRET "Google Client Secret: "
@@ -185,6 +208,17 @@ EOF
   success ".env created (NEXTAUTH_URL=${NEXTAUTH_URL})"
 fi
 
+# ─── App dependencies ─────────────────────────────────────────────────────────
+header "App dependencies"
+info "Running npm install..."
+# --include=dev for the same reason as update.sh: the build needs Tailwind, its PostCSS plugin
+# and TypeScript, all of which are devDependencies that npm skips when NODE_ENV=production is
+# set in the environment this script happens to inherit.
+npm install --include=dev --silent
+# A successful npm install is not the same as a usable one — see the comment in update.sh.
+node scripts/check-native-deps.mjs || error "Dependencies installed but not usable — see above."
+success "Dependencies installed"
+
 # ─── Build ────────────────────────────────────────────────────────────────────
 header "Database & Build"
 info "Generating Prisma client..."
@@ -195,6 +229,12 @@ npx prisma db push 2>/dev/null
 
 info "Seeding Casino RAG knowledge base..."
 node scripts/seed-rag.mjs || warn "RAG seed skipped (non-fatal) — run 'node scripts/seed-rag.mjs' manually"
+
+# The Turbopack build peaks around 2.4 GB of memory; on a small VPS that only ends one
+# way — the OOM killer and a bare "Killed" (issue #21). Swap is ensured before the
+# build starts, not diagnosed after it dies.
+source scripts/ensure-build-swap.sh
+ensure_build_swap
 
 info "Building Next.js..."
 npm run build
@@ -285,7 +325,19 @@ echo -e "${GREEN}║          ✔ Installation complete!        ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
-if [[ "${INSTALL_NGINX^^}" == "Y" ]]; then
+# The closing URL is the one thing the operator will act on, so it must not lie. With a real
+# domain it is the address to open in a browser. With localhost it is NOT reachable from the
+# operator's machine on a headless VPS — printing it as "Open:" invites a dead link, so that
+# case gets the SSH-tunnel recipe and the reinstall command instead.
+if [[ "$DOMAIN" == "localhost" ]]; then
+  echo -e "  ${YELLOW}Installed without a domain — the app answers on this server only:${NC}"
+  echo -e "  ${CYAN}http://localhost:${APP_PORT}${NC}"
+  echo ""
+  echo -e "  From your own machine it is reachable through an SSH tunnel:"
+  echo -e "    ${CYAN}ssh -L ${APP_PORT}:localhost:${APP_PORT} root@<this-server>${NC}"
+  echo -e "  For normal use reinstall with your domain (Google login is bound to its redirect URI):"
+  echo -e "    ${CYAN}rm .env && bash install.sh${NC} — answer with the domain at the first prompt."
+elif [[ "${INSTALL_NGINX^^}" == "Y" ]]; then
   if [[ "${SETUP_SSL^^}" == "Y" ]]; then
     echo -e "  Open: ${CYAN}https://${DOMAIN}${NC}"
   else

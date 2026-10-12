@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { loggedFetch } from '@/lib/providerLog/log';
 
 // POST { urls: string[] }
 // Submits each URL to 2index.ninja using the user's saved Bearer token.
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const user = await prisma.user.findUnique({
@@ -30,7 +29,9 @@ export async function POST(req: Request) {
 
   for (const url of urls) {
     try {
-      const res = await fetch('https://2index.ninja/api/v1/submit', {
+      // One request per URL, up to fifty a call — so fifty rows, which is the honest count of
+      // what the account was asked to do.
+      const { res, call } = await loggedFetch('https://2index.ninja/api/v1/submit', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${user.twoIndexToken}`,
@@ -38,16 +39,19 @@ export async function POST(req: Request) {
         },
         body: JSON.stringify({ url }),
         signal: AbortSignal.timeout(10000),
-      });
+      }, { provider: '2index' });
 
       if (res.ok) {
+        call.finish();
         results.push({ url, ok: true });
       } else {
         const err = await res.json().catch(() => ({}));
-        results.push({ url, ok: false, error: err?.message ?? `HTTP ${res.status}` });
+        const error = err?.message ?? `HTTP ${res.status}`;
+        call.finish({ error: String(error).slice(0, 300), responseBody: err });
+        results.push({ url, ok: false, error });
       }
-    } catch (e: any) {
-      results.push({ url, ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      results.push({ url, ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 

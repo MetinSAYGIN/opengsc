@@ -3,8 +3,20 @@
 // variant it can mask common "AI tells" and reports a uniqueness score vs the source. Built to
 // refresh decaying pages and avoid duplicate content across a large affiliate network.
 
-import { fetchLLM } from "@/lib/llm";
+import { fetchLLM, fetchLLMDetailed, contentTokens, isLengthCut, CONTENT_TOKENS_RETRY_MAX } from "@/lib/llm";
 import { scrapeMany } from "@/lib/seo/scrape";
+import { factDrift, criticalValues, type FactDrift } from "@/lib/seo/factDrift";
+import { uniquenessPct, wordCount, keywordCoverage, stripPageFurniture, type KeywordCoverage } from "@/lib/seo/textMetrics";
+import { renderPolicy, type EditorialPolicy } from "@/lib/seo/policy";
+import { contentGate } from "@/lib/seo/rewriteGate";
+import { judgeArticle, type JudgeOutcome } from "@/lib/seo/judge";
+import { scrubMarks } from "@/lib/seo/marksScrub";
+import {
+  checkMechanics, placeholdersFromInstruction, linksFromInstruction,
+  type MechanicsIssue,
+} from "@/lib/seo/mechanics";
+import { META_LIMITS, type MetaFitResult } from "@/lib/seo/metaLimits";
+import { fitMeta, fitMetaLocal, readMetaBlock, writeMetaBlock } from "@/lib/seo/metaFit";
 
 export interface RewriteBody {
   text?: string;
@@ -13,6 +25,56 @@ export interface RewriteBody {
   language?: string;        // target language NAME (e.g. "Greek"); empty = keep source language
   tone?: string;            // optional tone hint
   maskAI?: boolean;         // strip common AI patterns (default true)
+  marksScrub?: boolean;     // strip invisible Unicode marks from the output (default true)
+  bannedWords?: string[];   // domain vocabulary to avoid AT GENERATION TIME (see note below)
+  /**
+   * The queries this page is meant to rank for, with volumes where known.
+   *
+   * The tool had none of this. Rewriting a decaying page without knowing what it ranks for is how
+   * a refresh loses the phrase that was earning the traffic: the meaning survives, the exact query
+   * does not, and nothing in the pipeline notices because the facts all check out. Supplying them
+   * turns that from an accident into a checked constraint — see `keywordCoverage` below.
+   */
+  targetKeywords?: { keyword: string; volume?: number | null; globalVolume?: number | null }[];
+  /**
+   * The editorial policy to write under. Rewrite was the one generator that ignored it entirely —
+   * outline, text and analysis all render it, this did not — while `start_rewrite_job` advertised
+   * "editorial policy ... applied" in its own description. Half of that promise was false.
+   */
+  policy?: EditorialPolicy;
+  /**
+   * The author's free-text instruction for THIS job — the rewrite equivalent of the text step's
+   * `custom`.
+   *
+   * Rewrite had no such field at all. A policy is a standing house style; this is the thing you
+   * need for one page and cannot express as one ("de-brand the competitor comparison", "keep the
+   * [[TRANSFER_WIDGET]] placeholder exactly where it is", "link to /where-to-stay/athens/ once").
+   * Without it the only lever was to edit the shared policy for a single rewrite and remember to
+   * change it back.
+   */
+  custom?: string;
+  /** Names that must not appear in the rewritten body — checked deterministically, never fatal. */
+  forbiddenBrands?: string[];
+  temperature?: number;     // sampling temperature; undefined = provider default
+  autoRepair?: boolean;     // run a scoped fix pass when the value audit fails (default true)
+  /**
+   * Independent QA pass (default true). After the deterministic gate, a fresh-context model
+   * call looks at the finished draft and answers one question: is this a complete, publishable
+   * article? Catches what no measurement can — a draft that copies the page's booking-form
+   * boilerplate, ends mid-sentence, or came back in the wrong language. A "reject" verdict
+   * fails the variant instead of saving it as completed.
+   */
+  judge?: boolean;
+  snippet?: boolean;        // also propose a refreshed title + meta description
+  /**
+   * Independent QA credentials — the per-task "judge" slot from SEO Tools settings. Absent
+   * everywhere in the body (older callers, local scripts), the writer's own provider judges
+   * the draft; same-model judging is weaker but still catches the non-article failures.
+   */
+  judgeProvider?: string;
+  judgeApiKey?: string;
+  judgeModel?: string;
+  judgeBaseUrl?: string;
   aiProvider?: string;
   aiApiKey?: string;
   model?: string;
@@ -20,14 +82,75 @@ export interface RewriteBody {
   firecrawlKey?: string;
 }
 
-export interface RewriteVariant { content: string; uniqueness: number; words: number }
+// `drift` is computed here rather than in the browser because in URL mode the source text only
+// exists on the server — the client never sees what was scraped, so it could not check it.
+export interface RewriteVariant {
+  content: string; uniqueness: number; words: number; drift: FactDrift;
+  /** heading counts per level, source vs output — the outline equivalent of the value check */
+  structure?: StructureCheck;
+  /** a scoped repair pass ran and measurably reduced the defect count */
+  repaired?: boolean;
+  /**
+   * Which target queries the rewrite kept. Absent when the caller supplied no targets — an empty
+   * report and "nothing to check" are different states and must not render the same.
+   */
+  coverage?: KeywordCoverage;
+  /** Outcome of the independent QA pass; absent when `judge` is disabled. */
+  judge?: { verdict: "publish" | "reject" | "unavailable"; blockers?: string[]; concerns?: string[] };
+  /**
+   * Deterministic page-mechanics audit — mixed-alphabet words (repaired in place), plus any
+   * competitor named, placeholder dropped or required link missing against the job's `custom`
+   * instruction. Absent when nothing was found. The rewrite path had a value audit, a structure
+   * check and a QA judge, and none of the three can see any of this.
+   */
+  mechanics?: MechanicsIssue[];
+  /**
+   * Layer A marks scrub report (marksScrub.ts): how many invisible characters the shipped text
+   * was carrying — zero-width spaces, bidi controls, soft hyphens, exotic spaces — and where
+   * they came from, by class. Absent when the text was clean, so a clean variant keeps the
+   * shape consumers already parse.
+   */
+  marksScrub?: { total: number; byClass: Record<string, number> };
+  /**
+   * Meta-tag length fitting (metaFit.ts, wave-oct T1): what was done to the head block's
+   * Title/Description to bring them inside the audit band. Present only when the source page
+   * carried a meta block and at least one field needed work — `kept` needs no reporting.
+   */
+  metaFit?: MetaFitResult[];
+}
+
+/** Refreshed search snippet alongside the current one, so the change is judged by comparison. */
+export interface SnippetSuggestion {
+  sourceTitle: string;
+  sourceDescription: string;
+  title: string;
+  description: string;
+}
+
 export interface RewriteResult {
   ok: boolean;
   error?: string;
-  data?: { sourceChars: number; sourceWords: number; title?: string; variants: RewriteVariant[] };
+  data?: {
+    sourceChars: number; sourceWords: number; title?: string;
+    variants: RewriteVariant[];
+    snippet?: SnippetSuggestion;
+    /**
+     * The exact source the variants were built from.
+     *
+     * Returned so the result editor can recompute uniqueness and value drift live while the user
+     * edits. Without it a hand-edited draft would keep displaying the scores of the draft it
+     * replaced — numbers that describe text no longer on screen are worse than no numbers.
+     */
+    source: string;
+  };
 }
 
-// ─── AI-pattern masking (makes rewritten text read less "machine-made") ─────────
+// ─── AI-pattern masking ─────────────────────────────────────────────────────────
+// Scope note, so nobody mistakes this for an anti-detection measure: substituting phrases in a
+// FINISHED text does not move a statistical detector — those score the whole token distribution of
+// a ~300-word window, and swapping a dozen connectives barely dents it. What this pass genuinely
+// buys is readability: it strips the tics that make a draft feel machine-written to a human editor.
+// The same vocabulary is far more effective supplied as `bannedWords` at generation time.
 const PHRASE_MAP: [RegExp, string][] = [
   [/\bmoreover\b/gi, "also"],
   [/\bfurthermore\b/gi, "plus"],
@@ -65,24 +188,6 @@ export function maskAIPatterns(input: string): string {
   return out;
 }
 
-// ─── Uniqueness = 1 − word-trigram Jaccard similarity vs the source ─────────────
-function shingles(s: string, n = 3): Set<string> {
-  const w = s.toLowerCase().replace(/<[^>]+>/g, " ").replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(Boolean);
-  const set = new Set<string>();
-  for (let i = 0; i + n <= w.length; i++) set.add(w.slice(i, i + n).join(" "));
-  return set;
-}
-function uniquenessPct(source: string, rewritten: string): number {
-  const A = shingles(source), B = shingles(rewritten);
-  if (!A.size || !B.size) return 100;
-  let inter = 0;
-  for (const x of A) if (B.has(x)) inter++;
-  const union = A.size + B.size - inter;
-  const sim = union ? inter / union : 0;
-  return Math.max(0, Math.min(100, Math.round((1 - sim) * 100)));
-}
-const wordCount = (s: string) => (s.replace(/<[^>]+>/g, " ").match(/[\p{L}\p{N}]+/gu) || []).length;
-
 async function pool<T, R>(items: T[], n: number, fn: (t: T, i: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let idx = 0;
@@ -91,7 +196,184 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T, i: number) => Promis
   return out;
 }
 
+// ─── Currency notation ──────────────────────────────────────────────────────────
+// Asking the model to keep the source's notation does not work — a real run converted every "€30"
+// into "30 EUR" despite an explicit instruction. That is fine by the value checker (both normalize
+// to the same price) but it leaves a Greek page written in a notation its audience does not use.
+// Mechanical transformations belong in code, not in a prompt: this one is deterministic, so it is
+// applied deterministically instead of being requested and hoped for.
+const CURRENCY_PAIRS: [string, string][] = [["€", "EUR"], ["$", "USD"], ["£", "GBP"], ["₽", "RUB"], ["₴", "UAH"]];
+
+function normalizeCurrency(source: string, out: string): string {
+  let result = out;
+  for (const [sym, code] of CURRENCY_PAIRS) {
+    const symBefore = new RegExp(`\\${sym}\\s?\\d`).test(source);
+    const symAfter = new RegExp(`\\d\\s?\\${sym}`).test(source);
+    if (!symBefore && !symAfter) continue;              // source doesn't use the symbol — leave it
+    if (new RegExp(`\\b${code}\\b`).test(source)) continue; // source mixes both — not ours to decide
+    const num = "(\\d[\\d.,\\s\\u00A0]*\\d|\\d)";
+    result = result
+      .replace(new RegExp(`${num}\\s*\\b${code}\\b`, "g"), (_m, n) => (symBefore ? `${sym}${n}` : `${n}${sym}`))
+      .replace(new RegExp(`\\b${code}\\b\\s*${num}`, "g"), (_m, n) => (symBefore ? `${sym}${n}` : `${n}${sym}`));
+  }
+  return result;
+}
+
+// ─── Heading structure ──────────────────────────────────────────────────────────
+// The value checker guards facts; nothing guarded the outline until now. A run quietly came back
+// with seven H3s where the source had eight — invisible in the output, but it changes what the page
+// covers, and on a page being refreshed to recover rankings that is the wrong kind of surprise.
+export function headingCounts(md: string): number[] {
+  const c = [0, 0, 0, 0, 0, 0];
+  for (const m of md.matchAll(/^(#{1,6})\s+\S/gm)) c[m[1].length - 1]++;
+  return c;
+}
+
+export interface StructureCheck { expected: number[]; got: number[]; ok: boolean }
+
+function checkStructure(source: string, out: string): StructureCheck {
+  const expected = headingCounts(source);
+  const got = headingCounts(out);
+  return { expected, got, ok: expected.every((n, i) => n === got[i]) };
+}
+
+// Pasted text and scraped pages get different budgets. A full landing page runs well past 14k
+// characters, and truncating it there silently dropped everything below the fold — the rewrite came
+// back "complete" while covering only the top third of the page.
 const MAX_CHARS = 14_000;
+const MAX_CHARS_URL = 40_000;
+
+// Search-result truncation points. Shared with the UI counters so one number governs both —
+// and derived from META_LIMITS (wave-oct T1) so the snippet ask and the meta band can never
+// drift apart again.
+export const SNIPPET_TITLE_MAX = META_LIMITS.title.targetMax;
+export const SNIPPET_DESC_MAX = META_LIMITS.description.targetMax;
+
+// The rewrite body takes a language NAME ("Greek"); the meta fitter wants an ISO code for its
+// stop-word lists and repair prompt. A tiny mapping table beats guessing: the fitter's lists
+// cover the languages below, everything else falls back to English stop-words.
+const LANG_NAME_TO_CODE: Record<string, string> = {
+  english: "en", french: "fr", spanish: "es", german: "de", italian: "it",
+  portuguese: "pt", russian: "ru", ukrainian: "uk", greek: "el", polish: "pl",
+  turkish: "tr", dutch: "nl", romanian: "ro", czech: "cs", bulgarian: "bg",
+  arabic: "ar", japanese: "ja", korean: "ko", chinese: "zh", hebrew: "he", hindi: "hi",
+};
+function langCode(name: unknown): string {
+  const n = String(name ?? "").trim().toLowerCase();
+  if (/^[a-z]{2}(-[a-z]+)?$/.test(n)) return n.slice(0, 2);
+  return LANG_NAME_TO_CODE[n] ?? "en";
+}
+
+/**
+ * The rewrite prompt, as a pure function.
+ *
+ * Extracted from inside `rewriteContent` so it can be asserted against. Everything else that
+ * writes on this instance is an exported builder covered by promptContract.test.ts; this was the
+ * one prompt no test could reach, which is precisely the position the text pipeline was in when
+ * it spent months silently discarding the user's instruction.
+ */
+export function buildRewritePrompt(args: {
+  source: string;
+  variantIndex?: number;
+  variants?: number;
+  language?: string;
+  tone?: string;
+  policy?: EditorialPolicy;
+  custom?: string;
+  bannedWords?: string[];
+  targetKeywords?: { keyword: string; volume?: number | null; globalVolume?: number | null }[];
+  maskAI?: boolean;
+}): string {
+  const source = args.source;
+  const variants = Math.min(5, Math.max(1, Number(args.variants) || 1));
+  const i = Number(args.variantIndex) || 0;
+  const langName = (args.language || "").trim();
+  const langLine = langName ? `Write the rewrite in ${langName}.` : `Write in the SAME language as the source.`;
+  // Omitted when a policy exists, because renderPolicy already carries the tone as its override.
+  const toneLine = args.tone && !args.policy ? `Tone: ${args.tone}.` : "";
+
+  // Vocabulary constraint, when the caller supplies one from the local fingerprint model.
+  // A CONCRETE list is the point: it removes specific high-signal tokens without telling the model
+  // anything about how to write. Vague style directives ("write naturally", "vary your sentence
+  // length", "sound human") do the opposite of what they promise — the model applies them as
+  // explicit rules, which narrows its output distribution and makes the text MORE machine-typical,
+  // not less. That is why no such instruction appears in this prompt.
+  const banned = (args.bannedWords || []).map(w => String(w).trim()).filter(Boolean).slice(0, 80);
+  const bannedLine = banned.length
+    ? `Do not use these words or their inflected forms anywhere in the output: ${banned.join(", ")}. Express the same ideas with different wording. `
+    : "";
+
+  // Same philosophy as `bannedLine`, one level up: concrete surface tokens, not vague style
+  // directives. These are exactly the characters maskAIPatterns() and the Layer A scrub strip
+  // post-hoc — asking for them at generation time too means those passes have nothing left to
+  // fix, and every pass between keeps seeing the same text the reader will.
+  const styleLine = args.maskAI !== false
+    ? `Typography: use straight quotes (") and apostrophes ('), a plain hyphen (-) instead of em or en dashes, and "-" for bullets. Never insert invisible or zero-width characters. `
+    : "";
+
+  // Scraped pages arrive as Markdown with the heading tree intact, and that tree is the page's SEO
+  // skeleton — dropping or merging headings silently changes what the page ranks for. Spelled out
+  // explicitly because a model handed a long document will otherwise "tidy" the structure.
+  const structureLine = /^#{1,6}\s/m.test(source)
+    ? `Preserve the heading structure EXACTLY: same number of headings, same levels (# / ## / ###), same order. Rewrite heading text, never drop, merge, split or reorder a heading. If the source starts with an H1, your output must start with an H1 too. Keep every markdown table with all its rows. `
+    : "";
+
+  // Currency notation is a house style, not a fact. The value checker treats "€30" and "30 EUR" as
+  // the same price, so a swap passes the audit — but a Greek page that suddenly mixes both reads as
+  // sloppy, and nothing else in the pipeline would catch it.
+  const currencyLine = /[€$£₽₴]/.test(source)
+    ? `Keep currency notation exactly as the source writes it (symbol stays a symbol, code stays a code) — do not convert € into EUR or back. `
+    : "";
+
+  // Named, explicit list of every checkable value in the source. Telling a model to "preserve all
+  // facts" is the kind of vague directive it acknowledges and then quietly violates on paragraph
+  // forty; an enumerated list of the actual prices, durations and brand names is something it can
+  // check itself against. This is prevention — the drift panel afterwards is only the audit.
+  const mustKeep = criticalValues(source);
+  const keepLine = mustKeep.length
+    ? `These exact values MUST all appear in your output — every price, duration, percentage, phone number and brand name: ${mustKeep.join(", ")}. Do not drop, round, convert or re-unit any of them, and do not introduce values that are not in the source. `
+    : "";
+
+  // The queries the page is supposed to keep. Ordered by volume so the model knows which ones are
+  // worth an exact match when a phrasing has to give: a rewrite that loses the top query has
+  // failed even if every fact survived.
+  const targets = (args.targetKeywords || [])
+    .map(k => ({ keyword: String(k.keyword || "").trim(), volume: k.volume ?? null, globalVolume: k.globalVolume ?? null }))
+    .filter(k => k.keyword)
+    .sort((a, z) => Math.max(z.volume ?? 0, z.globalVolume ?? 0) - Math.max(a.volume ?? 0, a.globalVolume ?? 0))
+    .slice(0, 30);
+  const targetLine = targets.length
+    ? `This page ranks for these searches and must keep ranking for them — preserve each phrase verbatim at least once, in natural context, and do not paraphrase them away: ${targets.map(k => {
+        const local = k.volume ? `${k.volume}/mo` : "0";
+        const global = k.globalVolume ? `, global ${k.globalVolume}/mo` : "";
+        return `"${k.keyword}" (${local}${global})`;
+      }).join(", ")}. `
+    : "";
+
+  // Same block the outline and text steps render, in the same position — leading the prompt, so
+  // brand, audience, voice and the words-to-avoid list frame everything that follows. The tone
+  // argument is folded in as the override, exactly as buildTextPrompt does it, which is why
+  // `toneLine` stays empty when a policy is present: one source of tone, never two.
+  const policyBlock = args.policy ? renderPolicy(args.policy, args.tone) + "\n\n" : "";
+
+  // Placed AFTER the mechanical constraints and immediately before the content, i.e. last thing
+  // read before the work starts, and repeated in the repair pass. The value/heading/keyword rules
+  // above are non-negotiable invariants of a rewrite; this is the one block where the user gets to
+  // override the generic instructions, so it has to be able to see them.
+  const customText = (args.custom || "").trim();
+  const customBlock = customText
+    ? `AUTHOR'S INSTRUCTION — follow it exactly; where it conflicts with the general guidance above, the instruction wins (it never overrides the rule against inventing facts or the requirement to keep the source's values): ${customText.slice(0, 6000)} `
+    : "";
+
+  return policyBlock +
+    `You are an expert SEO copywriter. Rewrite the content below so it is UNIQUE and original, ` +
+    `while preserving the exact meaning, all facts, numbers, named entities, and links. ` +
+    `Keep the same format as the input (HTML stays HTML, Markdown stays Markdown, plain stays plain). ` +
+    `${structureLine}${currencyLine}${keepLine}${targetLine}${langLine} ${toneLine} ${bannedLine}${styleLine}${customBlock}` +
+    (variants > 1 ? `This is variant #${i + 1} — make it clearly different from the other variants. ` : "") +
+    `Output ONLY the rewritten content, with no preamble, notes, or explanations.\n\n` +
+    `CONTENT:\n${source}`;
+}
 
 export async function rewriteContent(b: RewriteBody): Promise<RewriteResult> {
   const provider = String(b.aiProvider ?? "anthropic");
@@ -101,44 +383,299 @@ export async function rewriteContent(b: RewriteBody): Promise<RewriteResult> {
   // Resolve source content: pasted text, or scrape the URL.
   let text = (b.text ?? "").trim();
   let title = "";
+  let description = "";
+  let fromUrl = false;
   if (!text && b.url) {
+    fromUrl = true;
     try {
       const pages = await scrapeMany([b.url], b.firecrawlKey || undefined, 1);
       const p = pages[0];
-      if (p) { text = String(p.textSample || "").trim(); title = p.title || ""; }
+      if (p) {
+        // Refuse a page that yielded navigation instead of an article. Rewriting a menu produces
+        // fluent, confident, worthless output — a failure that reads as success, which is exactly
+        // the kind a tool must not hand back to the user.
+        if (p.ok && p.boilerplateOnly) return { ok: false, error: "boilerplate_only" };
+        // Markdown, not the flat sample: headings and tables are structure the rewrite must keep.
+        text = String(p.contentMarkdown || p.textSample || "").trim();
+        title = p.title || "";
+        description = p.metaDescription || "";
+      }
     } catch { /* fall through to no_content */ }
   }
   if (!text) return { ok: false, error: "no_content" };
-  const truncated = text.length > MAX_CHARS;
-  const source = truncated ? text.slice(0, MAX_CHARS) : text;
+  // A scraped page carries its own furniture — booking-form confirmations, WhatsApp widgets,
+  // cross-sell arrows. Left in, the "preserve the structure EXACTLY" instruction copies it all
+  // into the rewrite, and the QA judge then (correctly) rejects the draft for containing
+  // buttons and form text. The article the rewriter should see starts one strip earlier.
+  if (fromUrl) text = stripPageFurniture(text);
+  const cap = fromUrl ? MAX_CHARS_URL : MAX_CHARS;
+  const truncated = text.length > cap;
+  const source = truncated ? text.slice(0, cap) : text;
 
   const variants = Math.min(5, Math.max(1, Number(b.variants) || 1));
   const langName = (b.language || "").trim();
+  // Still needed here: the snippet prompts below reuse it.
   const langLine = langName ? `Write the rewrite in ${langName}.` : `Write in the SAME language as the source.`;
-  const toneLine = b.tone ? `Tone: ${b.tone}.` : "";
+  // Still needed here: keywordCoverage measures the shipped variant against the same list.
+  const targets = (b.targetKeywords || [])
+    .map(k => ({ keyword: String(k.keyword || "").trim(), volume: k.volume ?? null, globalVolume: k.globalVolume ?? null }))
+    .filter(k => k.keyword)
+    .sort((a, z) => Math.max(z.volume ?? 0, z.globalVolume ?? 0) - Math.max(a.volume ?? 0, a.globalVolume ?? 0))
+    .slice(0, 30);
+  // Still needed here: the repair pass restates it, and the mechanics check derives its
+  // placeholders and required links from it.
+  const customText = (b.custom || "").trim();
+  const customBlock = customText ? `While fixing, keep obeying this: ${customText.slice(0, 2000)} ` : "";
 
-  const basePrompt = (i: number) =>
-    `You are an expert SEO copywriter. Rewrite the content below so it is UNIQUE and original, ` +
-    `while preserving the exact meaning, all facts, numbers, named entities, and links. ` +
-    `Keep the same format as the input (HTML stays HTML, Markdown stays Markdown, plain stays plain). ` +
-    `${langLine} ${toneLine} ` +
-    `Vary sentence structure and word choice, write in a natural human style, and avoid AI clichés and filler. ` +
-    (variants > 1 ? `This is variant #${i + 1} — make it clearly different from the other variants. ` : "") +
-    `Output ONLY the rewritten content, with no preamble, notes, or explanations.\n\n` +
-    `CONTENT:\n${source}`;
+  const basePrompt = (i: number) => buildRewritePrompt({
+    source, variantIndex: i, variants,
+    language: b.language, tone: b.tone, policy: b.policy, custom: b.custom,
+    bannedWords: b.bannedWords, targetKeywords: b.targetKeywords, maskAI: b.maskAI,
+  });
 
-  const results = await pool(Array.from({ length: variants }), 2, async (_x, i) => {
-    const raw = await fetchLLM(basePrompt(i), provider, apiKey, 8000, b.model || undefined, b.aiBaseUrl || undefined);
-    let content = (raw ?? "").trim();
-    // Strip a leading code fence the model sometimes wraps around HTML/MD.
-    content = content.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  // Targeted second pass, run only when the audit finds something wrong. It names the specific
+  // values to restore or remove instead of asking for a whole re-rewrite, so the text that was
+  // already correct is left alone.
+  const repairPrompt = (draft: string, lost: string[], added: string[], st: StructureCheck) => {
+    const levels = st.ok ? "" : st.expected
+      .map((n, i) => (n === st.got[i] ? "" : `H${i + 1}: ${st.got[i]} present, ${n} required`))
+      .filter(Boolean).join("; ");
+    return `The text below is a rewrite of a source document. It has these defects:\n` +
+      (lost.length ? `- MISSING values that were in the source and must be restored, in their proper context: ${lost.join(", ")}\n` : "") +
+      (added.length ? `- INVENTED values that are NOT in the source and must be removed or corrected: ${added.join(", ")}\n` : "") +
+      (levels ? `- WRONG heading count — restore the missing sections with real content, do not add empty headings (${levels})\n` : "") +
+      `Fix ONLY these defects. Do not rewrite anything else, do not alter wording that is already correct. ` +
+      // The repair pass rewrites real paragraphs, so it can undo the instruction the first pass
+      // obeyed — restoring a "missing" value by naming the competitor it belonged to, for one.
+      customBlock +
+      `Output ONLY the corrected text, with no preamble or notes.\n\nTEXT:\n${draft}`;
+  };
+
+  const clean = (s: string) => s.trim().replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+
+  // The QA judge lives in lib/seo/judge.ts, shared with the text and outline pipelines.
+  // Fresh context — it has seen none of the prompts that produced the draft, so it cannot
+  // inherit the writer's confidence that the job went well. "unavailable" means the judge
+  // CALL failed; the page then still ships, but the state is reported so the poller knows
+  // the QA pass did not run.
+  const judgeVariant = (draft: string): Promise<JudgeOutcome> =>
+    judgeArticle(
+      draft,
+      {
+        provider: String(b.judgeProvider || provider),
+        apiKey: String(b.judgeApiKey || apiKey),
+        model: b.judgeModel || b.model || undefined,
+        baseUrl: b.judgeBaseUrl || b.aiBaseUrl || undefined,
+      },
+      // Same reason as the text pipeline: a rewrite told to strip a competitor comparison has a
+      // section the source had and the draft does not, and "missing sections it announced" is on
+      // the judge's reject list.
+      { sourceExcerpt: source, constraints: customText || undefined },
+    );
+
+  // Why each variant was killed by the gate or the judge, so a batch where nothing survived
+  // reports the actual reason instead of a bare "generation_failed".
+  const rejectReasons: string[] = [];
+
+  const results = await pool(Array.from({ length: variants }), 2, async (_x, i): Promise<RewriteVariant | null> => {
+    // Budget scaled from the source length. The old fixed 8000 truncated long pages
+    // mid-sentence, and a thinking model could spend the whole ceiling before writing a
+    // word of visible text — both shipped as "completed" 85–94 word pages. If even the
+    // scaled ceiling cuts the answer (the provider says so in its finish reason), one
+    // retry at double the budget; the gate below catches whatever still comes back wrong.
+    const budget = contentTokens(wordCount(source));
+    let gen = await fetchLLMDetailed(basePrompt(i), provider, apiKey, budget, b.model || undefined, b.aiBaseUrl || undefined, b.temperature);
+    if (gen.text != null && isLengthCut(gen.finishReason)) {
+      const wider = await fetchLLMDetailed(basePrompt(i), provider, apiKey, Math.min(CONTENT_TOKENS_RETRY_MAX, budget * 2), b.model || undefined, b.aiBaseUrl || undefined, b.temperature);
+      if (wider.text != null) gen = wider;
+    }
+    let content = clean(gen.text ?? "");
     if (!content) return null;
+    // Layer A marks scrub (marksScrub.ts) runs FIRST, before any downstream regex — a zero-width
+    // character inside "€30" or "moreover" would make the currency and phrase passes miss both.
+    let marks: RewriteVariant["marksScrub"];
+    if (b.marksScrub !== false) {
+      const scrub = scrubMarks(content);
+      if (scrub.total > 0) {
+        content = scrub.text;
+        marks = { total: scrub.total, byClass: scrub.byClass };
+      }
+    }
+    content = normalizeCurrency(source, content);
+
+    // Audit, then repair once if needed. A single scoped pass is deliberate: repeated correction
+    // rounds drift away from the source in other ways, and the repair is only kept when it actually
+    // improves the total defect count — a "fix" that loses more than it restores is discarded.
+    let drift = factDrift(source, content);
+    let structure = checkStructure(source, content);
+    let repaired = false;
+    // Heading loss counts as a defect too, so a structurally-damaged draft triggers the same pass.
+    const defects = (d: FactDrift, s: StructureCheck) =>
+      d.numbers.lost.length + d.identifiers.lost.length + d.numbers.added.length + d.identifiers.added.length +
+      s.expected.reduce((acc, n, i) => acc + Math.abs(n - s.got[i]), 0);
+
+    if (b.autoRepair !== false && (!drift.clean || !structure.ok)) {
+      const lost = [...drift.numbers.lost, ...drift.identifiers.lost].slice(0, 40);
+      const added = [...drift.numbers.added, ...drift.identifiers.added].slice(0, 40);
+      try {
+        // The repair rewrites the whole draft, so it needs the same scaled ceiling as the
+        // writer — a fixed 8000 here truncated the very long pages that trigger repairs.
+        const fixRaw = await fetchLLM(repairPrompt(content, lost, added, structure), provider, apiKey, contentTokens(wordCount(content), budget), b.model || undefined, b.aiBaseUrl || undefined, b.temperature);
+        const fixed = normalizeCurrency(source, clean(fixRaw ?? ""));
+        if (fixed) {
+          const d2 = factDrift(source, fixed);
+          const s2 = checkStructure(source, fixed);
+          if (defects(d2, s2) < defects(drift, structure)) {
+            content = fixed; drift = d2; structure = s2; repaired = true;
+          }
+        }
+      } catch { /* keep the audited original */ }
+    }
+
     if (b.maskAI !== false) content = maskAIPatterns(content);
-    return { content, uniqueness: uniquenessPct(source, content), words: wordCount(content) };
+    // Computed after masking, because masking rewrites phrasing and could itself drop a target
+    // phrase. Measuring before it would report a coverage the shipped text does not have.
+    const coverage = targets.length ? keywordCoverage(source, content, targets) : undefined;
+
+    // Publication gate, then judge — in that order, because the gate is free and kills the
+    // responses that must never reach a second paid call (scratch notes, 90-word stubs).
+    const gate = contentGate(source, content);
+    if (!gate.ok) {
+      rejectReasons.push(`${gate.reason}: ${gate.detail}`);
+      return null;
+    }
+
+    // Page mechanics. Derived from the job's own instruction exactly as the generation pipeline
+    // derives them, so a rewrite told to keep [[TRANSFER_WIDGET]] and link to /day-trips/ is
+    // checked on both. Mixed-alphabet words are repaired here even with no instruction at all:
+    // they are a defect of writing, not of policy, and a rewrite produces them as readily as a
+    // first draft. Reported, never fatal — a variant is not worth discarding over a brand name.
+    const mech = checkMechanics(content, {
+      language: langName || undefined,
+      placeholders: placeholdersFromInstruction(customText),
+      requiredLinks: linksFromInstruction(customText),
+      forbiddenBrands: Array.isArray(b.forbiddenBrands) ? b.forbiddenBrands.map(String) : undefined,
+    });
+    content = mech.text;
+
+    // META FIT (wave-oct T1): when the source page carried a ```Title:``` head block, the
+    // rewrite ships it back — hold it to the same length band the generators enforce, with the
+    // same code. Local fitting first (deterministic trim / option pick); a repair pass only
+    // when a field is still out of band (the job is already paid, the provider is known).
+    // Best-effort by design: a fitting failure never costs the page its rewrite.
+    let variantMetaFit: MetaFitResult[] | undefined;
+    try {
+      const block = readMetaBlock(content);
+      if (block) {
+        const fitted = await fitMeta({
+          // No explicit targets → NO keyword guard: guarding on the title itself would veto
+          // every trim (each candidate shorter than the full title "loses the keyword").
+          keyword: targets[0]?.keyword || "",
+          language: langCode(b.language),
+          title: block.title,
+          description: block.description,
+        }, { allow: true, provider, apiKey, model: b.model || undefined, baseUrl: b.aiBaseUrl || undefined });
+        const t = fitted.title;
+        const d = fitted.description;
+        const patch: { title?: string; description?: string } = {};
+        if (t && t.after && t.after !== block.title) patch.title = t.after;
+        if (d && d.after && d.after !== block.description) patch.description = d.after;
+        if (patch.title != null || patch.description != null) content = writeMetaBlock(content, patch);
+        const results = [t, d].filter((r): r is MetaFitResult => !!r && r.method !== "kept");
+        if (results.length) variantMetaFit = results;
+      }
+    } catch { /* keep the unfitted block — the audit will flag it, nothing is lost */ }
+
+    let judged: RewriteVariant["judge"];
+    if (b.judge !== false) {
+      judged = await judgeVariant(content);
+      if (judged.verdict === "reject") {
+        rejectReasons.push(`judge_rejected: ${judged.blockers?.join("; ") || "the QA reviewer rejected the draft"}`);
+        return null;
+      }
+    }
+    return {
+      content, uniqueness: uniquenessPct(source, content), words: wordCount(content),
+      drift, structure, repaired, coverage, judge: judged,
+      ...(marks ? { marksScrub: marks } : {}),
+      ...(mech.issues.length ? { mechanics: mech.issues } : {}),
+      ...(variantMetaFit ? { metaFit: variantMetaFit } : {}),
+    };
   });
 
   const variantsOut = results.filter((r): r is RewriteVariant => !!r);
-  if (!variantsOut.length) return { ok: false, error: "generation_failed" };
+  if (!variantsOut.length) {
+    // Every variant was gate- or judge-rejected (or empty). The first recorded reason is the
+    // honest error: "gate_scratch_leaked: …", "judge_rejected: …". rewriteBatch prefix-matches
+    // these codes to decide whether a retry has a chance.
+    return { ok: false, error: rejectReasons[0] ?? "generation_failed" };
+  }
 
-  return { ok: true, data: { sourceChars: source.length, sourceWords: wordCount(source), title: title || undefined, variants: variantsOut } };
+  // Snippet refresh. Requested explicitly (`snippet: true`) so an existing caller's cost and
+  // latency don't change, and only meaningful when the source page actually has meta tags.
+  let snippet: SnippetSuggestion | undefined;
+  if (b.snippet && (title || description)) {
+    try {
+      const sPrompt =
+        `You are an SEO specialist. Rewrite this page's search snippet so it reads freshly and earns clicks, ` +
+        `keeping the same search intent, the same primary keyword and every factual claim (prices, guarantees, coverage). ` +
+        `${langLine} Title: ${META_LIMITS.title.targetMin}-${SNIPPET_TITLE_MAX} characters, counted exactly. ` +
+        `Meta description: ${META_LIMITS.description.targetMin}-${SNIPPET_DESC_MAX} characters, counted exactly — never exceed ${SNIPPET_DESC_MAX}. ` +
+        `Do not invent facts that are absent from the current snippet or the page. ` +
+        `Return STRICT JSON and nothing else: {"title":"...","description":"..."}\n\n` +
+        `CURRENT TITLE: ${title || "(none)"}\nCURRENT DESCRIPTION: ${description || "(none)"}\n\n` +
+        `PAGE CONTENT (for context, first 3000 chars):\n${source.slice(0, 3000)}`;
+      const sRaw = await fetchLLM(sPrompt, provider, apiKey, 700, b.model || undefined, b.aiBaseUrl || undefined, b.temperature);
+      const parse = (raw: string) => JSON.parse(clean(raw).replace(/^[^{]*/, "").replace(/[^}]*$/, ""));
+      let j = parse(sRaw ?? "");
+
+      // Length limits are the whole point of a snippet — an over-long description is truncated by
+      // the search engine mid-sentence, so "close enough" is not close enough. Models overshoot
+      // routinely (the first real run came back at 172 characters against a 160 limit), so the
+      // result is measured and, when it misses, sent back once with the exact overage named.
+      const over = (s: string, max: number) => String(s || "").length > max;
+      if (over(j?.title, SNIPPET_TITLE_MAX) || over(j?.description, SNIPPET_DESC_MAX)) {
+        const fixes = [
+          over(j?.title, SNIPPET_TITLE_MAX) ? `the title is ${String(j.title).length} characters and must be at most ${SNIPPET_TITLE_MAX}` : "",
+          over(j?.description, SNIPPET_DESC_MAX) ? `the description is ${String(j.description).length} characters and must be at most ${SNIPPET_DESC_MAX}` : "",
+        ].filter(Boolean).join("; ");
+        const tighten =
+          `Shorten this search snippet: ${fixes}. Count characters exactly. Keep the primary keyword, ` +
+          `the price and the call to action; cut adjectives and filler first. ${langLine} ` +
+          `Return STRICT JSON and nothing else: {"title":"...","description":"..."}\n\n${JSON.stringify(j)}`;
+        try {
+          const t2 = parse((await fetchLLM(tighten, provider, apiKey, 500, b.model || undefined, b.aiBaseUrl || undefined, b.temperature)) ?? "");
+          // Only accept the retry if it is genuinely shorter and did not come back empty.
+          if (t2?.title && t2?.description &&
+              String(t2.title).length <= String(j.title || "").length &&
+              String(t2.description).length <= String(j.description || "").length) j = t2;
+        } catch { /* keep the first attempt; the UI flags the overage in red */ }
+      }
+
+      // META FIT (wave-oct T1): the final word on the snippet's length belongs to code, not to
+      // the model's counting — measure and deterministically fit whatever survived the retry
+      // above. Local fitting only (the retry already had its paid second chance); a value that
+      // cannot be fitted locally stays as-is and the UI keeps flagging the overage in red.
+      const kwForSnippet = targets[0]?.keyword || "";
+      const fitT = fitMetaLocal("title", String(j?.title ?? ""), [], kwForSnippet);
+      if (fitT.inBand) j.title = fitT.after;
+      const fitD = fitMetaLocal("description", String(j?.description ?? ""), [], kwForSnippet);
+      if (fitD.inBand) j.description = fitD.after;
+
+      if (j?.title || j?.description) {
+        snippet = {
+          sourceTitle: title, sourceDescription: description,
+          title: String(j.title || ""), description: String(j.description || ""),
+        };
+      }
+    } catch { /* snippet is a bonus — never fail the rewrite over it */ }
+  }
+
+  return {
+    ok: true,
+    data: {
+      sourceChars: source.length, sourceWords: wordCount(source),
+      title: title || undefined, variants: variantsOut, snippet, source,
+    },
+  };
 }

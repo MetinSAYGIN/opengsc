@@ -9,17 +9,51 @@ import { useEffect, useState } from "react";
 import { Globe, RefreshCw, CheckCircle, Eye, X, Sparkles } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { getConfiguredProviders, AI_PROVIDER_NAMES } from "@/lib/seo/keys";
+import { rankModels, type ModelOpt } from "@/lib/seo/models";
+import { AI_TASKS, pathsForTask } from "@/lib/seo/aiTasks";
+import { RANK_PROVIDER_LIST } from "@/lib/seo/rankProviders";
 
 interface KeyCardProvider {
   id: string; storageKey: string; name: string; roleKey: string; placeholder: string;
   hintKey: string; instrKey: string; docsUrl: string; color: string; logo: string;
 }
 
+/**
+ * Where the "Get key" button on the Ahrefs/Semrush cards points.
+ *
+ * This is a referral link. It is disclosed in the README rather than hidden, it is the only one
+ * in the project, and it changes nothing about how the code works: the official API hosts stay
+ * the defaults, the base-URL field accepts any gateway, and the whole metrics module remains
+ * usable with no key at all through CSV import.
+ */
+export const METRICS_GATEWAY_URL =
+  "https://my.groupbuyseo.org/register?affiliate_key=8ino4XJTwJ7EJooF67JUOt2tmbcFk1";
+
 export const SEO_PROVIDERS: KeyCardProvider[] = [
   { id: "serper", storageKey: "seoKey_serper", name: "Serper.dev", roleKey: "seoRoleSerp", placeholder: "Serper API key", hintKey: "seoSetHintSerper", instrKey: "seoSetInstrSerper", docsUrl: "https://serper.dev", color: "#10A37F", logo: "S" },
   { id: "dataforseo", storageKey: "seoKey_dataforseo", name: "DataForSEO", roleKey: "seoRoleDfs", placeholder: "login:password или Base64-токен", hintKey: "seoSetHintDfs", instrKey: "seoSetInstrDfs", docsUrl: "https://app.dataforseo.com/api-access", color: "#2997ff", logo: "D" },
   { id: "scrapingrobot", storageKey: "seoKey_scrapingrobot", name: "ScrapingRobot", roleKey: "seoRoleSr", placeholder: "ScrapingRobot API token", hintKey: "seoSetHintSr", instrKey: "seoSetInstrSr", docsUrl: "https://scrapingrobot.com", color: "#8B5CF6", logo: "R" },
+  { id: "goanyapi", storageKey: "seoKey_goanyapi", name: "GoAnyAPI", roleKey: "seoRoleGoAny", placeholder: "GoAnyAPI key", hintKey: "seoSetHintGoAny", instrKey: "seoSetInstrGoAny", docsUrl: "https://goanyapi.com/docs", color: "#F59E0B", logo: "G" },
   { id: "firecrawl", storageKey: "seoKey_firecrawl", name: "Firecrawl", roleKey: "seoRoleFc", placeholder: "fc-...", hintKey: "seoSetHintFc", instrKey: "seoSetInstrFc", docsUrl: "https://www.firecrawl.dev/app/api-keys", color: "#ff9f0a", logo: "F" },
+];
+
+/**
+ * Ahrefs, Semrush, Majestic and Keys.so are deliberately NOT in SEO_PROVIDERS above (DataForSEO is
+ * in both lists on purpose: one credential that SERP, keyword demand and backlinks all read).
+ *
+ * They are configured on their own settings screen together with the access mode, host and
+ * spending cap, because those four things are one decision. Listing the key card here as well
+ * would put half of that decision in a second place — which is exactly the confusion this split
+ * was made to remove. The card definitions live here only so both screens share one component.
+ */
+export const METRICS_PROVIDER_CARDS: KeyCardProvider[] = [
+  { id: "ahrefs", storageKey: "seoKey_ahrefs", name: "Ahrefs", roleKey: "seoRoleAhrefs", placeholder: "Ahrefs API v3 key", hintKey: "seoSetHintAhrefs", instrKey: "seoSetInstrAhrefs", docsUrl: "https://docs.ahrefs.com/", color: "#f76d01", logo: "A" },
+  { id: "semrush", storageKey: "seoKey_semrush", name: "Semrush", roleKey: "seoRoleSemrush", placeholder: "Semrush API key", hintKey: "seoSetHintSemrush", instrKey: "seoSetInstrSemrush", docsUrl: "https://developer.semrush.com/api/", color: "#ff642d", logo: "S" },
+  { id: "majestic", storageKey: "seoKey_majestic", name: "Majestic", roleKey: "seoRoleMajestic", placeholder: "Majestic API key", hintKey: "seoSetHintMajestic", instrKey: "seoSetInstrMajestic", docsUrl: "https://developer-support.majestic.com/api/", color: "#00A4E4", logo: "M" },
+  { id: "keysso", storageKey: "seoKey_keysso", name: "Keys.so", roleKey: "seoRoleKeysso", placeholder: "Keys.so API token / gbs_sk_live_…", hintKey: "seoSetHintKeysso", instrKey: "seoSetInstrKeysso", docsUrl: "https://apidoc.keys.so/", color: "#7C3AED", logo: "K" },
+  // The same `seoKey_dataforseo` cell as the SERP card above — one credential, one place it is
+  // stored, so the backlink provider and SERP/keyword demand can never disagree about it.
+  { id: "dataforseo", storageKey: "seoKey_dataforseo", name: "DataForSEO", roleKey: "seoRoleDfs", placeholder: "login:password / Base64", hintKey: "seoSetHintDfs", instrKey: "seoSetInstrDfs", docsUrl: "https://app.dataforseo.com/api-access", color: "#2997ff", logo: "D" },
 ];
 
 // AEO citation-check engines that aren't already covered by the main AI provider keys
@@ -29,7 +63,7 @@ export const AEO_PROVIDERS: KeyCardProvider[] = [
   { id: "xai", storageKey: "seoKey_xai", name: "xAI (Grok)", roleKey: "seoRoleXai", placeholder: "xai-...", hintKey: "seoSetHintXai", instrKey: "seoSetInstrXai", docsUrl: "https://console.x.ai", color: "#000000", logo: "G" },
 ];
 
-export function SeoKeyCard({ provider }: { provider: KeyCardProvider }) {
+export function SeoKeyCard({ provider, hideDocsLink = false }: { provider: KeyCardProvider; hideDocsLink?: boolean }) {
   const { t } = useLanguage();
   const [key, setKey] = useState("");
   const [visible, setVisible] = useState(false);
@@ -40,7 +74,7 @@ export function SeoKeyCard({ provider }: { provider: KeyCardProvider }) {
 
   const save = () => {
     localStorage.setItem(provider.storageKey, key.trim());
-    if (key.trim() && (provider.id === "serper" || provider.id === "dataforseo" || provider.id === "scrapingrobot")) {
+    if (key.trim() && (provider.id === "serper" || provider.id === "dataforseo" || provider.id === "scrapingrobot" || provider.id === "goanyapi")) {
       if (!localStorage.getItem("seoSerpProvider")) localStorage.setItem("seoSerpProvider", provider.id);
     }
     setSaved(true); setTimeout(() => setSaved(false), 2000);
@@ -53,7 +87,7 @@ export function SeoKeyCard({ provider }: { provider: KeyCardProvider }) {
         <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: `${provider.color}20`, border: `1px solid ${provider.color}40`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", fontWeight: 700, color: provider.color, flexShrink: 0 }}>{provider.logo}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{provider.name}</div>
-          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t(provider.roleKey as any)}</div>
+          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t(provider.roleKey as never)}</div>
         </div>
         {isConfigured
           ? <span style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "#10B981", fontWeight: 600 }}><CheckCircle size={12} color="#10B981" /> Connected</span>
@@ -74,18 +108,234 @@ export function SeoKeyCard({ provider }: { provider: KeyCardProvider }) {
         </button>
       </div>
 
-      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t(provider.hintKey as any)}</div>
+      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t(provider.hintKey as never)}</div>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
-        <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5, flex: 1 }}>📍 {t(provider.instrKey as any)}</span>
-        <a href={provider.docsUrl} target="_blank" rel="noreferrer" style={{ fontSize: "11px", color: "var(--color-accent-blue)", display: "flex", alignItems: "center", gap: "3px", textDecoration: "none", flexShrink: 0, whiteSpace: "nowrap" }}>Get key ↗</a>
+        <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5, flex: 1 }}>📍 {t(provider.instrKey as never)}</span>
+        {/* The Metrics screen renders its own, mode-aware link, so it suppresses this one
+            rather than showing two destinations for the same thing. */}
+        {!hideDocsLink && (
+          <a href={provider.docsUrl} target="_blank" rel="noreferrer" style={{ fontSize: "11px", color: "var(--color-accent-blue)", display: "flex", alignItems: "center", gap: "3px", textDecoration: "none", flexShrink: 0, whiteSpace: "nowrap" }}>Get key ↗</a>
+        )}
       </div>
     </div>
   );
 }
 
-function ModelSelector() {
+/**
+ * A-Parser — the one provider that is a machine, not an account.
+ *
+ * It gets its own card instead of a row in SEO_PROVIDERS because a key card is built around the
+ * assumption that a provider is one secret: type it, and the app knows how to reach the vendor.
+ * Here the app knows nothing until the user says where the instance lives, and "wrong host" and
+ * "wrong password" are different problems that a single masked field cannot tell apart.
+ *
+ * The check button is therefore not a nicety. `ping` proves reachability and `info` proves the
+ * build has the parsers a feature needs — 138 parsers is what a stock install ships with, not a
+ * promise — and without the second half a user configures everything correctly and then watches
+ * a feature fail for a reason nothing on screen mentions. The parser list is cached so the rest
+ * of the UI can gate on what is installed rather than on what is documented.
+ */
+function AparserCard() {
   const { t } = useLanguage();
-  const [groups, setGroups] = useState<{ provider: string; name: string; models: { id: string; label: string }[] }[]>([]);
+  const [baseUrl, setBaseUrl] = useState("");
+  const [password, setPassword] = useState("");
+  const [configPreset, setConfigPreset] = useState("");
+  const [visible, setVisible] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    setBaseUrl(localStorage.getItem("seoBaseUrl_aparser") || "");
+    setPassword(localStorage.getItem("seoKey_aparser") || "");
+    setConfigPreset(localStorage.getItem("seoAparserConfig") || "");
+  }, []);
+
+  const persist = () => {
+    const url = baseUrl.trim(), pw = password.trim(), cfg = configPreset.trim();
+    if (url) localStorage.setItem("seoBaseUrl_aparser", url); else localStorage.removeItem("seoBaseUrl_aparser");
+    if (pw) localStorage.setItem("seoKey_aparser", pw); else localStorage.removeItem("seoKey_aparser");
+    if (cfg) localStorage.setItem("seoAparserConfig", cfg); else localStorage.removeItem("seoAparserConfig");
+  };
+
+  async function check() {
+    setBusy(true); setStatus(null);
+    try {
+      const res = await fetch("/api/aparser", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "ping", baseUrl: baseUrl.trim(), password: password.trim(), configPreset: configPreset.trim() }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        const text = d?.error === "aparser_config_preset_missing"
+          ? t("aparserConfigPresetMissing").replace("{name}", String(d?.configPreset ?? ""))
+          : String(d?.error || res.status);
+        setStatus({ ok: false, text }); setBusy(false); return;
+      }
+      persist();
+      const parsers: string[] = Array.isArray(d?.info?.availableParsers) ? d.info.availableParsers : [];
+      // Cached so every other surface can ask "is this parser installed" without a round trip,
+      // and so a feature is never offered for a parser this build does not have.
+      if (parsers.length) localStorage.setItem("seoAparserParsers", JSON.stringify(parsers));
+      const v = d?.info?.version ? `v${d.info.version}` : "";
+      setStatus({ ok: true, text: `${t("aparserTestOk")} · ${d?.host || ""} ${v} · ${parsers.length} ${t("aparserParsersWord")}`.trim() });
+    } catch (e) {
+      setStatus({ ok: false, text: String((e as Error)?.message ?? e) });
+    }
+    setBusy(false);
+  }
+
+  const configured = !!baseUrl.trim() && !!password.trim();
+  const inp: React.CSSProperties = { width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box", fontFamily: "monospace" };
+
+  return (
+    <div style={{ padding: "16px", borderRadius: "10px", border: `1px solid ${configured ? "#e8452c40" : "var(--color-border)"}`, background: configured ? "#e8452c08" : "rgba(255,255,255,0.02)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+        <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: "#e8452c20", border: "1px solid #e8452c40", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", fontWeight: 700, color: "#e8452c", flexShrink: 0 }}>A</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>A-Parser</div>
+          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t("aparserConnRole")}</div>
+        </div>
+        <span style={{ fontSize: "11px", fontWeight: 600, color: configured ? "#10B981" : "var(--color-text-secondary)" }}>
+          {configured ? t("aparserNoCost") : "Not set"}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "8px" }}>
+        <input style={inp} placeholder={t("aparserUrlPh")} value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+        <div style={{ position: "relative" }}>
+          <input style={{ ...inp, paddingRight: "36px" }} type={visible ? "text" : "password"} placeholder={t("aparserPassPh")} value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && check()} />
+          <button onClick={() => setVisible(v => !v)} style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", padding: 0, display: "flex" }}>
+            <Eye size={14} style={{ opacity: visible ? 1 : 0.5 }} />
+          </button>
+        </div>
+        <input style={inp} placeholder={t("aparserPresetPh")} value={configPreset} onChange={e => setConfigPreset(e.target.value)} />
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={check} disabled={busy || !baseUrl.trim() || !password.trim()}
+            style={{ padding: "8px 14px", borderRadius: "8px", border: "none", background: busy ? "rgba(255,255,255,0.06)" : "#e8452c25", color: busy ? "var(--color-text-secondary)" : "#e8452c", fontSize: "12px", fontWeight: 600, cursor: busy ? "wait" : "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
+            <RefreshCw size={12} style={{ animation: busy ? "spin 1s linear infinite" : undefined }} /> {busy ? t("aparserChecking") : t("aparserTest")}
+          </button>
+          <a href="/aparser" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center" }}>{t("aparserOpenConsole")}</a>
+        </div>
+      </div>
+
+      {status && (
+        <div style={{ fontSize: "11px", fontFamily: "monospace", color: status.ok ? "#10B981" : "#f87171", marginBottom: "6px", wordBreak: "break-all" }}>
+          {status.ok ? "✓ " : "✕ "}{status.text}
+        </div>
+      )}
+
+      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t("aparserConnHint")}</div>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px" }}>
+        <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5, flex: 1 }}>📍 {t("aparserConnInstr")}</span>
+        <a href="https://a-parser.com/docs/api" target="_blank" rel="noreferrer" style={{ fontSize: "11px", color: "var(--color-accent-blue)", textDecoration: "none", flexShrink: 0, whiteSpace: "nowrap" }}>API docs ↗</a>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Magic links — the two link-purchase providers (FieldLink, 369Team).
+ *
+ * One card, two tokens, same lifecycle as the A-Parser one: the test button checks what was
+ * TYPED against the live provider before anything is persisted, and the stored values live in
+ * the ordinary settings mirror (`seoKey_fieldlink` / `seoKey_magic369`), so server routes
+ * resolve them through the same fallback chain as every other credential.
+ */
+function MagicLinksCard() {
+  const { t } = useLanguage();
+  const [flToken, setFlToken] = useState("");
+  const [mToken, setMToken] = useState("");
+  const [flVisible, setFlVisible] = useState(false);
+  const [mVisible, setMVisible] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    setFlToken(localStorage.getItem("seoKey_fieldlink") || "");
+    setMToken(localStorage.getItem("seoKey_magic369") || "");
+  }, []);
+
+  const persist = (fl: string, m: string) => {
+    if (fl) localStorage.setItem("seoKey_fieldlink", fl); else localStorage.removeItem("seoKey_fieldlink");
+    if (m) localStorage.setItem("seoKey_magic369", m); else localStorage.removeItem("seoKey_magic369");
+  };
+
+  async function check() {
+    setBusy(true); setStatus(null);
+    try {
+      const res = await fetch("/api/magiclinks/status", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fieldlinkToken: flToken.trim(), magic369Token: mToken.trim() }),
+      });
+      const d = await res.json();
+      if (!res.ok) { setStatus({ ok: false, text: String(d?.error || res.status) }); setBusy(false); return; }
+      persist(flToken.trim(), mToken.trim());
+      const money = (minor: number | null) => (minor == null ? "—" : `${(minor / 100).toFixed(2)}`);
+      const parts: string[] = [];
+      if (d?.fieldlink?.tested) parts.push(`FieldLink: ${d.fieldlink.ok ? `✓ ${money(d.fieldlink.balanceMinor)}` : `✕ ${d.fieldlink.message ?? ""}`}`);
+      if (d?.magic369?.tested) parts.push(`369Team: ${d.magic369.ok ? `✓ ${money(d.magic369.balanceMinor)}` : `✕ ${d.magic369.message ?? ""}`}`);
+      setStatus({ ok: parts.every(p => p.includes("✓")), text: parts.join(" · ") || t("mlNothingToTest") });
+    } catch (e) {
+      setStatus({ ok: false, text: String((e as Error)?.message ?? e) });
+    }
+    setBusy(false);
+  }
+
+  const configured = !!flToken.trim() || !!mToken.trim();
+  const inp: React.CSSProperties = { width: "100%", padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", outline: "none", boxSizing: "border-box", fontFamily: "monospace" };
+
+  return (
+    <div style={{ padding: "16px", borderRadius: "10px", border: `1px solid ${configured ? "rgba(124,58,237,0.35)" : "var(--color-border)"}`, background: configured ? "rgba(124,58,237,0.05)" : "rgba(255,255,255,0.02)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+        <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: "rgba(124,58,237,0.14)", border: "1px solid rgba(124,58,237,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", fontWeight: 700, color: "#7C3AED", flexShrink: 0 }}>⬡</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("mlCardTitle")}</div>
+          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t("mlCardRole")}</div>
+        </div>
+        <span style={{ fontSize: "11px", fontWeight: 600, color: configured ? "#10B981" : "var(--color-text-secondary)" }}>
+          {configured ? t("mlConfigured") : "Not set"}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "8px" }}>
+        <div style={{ position: "relative" }}>
+          <input style={{ ...inp, paddingRight: "36px" }} type={flVisible ? "text" : "password"} placeholder={t("mlFlToken")} value={flToken} onChange={e => setFlToken(e.target.value)} />
+          <button onClick={() => setFlVisible(v => !v)} style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", padding: 0, display: "flex" }}>
+            <Eye size={14} style={{ opacity: flVisible ? 1 : 0.5 }} />
+          </button>
+        </div>
+        <div style={{ position: "relative" }}>
+          <input style={{ ...inp, paddingRight: "36px" }} type={mVisible ? "text" : "password"} placeholder={t("ml369Token")} value={mToken} onChange={e => setMToken(e.target.value)} />
+          <button onClick={() => setMVisible(v => !v)} style={{ position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "var(--color-text-secondary)", padding: 0, display: "flex" }}>
+            <Eye size={14} style={{ opacity: mVisible ? 1 : 0.5 }} />
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button onClick={check} disabled={busy || !configured}
+            style={{ padding: "8px 14px", borderRadius: "8px", border: "none", background: busy ? "rgba(255,255,255,0.06)" : "rgba(124,58,237,0.15)", color: busy ? "var(--color-text-secondary)" : "#7C3AED", fontSize: "12px", fontWeight: 600, cursor: busy ? "wait" : "pointer", display: "flex", alignItems: "center", gap: "5px" }}>
+            <RefreshCw size={12} style={{ animation: busy ? "spin 1s linear infinite" : undefined }} /> {busy ? t("aparserChecking") : t("aparserTest")}
+          </button>
+          <a href="/magiclinks" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center" }}>{t("mlOpenOrders")}</a>
+        </div>
+      </div>
+
+      {status && (
+        <div style={{ fontSize: "11px", fontFamily: "monospace", color: status.ok ? "#10B981" : "#f87171", marginBottom: "6px", wordBreak: "break-all" }}>
+          {status.ok ? "✓ " : "✕ "}{status.text}
+        </div>
+      )}
+
+      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t("mlCardHint")}</div>
+      <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
+        📍 {t("mlCardInstr")}
+      </div>
+    </div>
+  );
+}
+
+function ModelSelector() {  const { t } = useLanguage();
+  type ModelGroup = { provider: string; name: string; models: { id: string; label: string }[] };
+  const [groups, setGroups] = useState<ModelGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetchErr, setFetchErr] = useState(false);
   const [sel, setSel] = useState("");
@@ -103,13 +353,13 @@ function ModelSelector() {
     setLoading(true); setFetchErr(false);
     const results = await Promise.all(providers.map(async (p) => {
       try {
-        const res = await fetch("/api/seo/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: p.id, apiKey: p.key }) });
+        const res = await fetch("/api/seo/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: p.id, apiKey: p.key, baseUrl: p.baseUrl || undefined }) });
         const data = await res.json();
         if (!res.ok || !data.models?.length) { if (!res.ok) setFetchErr(true); return null; }
         return { provider: p.id, name: AI_PROVIDER_NAMES[p.id] || p.id, models: data.models as { id: string; label: string }[] };
       } catch { setFetchErr(true); return null; }
     }));
-    setGroups(results.filter(Boolean) as any);
+    setGroups(results.filter((r): r is ModelGroup => r !== null));
     setLoading(false);
   }
 
@@ -119,7 +369,7 @@ function ModelSelector() {
     if (model) setSel(provider ? `${provider}::${model}` : "__custom__");
     if (model && !provider) setCustom(model);
     loadModels();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   function flash() { setSaved(true); setTimeout(() => setSaved(false), 1500); }
@@ -182,6 +432,48 @@ function ToggleRowSetting({ label, desc, on, onToggle }: { label: string; desc: 
   );
 }
 
+/**
+ * The one switch that makes the provider call log keep payloads.
+ *
+ * It is off by default and says why in the copy rather than in a doc nobody opens: capture stores
+ * the prompt and the model's reply verbatim, so it is a debugging tool to be turned on for one
+ * problem and off again — not a setting to leave on.
+ *
+ * The note about a running job is not padding. The value is resolved once, when a job or a
+ * request starts, and carried for the length of that work, because the logger is synchronous and
+ * cannot re-read a setting mid-call. So a generation that began before the switch was turned off
+ * keeps capturing to its end. Stated here, where the switch is, instead of being discovered by
+ * someone watching bodies keep appearing after they thought they had stopped it.
+ *
+ * `seoProviderLogBodies` rides SeoKeysSync's mirror to `User.seoSettings`, like the scheduled
+ * warm-up before it, because the thing that reads it is a server process with no browser.
+ */
+function BodyCaptureSetting() {
+  const { t } = useLanguage();
+  const [on, setOn] = useState(false);
+  useEffect(() => { setOn((localStorage.getItem("seoProviderLogBodies") ?? "0") === "1"); }, []);
+  const toggle = () => {
+    const v = !on;
+    setOn(v);
+    // Written as "0" rather than removed: the mirror only pushes non-empty values, so an erased
+    // key would leave the server's last "1" standing and capture would carry on server-side.
+    localStorage.setItem("seoProviderLogBodies", v ? "1" : "0");
+  };
+
+  return (
+    <div style={{ marginBottom: "18px", paddingBottom: "16px", borderBottom: "1px solid var(--color-border)" }}>
+      <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>🧾 {t("seoLogBodiesTitle")}</div>
+      <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px" }}>{t("seoLogBodiesSub")}</div>
+      <ToggleRowSetting label={t("seoLogBodiesLabel")} desc={t("seoLogBodiesDesc")} on={on} onToggle={toggle} />
+      {on && (
+        <div style={{ padding: "10px 12px", borderRadius: "8px", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.55 }}>
+          ⚠ {t("seoLogBodiesWarn")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FactCheckSettings() {
   const { t } = useLanguage();
   const [autoFc, setAutoFc] = useState(true);
@@ -190,6 +482,9 @@ function FactCheckSettings() {
   const [bearingOnly, setBearingOnly] = useState(true);
   const [reuseCorpus, setReuseCorpus] = useState(false);
   const [srcCount, setSrcCount] = useState(6);
+  const [mech, setMech] = useState(true);
+  const [mechRepair, setMechRepair] = useState(true);
+  const [marks, setMarks] = useState(true);
   useEffect(() => {
     setAutoFc((localStorage.getItem("seoAutoFactcheck") ?? "1") !== "0");
     setAutoImg((localStorage.getItem("seoAutoImages") ?? "1") !== "0");
@@ -197,12 +492,18 @@ function FactCheckSettings() {
     setBearingOnly((localStorage.getItem("seoFactBearingOnly") ?? "1") !== "0");
     setReuseCorpus((localStorage.getItem("seoFactReuseCorpus") ?? "0") === "1");
     setSrcCount(parseInt(localStorage.getItem("seoFactSources") ?? "6", 10) || 6);
+    setMech((localStorage.getItem("seoMechanics") ?? "1") !== "0");
+    setMechRepair((localStorage.getItem("seoMechanicsRepair") ?? "1") !== "0");
+    setMarks((localStorage.getItem("seoMarksScrub") ?? "1") !== "0");
   }, []);
   const toggleFc = () => { const v = !autoFc; setAutoFc(v); localStorage.setItem("seoAutoFactcheck", v ? "1" : "0"); };
   const toggleImg = () => { const v = !autoImg; setAutoImg(v); localStorage.setItem("seoAutoImages", v ? "1" : "0"); };
   const toggleRedact = () => { const v = !hardRedact; setHardRedact(v); localStorage.setItem("seoHardRedact", v ? "1" : "0"); };
   const toggleBearing = () => { const v = !bearingOnly; setBearingOnly(v); localStorage.setItem("seoFactBearingOnly", v ? "1" : "0"); };
   const toggleReuse = () => { const v = !reuseCorpus; setReuseCorpus(v); localStorage.setItem("seoFactReuseCorpus", v ? "1" : "0"); };
+  const toggleMech = () => { const v = !mech; setMech(v); localStorage.setItem("seoMechanics", v ? "1" : "0"); };
+  const toggleMechRepair = () => { const v = !mechRepair; setMechRepair(v); localStorage.setItem("seoMechanicsRepair", v ? "1" : "0"); };
+  const toggleMarks = () => { const v = !marks; setMarks(v); localStorage.setItem("seoMarksScrub", v ? "1" : "0"); };
   const setSrc = (n: number) => { const v = Math.max(0, Math.min(10, n)); setSrcCount(v); localStorage.setItem("seoFactSources", String(v)); };
 
   return (
@@ -213,6 +514,9 @@ function FactCheckSettings() {
       <ToggleRowSetting label={t("seoHardRedactLabel")} desc={t("seoHardRedactDesc")} on={hardRedact} onToggle={toggleRedact} />
       <ToggleRowSetting label={t("seoFactBearingLabel")} desc={t("seoFactBearingDesc")} on={bearingOnly} onToggle={toggleBearing} />
       <ToggleRowSetting label={t("seoFactReuseLabel")} desc={t("seoFactReuseDesc")} on={reuseCorpus} onToggle={toggleReuse} />
+      <ToggleRowSetting label={t("seoMechanicsLabel")} desc={t("seoMechanicsDesc")} on={mech} onToggle={toggleMech} />
+      {mech && <ToggleRowSetting label={t("seoMechanicsRepairLabel")} desc={t("seoMechanicsRepairDesc")} on={mechRepair} onToggle={toggleMechRepair} />}
+      <ToggleRowSetting label={t("seoMarksScrubLabel")} desc={t("seoMarksScrubDesc")} on={marks} onToggle={toggleMarks} />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "14px", padding: "10px 0" }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{t("seoFactSourcesLabel")}</div>
@@ -259,25 +563,46 @@ function CustomProviderCard() {
 }
 
 // Per-task default provider/model — set once, applied on every generation of that task type.
+// Rows come from the AI_TASKS registry rather than being listed here, because the two used to
+// drift: this table offered four tasks while getTaskCreds read five, so `seoTaskModel_landing`
+// could be read but never written and the Landing tool silently ignored what the user thought
+// they had configured. See lib/seo/aiTasks.ts.
 function PerTaskProviders() {
   const { t } = useLanguage();
-  const tasks: { id: string; label: string }[] = [
-    { id: "outline", label: t("seoTaskOutline") },
-    { id: "text", label: t("seoTaskText") },
-    { id: "analysis", label: t("seoTaskAnalysis") },
-    { id: "policy", label: t("seoTaskPolicy") },
-  ];
   const [vals, setVals] = useState<Record<string, { provider: string; model: string }>>({});
   const [opts, setOpts] = useState<string[]>([]);
+  // provider id → its live model list, so the model column can be a picker instead of a
+  // free-text box. Typing a model id by hand is how you end up pinned to a model the provider
+  // retired: the call keeps succeeding against a stale alias, or fails with a 404 that surfaces
+  // as "the tool is broken".
+  const [modelsBy, setModelsBy] = useState<Record<string, ModelOpt[]>>({});
+  const [globalProvider, setGlobalProvider] = useState("");
+  const [globalModel, setGlobalModel] = useState("");
+
   useEffect(() => {
-    const configured = getConfiguredProviders().map(p => p.id);
+    const configuredProviders = getConfiguredProviders();
+    const configured = configuredProviders.map(p => p.id);
     const custom = (localStorage.getItem("aiKey_custom") || "") && (localStorage.getItem("aiBaseUrl_custom") || "");
     setOpts([...configured, ...(custom ? ["custom"] : [])].filter((v, i, a) => a.indexOf(v) === i));
+    setGlobalProvider(localStorage.getItem("seoProvider") || localStorage.getItem("aiProvider") || "");
+    setGlobalModel(localStorage.getItem("seoModel") || "");
     const v: Record<string, { provider: string; model: string }> = {};
-    for (const tk of ["outline", "text", "analysis", "policy"]) {
-      v[tk] = { provider: localStorage.getItem(`seoTaskProvider_${tk}`) || "", model: localStorage.getItem(`seoTaskModel_${tk}`) || "" };
+    for (const { id } of AI_TASKS) {
+      v[id] = { provider: localStorage.getItem(`seoTaskProvider_${id}`) || "", model: localStorage.getItem(`seoTaskModel_${id}`) || "" };
     }
     setVals(v);
+
+    Promise.all(configuredProviders.map(async p => {
+      try {
+        const res = await fetch("/api/seo/models", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: p.id, apiKey: p.key, baseUrl: p.baseUrl || undefined }),
+        });
+        const d = await res.json();
+        const list: ModelOpt[] = Array.isArray(d?.models) ? d.models : [];
+        return [p.id, p.id === "openai" ? rankModels(list) : list] as const;
+      } catch { return [p.id, [] as ModelOpt[]] as const; }
+    })).then(pairs => setModelsBy(Object.fromEntries(pairs.filter(([, l]) => l.length))));
   }, []);
   const setTask = (id: string, patch: Partial<{ provider: string; model: string }>) => {
     setVals(prev => {
@@ -288,28 +613,111 @@ function PerTaskProviders() {
       return next;
     });
   };
-  const sel: React.CSSProperties = { padding: "7px 9px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", outline: "none" };
+  const sel: React.CSSProperties = { padding: "7px 9px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", outline: "none", width: "100%", boxSizing: "border-box" };
+
   return (
     <div style={{ marginBottom: "18px", paddingBottom: "16px", borderBottom: "1px solid var(--color-border)" }}>
       <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>🎛 {t("seoPerTaskTitle")}</div>
-      <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 10px" }}>{t("seoPerTaskSub")}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-        {tasks.map(tk => (
-          <div key={tk.id} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", alignItems: "center" }}>
-            <span style={{ fontSize: "12px", color: "var(--color-text-primary)", fontWeight: 600 }}>{tk.label}</span>
-            <select style={sel} value={vals[tk.id]?.provider || ""} onChange={e => setTask(tk.id, { provider: e.target.value })}>
-              <option value="">{t("seoTaskDefaultProvider")}</option>
-              {opts.map(o => <option key={o} value={o}>{AI_PROVIDER_NAMES[o] || o}</option>)}
-            </select>
-            <input style={{ ...sel, fontFamily: "monospace" }} placeholder={t("seoTaskModelPh")} value={vals[tk.id]?.model || ""} onChange={e => setTask(tk.id, { model: e.target.value })} />
-          </div>
-        ))}
+      <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 12px" }}>{t("seoPerTaskSub")}</div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        {AI_TASKS.map(task => {
+          const cur = vals[task.id] ?? { provider: "", model: "" };
+          const effectiveProvider = cur.provider || globalProvider;
+          // Exactly the chain resolveTaskCreds() walks, restated so the row can show its own
+          // outcome — a per-task provider with no per-task model still inherits the global
+          // model, and that surprises people until it is written down.
+          const effectiveModel = cur.model || globalModel;
+          return (
+            <div key={task.id} style={{ display: "grid", gridTemplateColumns: "1.15fr 1fr 1fr", gap: "8px", alignItems: "start" }}>
+              <div style={{ paddingRight: "6px" }}>
+                <div style={{ fontSize: "12px", color: "var(--color-text-primary)", fontWeight: 600 }}>{t(task.labelKey as never)}</div>
+                <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.45, marginTop: "2px" }}>
+                  {t(task.descKey as never)}
+                </div>
+                <div style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", marginTop: "3px" }}>
+                  {t("seoTaskUsedBy")}: {pathsForTask(task.id).map(p => p.replace("/seo-tools/", "")).join(", ") || "—"}
+                </div>
+              </div>
+
+              <select style={sel} value={cur.provider} onChange={e => setTask(task.id, { provider: e.target.value, model: "" })}>
+                <option value="">
+                  {globalProvider
+                    ? `${t("seoTaskDefaultProvider")} — ${AI_PROVIDER_NAMES[globalProvider] || globalProvider}`
+                    : t("seoTaskDefaultProvider")}
+                </option>
+                {opts.map(o => <option key={o} value={o}>{AI_PROVIDER_NAMES[o] || o}</option>)}
+              </select>
+
+              <div>
+                <TaskModelField
+                  value={cur.model}
+                  models={modelsBy[effectiveProvider] ?? []}
+                  onChange={m => setTask(task.id, { model: m })}
+                />
+                <div style={{ fontSize: "10.5px", color: "var(--color-text-tertiary)", marginTop: "4px", lineHeight: 1.4, wordBreak: "break-word" }}>
+                  {effectiveProvider
+                    ? `→ ${AI_PROVIDER_NAMES[effectiveProvider] || effectiveProvider} · ${effectiveModel || t("seoModelBadgeProviderDefault")}`
+                    : t("seoTaskNoProvider")}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-const SERP_PROVIDER_LIST: [string, string][] = [["serper", "Serper.dev"], ["dataforseo", "DataForSEO"], ["scrapingrobot", "ScrapingRobot"]];
+// Model cell for one task row: a picker when we could list the provider's models, a free-text
+// box when we could not (no key for that provider yet, or an OpenAI-compatible endpoint with no
+// /models listing). A value the list does not contain is kept and shown rather than dropped —
+// silently discarding a saved setting because the list came back short is worse than showing an
+// id we cannot vouch for.
+function TaskModelField({ value, models, onChange }: { value: string; models: ModelOpt[]; onChange: (m: string) => void }) {
+  const { t } = useLanguage();
+  const [free, setFree] = useState(false);
+  const sel: React.CSSProperties = { padding: "7px 9px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", outline: "none", width: "100%", boxSizing: "border-box" };
+
+  if (!models.length || free) {
+    return (
+      <input
+        style={{ ...sel, fontFamily: "monospace" }}
+        placeholder={t("seoTaskModelPh")}
+        value={value}
+        autoFocus={free}
+        onBlur={() => setFree(false)}
+        onChange={e => onChange(e.target.value)}
+      />
+    );
+  }
+
+  const known = models.some(m => m.id === value);
+  return (
+    <select style={sel} value={value} onChange={e => (e.target.value === "__custom__" ? setFree(true) : onChange(e.target.value))}>
+      <option value="">{t("seoTaskModelDefault")}</option>
+      {value && !known && <option value={value}>{value}</option>}
+      {models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+      <option value="__custom__">{t("seoTaskModelCustom")}</option>
+    </select>
+  );
+}
+
+const SERP_PROVIDER_LIST: [string, string][] = [["serper", "Serper.dev"], ["dataforseo", "DataForSEO"], ["scrapingrobot", "ScrapingRobot"], ["goanyapi", "GoAnyAPI"]];
+
+/**
+ * Providers Rank Tracker will not accept, mirroring `RANK_UNSUPPORTED` in lib/rank.ts.
+ *
+ * Duplicated on purpose rather than imported: this file is a client component and rank.ts pulls
+ * in Prisma. The server is the one that enforces it — this copy exists only so the dropdown can
+ * say so before the user picks, instead of after a week of empty charts.
+ */
+const RANK_UNSUPPORTED_PROVIDERS = new Set(["goanyapi"]);
+
+// What Rank Tracker can run on — shared with the quick switch on the Positions tab. The
+// RANK_UNSUPPORTED_PROVIDERS set above stays as the message carrier: the server refuses
+// GoAnyAPI regardless of what any list offers, and this copy exists so the dropdown can say so
+// before the user picks.
 
 function providerPillStyle(isActive: boolean): React.CSSProperties {
   return {
@@ -335,6 +743,8 @@ export function SeoProviderKeysSection() {
       <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px" }}>{t("seoSetSub")}</p>
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {SEO_PROVIDERS.map(p => <SeoKeyCard key={p.id} provider={p} />)}
+        <AparserCard />
+        <MagicLinksCard />
       </div>
       <div style={{ marginTop: "14px", padding: "11px 14px", borderRadius: "8px", background: "rgba(16,163,127,0.06)", border: "1px solid rgba(16,163,127,0.18)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
         💡 {t("seoSetTip")}
@@ -342,6 +752,7 @@ export function SeoProviderKeysSection() {
     </div>
   );
 }
+
 
 export function AeoProviderKeysSection() {
   const { t } = useLanguage();
@@ -366,10 +777,18 @@ export default function SeoToolsSettings() {
   // generation/analysis (e.g. a free-tier provider for frequent daily position checks, a
   // pricier one for occasional content research). Empty string = inherit the active provider.
   const [rankActive, setRankActive] = useState("");
+  // Second provider for checks the first could not answer (captcha, 503, "try again later").
+  const [rankFallback, setRankFallback] = useState("");
   useEffect(() => {
     setActive(localStorage.getItem("seoSerpProvider") || "serper");
     setRankActive(localStorage.getItem("seoSerpProvider_rank") || "");
+    setRankFallback(localStorage.getItem("seoSerpProvider_rankFallback") || "");
   }, []);
+  const setRankFallbackProvider = (id: string) => {
+    setRankFallback(id);
+    if (id) localStorage.setItem("seoSerpProvider_rankFallback", id);
+    else localStorage.removeItem("seoSerpProvider_rankFallback");
+  };
   const setProvider = (id: string) => { setActive(id); localStorage.setItem("seoSerpProvider", id); };
   const setRankProvider = (id: string) => {
     setRankActive(id);
@@ -390,6 +809,7 @@ export default function SeoToolsSettings() {
       <CustomProviderCard />
       <PerTaskProviders />
       <FactCheckSettings />
+      <BodyCaptureSetting />
 
       <div style={{ marginBottom: "14px" }}>
         <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "7px" }}>{t("seoSetActiveProvider")}</div>
@@ -407,23 +827,31 @@ export default function SeoToolsSettings() {
           <button onClick={() => setRankProvider("")} style={providerPillStyle(rankActive === "")}>
             {t("seoSetRankProviderInherit")} ({activeName})
           </button>
-          {SERP_PROVIDER_LIST.map(([id, name]) => (
+          {RANK_PROVIDER_LIST.map(([id, name]) => (
             <button key={id} onClick={() => setRankProvider(id)} style={providerPillStyle(rankActive === id)}>{name}</button>
           ))}
         </div>
+        {rankActive === "aparser" && (
+          <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "8px 0 0" }}>{t("seoSetRankAparserNote")}</p>
+        )}
+        <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", margin: "14px 0 4px" }}>{t("seoSetRankFallback")}</div>
+        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 8px" }}>{t("seoSetRankFallbackDesc")}</p>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <button onClick={() => setRankFallbackProvider("")} style={providerPillStyle(rankFallback === "")}>
+            {t("seoSetRankFallbackNone")}
+          </button>
+          {RANK_PROVIDER_LIST.filter(([id]) => id !== (rankActive || active)).map(([id, name]) => (
+            <button key={id} onClick={() => setRankFallbackProvider(id)} style={providerPillStyle(rankFallback === id)}>{name}</button>
+          ))}
+        </div>
+        {RANK_UNSUPPORTED_PROVIDERS.has(active) && (
+          <p style={{ fontSize: "12px", color: "var(--color-warning)", margin: "8px 0 0" }}>
+            {activeName} serves cached SERPs with no depth control, so Rank Tracker cannot use it —
+            it will fall back to another configured SERP key. Positions elsewhere in the app are unaffected.
+          </p>
+        )}
       </div>
 
-      <a href="/settings?tab=api-keys" style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px",
-        padding: "14px 16px", borderRadius: "10px", border: "1px solid var(--color-border)",
-        background: "var(--color-card)", textDecoration: "none", marginBottom: "8px",
-      }}>
-        <div>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("seoKeysMovedTitle")}</div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("seoKeysMovedDesc")}</div>
-        </div>
-        <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-accent-blue)", whiteSpace: "nowrap" }}>{t("seoKeysMovedLink")} →</span>
-      </a>
     </div>
   );
 }

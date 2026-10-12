@@ -3,14 +3,287 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, Pencil, Copy, FileText, Download, ChevronDown, Save, Check, X, Code2,
+  ArrowLeft, Pencil, Copy, CopyX, FileText, Download, ChevronDown, Save, Check, X, Code2,
   ExternalLink, Target, Hash, ListTree, ArrowUp, Shield, ImageIcon, Loader2, Wand2, AlertTriangle,
+  CheckCircle2, HelpCircle, Tag,
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { HistoryItem, getHistoryItem, updateHistory, patchHistory } from "@/lib/seo/history";
 import { outlineHeadings, articleHeadings, markdownToHtml, htmlDocument, countWords, splitArticleSections, hasVerifiableFacts } from "@/lib/seo/outlineFormat";
-import { getSeoGenCreds, getTaskCreds, getSerpCreds, getFirecrawlKey, getAutoFactcheck, getAutoImages, getFactSourceCount, getFactBearingOnly, getFactReuseCorpus, getKieKey } from "@/lib/seo/keys";
-import { IMAGE_MODELS, ImageModelId } from "@/lib/seo/kieImages";
+import { getTaskCreds, getSerpCreds, getFirecrawlKey, getAutoFactcheck, getAutoImages, getFactSourceCount, getFactBearingOnly, getFactReuseCorpus } from "@/lib/seo/keys";
+import { IMAGE_MODELS, imageModel, type ImageModelId } from "@/lib/seo/imageModels";
+import { META_LIMITS } from "@/lib/seo/metaLimits";
+
+/** The dictionary lookup this screen and its tabs receive as a prop (what useLanguage returns). */
+type TranslateFn = ReturnType<typeof useLanguage>["t"];
+
+// ─── Fact-check report shapes ───────────────────────────────────────────────────
+//
+// What /api/seo/factcheck-section answers with (the contract prompts.ts spells out: a status,
+// facts with claim/status/note and 1-based source numbers, sources as title/snippet/url/domain),
+// kept together in `meta.factcheck` between runs. Facts/sources are read defensively — the LLM
+// writes this JSON, not the route.
+
+interface FactcheckFact { claim: string; status: string; note?: string; sources?: number[] }
+interface FactcheckSource { title?: string; snippet?: string; url: string; domain?: string }
+interface FactcheckSection { heading?: string; status?: string; facts: FactcheckFact[]; sources: FactcheckSource[] }
+interface FactcheckReport {
+  overall_percent?: number;
+  summary?: { confirmed?: number; partial?: number; unconfirmed?: number };
+  total_facts?: number;
+  total_sources?: number;
+  sections?: FactcheckSection[];
+}
+
+/** One scraped page from /api/seo/scrape, as the shared-corpus mode reads it. */
+interface ScrapePage { url?: string; metaDescription?: string; textSample?: string }
+
+// ─── Image plan shapes ──────────────────────────────────────────────────────────
+//
+// What /api/seo/images answers with (prompts.ts: hero + per-section prompts with alt/title),
+// plus the locally-added `generatedUrl` once a kie.ai/Z.AI render finishes. `hero` may be a
+// bare prompt string in older records — the render below narrows it by typeof.
+
+interface ImagePromptInfo { heading?: string; prompt?: string; alt?: string; title?: string; generatedUrl?: string }
+interface ImagePromptPlan { hero?: string | ImagePromptInfo; sections?: ImagePromptInfo[] }
+
+/**
+ * What the pipeline noticed and could not fix by itself.
+ *
+ * This is the screen where the finished article is actually read, which is why the report lives
+ * here rather than in Settings: it describes ONE result, not a configuration. Settings owns the
+ * switches that decide whether the checks run; this owns what they found.
+ *
+ * Two kinds of finding, deliberately not merged. Auto-repaired ones (mixed-alphabet words) are
+ * shown as already handled — the article on this page already carries the correction, and hiding
+ * them would leave a silent edit nobody could audit. The rest are the ones that still need a
+ * person: a competitor named, a placeholder dropped, a price in the wrong market's currency, plus
+ * the QA reviewer's soft findings — things it flagged without being sure enough to fail the job.
+ */
+function DiagnosticsPanel({ diag }: { diag: NonNullable<NonNullable<HistoryItem["meta"]>["diagnostics"]> }) {
+  const { t } = useLanguage();
+  const [open, setOpen] = useState(false);
+
+  const label = (code: string) => {
+    const key = "seoDiag" + code.split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join("");
+    const s = t(key as never);
+    return s === key ? code : s;
+  };
+  const mech = diag.mechanics ?? [];
+  const fixed = mech.filter(m => m.fixed);
+  const open_ = mech.filter(m => !m.fixed);
+  const concerns = diag.judgeConcerns ?? [];
+  // Meta-length fitting (wave-oct T1): only the outcomes a human should look at count as
+  // attention — a field that was picked/trimmed into the band is handled, a forced cut or an
+  // unfixable value is not.
+  const metaFitRows = (diag.metaFit ?? []).filter(m => m.method !== "kept");
+  const metaFitBad = metaFitRows.filter(m => m.method === "forced_cut" || m.method === "unfixable");
+  const attention = open_.length + concerns.length + metaFitBad.length + (diag.incomplete ? 1 : 0);
+  const clean = attention === 0 && fixed.length === 0;
+
+  const chip = (color: string): React.CSSProperties => ({
+    fontSize: "11px", fontWeight: 700, padding: "2px 9px", borderRadius: "20px",
+    color, background: `${color}1f`, whiteSpace: "nowrap",
+  });
+  const red = "var(--color-accent-red)", green = "var(--color-accent-green)", grey = "var(--color-text-tertiary)";
+
+  return (
+    <div className="panel">
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>
+          {attention > 0 ? <AlertTriangle size={15} color={red} /> : <CheckCircle2 size={15} color={green} />}
+          {t("seoDiagTitle")}
+          {attention > 0 && <span style={chip(red)}>{attention} {t("seoDiagNeedsYou")}</span>}
+          {fixed.length > 0 && <span style={chip(green)}>{fixed.length} {t("seoDiagFixed")}</span>}
+          {typeof diag.usedSources === "number" && <span style={chip(grey)}>{diag.usedSources} {t("seoDiagSources")}</span>}
+          {diag.autoCleaned && <span style={chip(grey)}>{t("seoDiagAutoCleaned")}</span>}
+          {diag.marksScrub && <span title={t("seoDiagMarksHint")} style={chip("#8B5CF6")}>−{diag.marksScrub.total} {t("seoDiagMarks")}</span>}
+        </span>
+        <ChevronDown size={16} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s", flexShrink: 0 }} />
+      </button>
+
+      {open && (
+        <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)" }}>{t("seoDiagHint")}</div>
+
+          {clean && <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{t("seoDiagClean")}</div>}
+
+          {diag.incomplete && (
+            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)", borderLeft: `2px solid ${red}`, paddingLeft: "10px" }}>
+              <b style={{ color: red }}>{t("seoDiagIncomplete")}</b>
+              <div style={{ marginTop: "4px" }}>{(diag.missingHeadings ?? []).join(" · ")}</div>
+            </div>
+          )}
+
+          {open_.map((m, i) => (
+            <div key={`o${i}`} style={{ fontSize: "13px", color: "var(--color-text-secondary)", borderLeft: `2px solid ${red}`, paddingLeft: "10px" }}>
+              <b style={{ color: "var(--color-text-primary)" }}>{label(m.code)}</b>
+              <div style={{ marginTop: "2px" }}>{m.detail}</div>
+            </div>
+          ))}
+
+          {concerns.map((c, i) => (
+            <div key={`c${i}`} style={{ fontSize: "13px", color: "var(--color-text-secondary)", borderLeft: `2px solid var(--color-accent-orange)`, paddingLeft: "10px", display: "flex", gap: "7px" }}>
+              <HelpCircle size={14} color="var(--color-accent-orange)" style={{ marginTop: "2px", flexShrink: 0 }} />
+              <div><b style={{ color: "var(--color-text-primary)" }}>{t("seoDiagJudgeConcern")}</b><div style={{ marginTop: "2px" }}>{c}</div></div>
+            </div>
+          ))}
+
+          {metaFitRows.map((m, i) => {
+            const bad = m.method === "forced_cut" || m.method === "unfixable";
+            const label = t(`metaFitMethod_${m.method}` as never);
+            return (
+              <div key={`m${i}`} style={{ fontSize: "13px", color: "var(--color-text-secondary)", borderLeft: `2px solid ${bad ? "var(--color-accent-orange)" : "var(--color-accent-green)"}`, paddingLeft: "10px" }}>
+                <b style={{ color: "var(--color-text-primary)" }}>{m.field === "title" ? "Title" : "Meta Description"} — {label}</b>
+                <div style={{ marginTop: "2px", wordBreak: "break-word" }}>{m.after || m.before} <span style={{ color: "var(--color-text-tertiary)" }}>({m.length})</span></div>
+              </div>
+            );
+          })}
+
+          {fixed.map((m, i) => (
+            <div key={`f${i}`} style={{ fontSize: "13px", color: "var(--color-text-tertiary)", borderLeft: `2px solid ${green}`, paddingLeft: "10px" }}>
+              <b style={{ color: green }}>{label(m.code)} — {t("seoDiagFixed")}</b>
+              <div style={{ marginTop: "2px" }}>{m.detail}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Meta-tags plaque (wave-oct T1) ────────────────────────────────────────────────
+//
+// The audit colors a site red over title/description length, and the model cannot count
+// characters — so the lengths are shown here, measured by code, next to the two buttons that
+// fix them: a free deterministic pass first, and a paid AI pass (explicit confirm, ≤ 2 calls)
+// only for what the free pass could not fit.
+
+// Display-only mirror of readMetaBlock (metaFit.ts). This component must not import the
+// fitting module itself — `fitMeta`'s repair path reaches @/lib/llm, which does not belong in
+// a client bundle. Keep the label parsing in sync with the server-side one.
+function parseMetaHead(text: string): { title: string; description: string } | null {
+  if (!text) return null;
+  const firstHeading = text.search(/^#{1,6}\s/m);
+  const head = firstHeading > 0 ? text.slice(0, firstHeading) : (firstHeading === 0 ? "" : text);
+  if (!/(^|\n)\s*(```)?\s*title\s*:/i.test(head)) return null;
+  let title = "";
+  let description = "";
+  for (const line of head.split(/\r?\n/)) {
+    const bare = line.trim().replace(/^```+/, "").replace(/```+$/, "").trim();
+    if (/^title\s*:/i.test(bare)) title = bare.replace(/^title\s*:/i, "").trim();
+    else if (/^meta\s+description\s*:/i.test(bare)) description = bare.replace(/^meta\s+description\s*:/i, "").trim();
+  }
+  return title || description ? { title, description } : null;
+}
+
+function MetaPlaque({ item, article, language, onArticle }: {
+  item: HistoryItem; article: string; language: string; onArticle: (text: string) => void;
+}) {
+  const { t } = useLanguage();
+  const [busy, setBusy] = useState<"free" | "llm" | null>(null);
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [triedFree, setTriedFree] = useState(false);
+
+  const block = parseMetaHead(article);
+  const diag = item.meta?.diagnostics?.metaFit;
+  if (!block) return null;
+
+  const rows = (["title", "description"] as const).map((field) => {
+    const value = field === "title" ? block.title : block.description;
+    const limits = META_LIMITS[field];
+    const n = Array.from(value.trim()).length;
+    const state = !value ? "short" : n < limits.targetMin ? "short" : n > limits.targetMax ? "long" : "ok";
+    return { field, value, n, limits, state, method: diag?.find(d => d.field === field)?.method };
+  });
+  const outOfBand = rows.some(r => r.state !== "ok");
+
+  async function run(allowLlm: boolean) {
+    if (busy) return;
+    setErr(""); setNote("");
+    const cur = parseMetaHead(article);
+    if (!cur) return;
+    const creds = allowLlm ? getTaskCreds("text") : null;
+    if (allowLlm && !creds?.apiKey) { setErr(t("seoErrNoAiKey")); return; }
+    if (allowLlm && !window.confirm(t("metaFitConfirm").replace("{n}", "2"))) return;
+    setBusy(allowLlm ? "llm" : "free");
+    try {
+      const res = await fetch("/api/seo/meta-fit", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{ id: item.id, keyword: item.keyword, language, title: cur.title, description: cur.description }],
+          historyIds: [item.id],
+          ...(allowLlm && creds ? { allowLlm: true, aiProvider: creds.provider, aiApiKey: creds.apiKey, model: creds.model || undefined, aiBaseUrl: creds.baseUrl || undefined } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setErr(String(data.error || "error")); return; }
+      const r0: { title?: { after?: string; before?: string }; description?: { after?: string; before?: string } } | undefined = (data.results || [])[0];
+      const changed = !!(r0 && [r0.title, r0.description].some(f => f && f.after !== f.before));
+      setTriedFree(!allowLlm ? true : triedFree);
+      if (changed) {
+        // The route already persisted the fitted block; pull the saved record back so this
+        // view and the local cache agree with the server.
+        const rec = await fetch(`/api/seo/history?id=${encodeURIComponent(item.id)}`).then(r => r.json()).catch(() => null);
+        if (rec?.record?.data != null) { updateHistory(item.id, rec.record.data); onArticle(String(rec.record.data)); }
+        setNote(t("metaFitApplied"));
+      } else {
+        setNote(t("metaFitNothing"));
+      }
+    } catch (e) { setErr(String((e as Error | undefined)?.message ?? e ?? "error")); }
+    setBusy(null);
+  }
+
+  const pill = (ok: boolean): React.CSSProperties => ({
+    fontSize: "11px", fontWeight: 700, padding: "2px 9px", borderRadius: "20px", whiteSpace: "nowrap",
+    color: ok ? "var(--color-accent-green)" : "var(--color-accent-red)",
+    background: ok ? "rgba(52,199,89,0.12)" : "rgba(255,69,58,0.12)",
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "10px 14px", marginBottom: "14px", border: "1px solid var(--color-border)", borderRadius: "10px", background: "var(--color-bg)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: "7px", fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>
+          <Tag size={14} /> {t("metaFitTitle")}
+        </span>
+        {rows.map(r => (
+          <span
+            key={r.field}
+            title={r.method ? t(`metaFitMethod_${r.method}` as never) : undefined}
+            style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--color-text-secondary)", minWidth: 0 }}
+          >
+            <b style={{ color: "var(--color-text-primary)" }}>{r.field === "title" ? "Title" : "Description"}</b>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "260px" }}>{r.value || "—"}</span>
+            <span style={pill(r.state === "ok")}>
+              {t("metaFitLen").replace("{n}", String(r.n)).replace("{max}", String(r.limits.targetMax))}
+              {r.state === "ok" ? ` ✓ ${t("metaFitOk")}` : ` — ${r.state === "long" ? t("metaFitTooLong") : t("metaFitTooShort")}`}
+            </span>
+          </span>
+        ))}
+        <div style={{ flex: 1 }} />
+        {outOfBand && (
+          <button onClick={() => run(false)} disabled={!!busy} style={btnGhost}>
+            {busy === "free" ? <Loader2 size={14} className="spin" /> : <Wand2 size={14} />} {t("metaFitRunFree")}
+          </button>
+        )}
+        {outOfBand && triedFree && (
+          <button onClick={() => run(true)} disabled={!!busy} style={{ ...btnGhost, color: "var(--color-accent-orange)" }}>
+            {busy === "llm" ? <Loader2 size={14} className="spin" /> : <Wand2 size={14} />} {t("metaFitRunLlm")}
+          </button>
+        )}
+      </div>
+      {(err || note) && (
+        <div style={{ fontSize: "12px", color: err ? "var(--color-accent-red)" : "var(--color-accent-green)" }}>
+          {err || note}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) {
   const { t } = useLanguage();
@@ -29,7 +302,8 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
   const outlineItem = item.meta?.outlineId ? getHistoryItem(item.meta.outlineId) : null;
   const outline = outlineItem?.data;
   const artHeadings = useMemo(() => articleHeadings(article), [article]);
-  const outlineHd = useMemo(() => outline ? outlineHeadings(outline) : [], [outline]);
+  // Plain call: `outline` is mutated later, so a manual memo here lies to the reader.
+  const outlineHd = outline ? outlineHeadings(outline) : [];
 
   const planWords = Number(outline?.meta?.target_word_count) || 0;
   const factWords = countWords(article);
@@ -43,7 +317,7 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
   function copyForDocs() {
     const html = markdownToHtml(article);
     try {
-      (navigator.clipboard as any).write([new (window as any).ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([article], { type: "text/plain" }) })]).then(() => flash("docs"));
+      navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([article], { type: "text/plain" }) })]).then(() => flash("docs"));
     } catch { navigator.clipboard.writeText(article).then(() => flash("docs")); }
   }
   function download(kind: "docx" | "html" | "txt" | "md") {
@@ -71,6 +345,10 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
         <button onClick={copyAll} style={{ ...btnGhost, ...copiedStyle(copied === "all") }}>{copied === "all" ? <Check size={15} /> : <Copy size={15} />} {copied === "all" ? t("seoCopied") : t("seoCopyShort")}</button>
         <button onClick={copyForDocs} style={{ ...btnGhost, ...copiedStyle(copied === "docs") }}>{copied === "docs" ? <Check size={15} /> : <FileText size={15} />} {copied === "docs" ? t("seoCopied") : t("seoForGoogleDocs")}</button>
         <button onClick={() => setShowHtml(true)} style={btnGhost}><Code2 size={15} /> {t("seoFormatHtml")}</button>
+        {/* Link, not router.push: the plagiarism tool is a separate page with its own deep-link
+            (?history=<id> loads this record's body into its textarea) — a plain anchor keeps the
+            history entry reusable (open in new tab) and the behaviour discoverable. */}
+        <a href={`/seo-tools/plagiarism?history=${item.id}`} style={btnGhost}><CopyX size={15} /> {t("plgTitle")}</a>
         <div style={{ position: "relative" }}>
           <button onClick={() => setDlOpen(o => !o)} style={btnGhost}><Download size={15} /> {t("seoDownload")} <ChevronDown size={13} /></button>
           {dlOpen && (
@@ -124,15 +402,25 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
         );
       })()}
 
+      {item.meta?.diagnostics && <DiagnosticsPanel diag={item.meta.diagnostics} />}
+
       {/* Tabs */}
       <div className="panel">
         <div style={{ display: "flex", gap: "6px", marginBottom: "16px", background: "var(--color-bg)", padding: "4px", borderRadius: "10px", width: "fit-content" }}>
           {([["text", t("seoTabTextView"), FileText], ["fact", t("seoTabFactCheck"), Shield], ["img", t("seoTabImages"), ImageIcon]] as const).map(([k, label, Icon]) => (
-            <button key={k} onClick={() => setTab(k as any)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", borderRadius: "7px", fontSize: "13px", fontWeight: tab === k ? 700 : 500, cursor: "pointer", border: "none", background: tab === k ? "var(--color-card)" : "transparent", color: tab === k ? "var(--color-text-primary)" : "var(--color-text-secondary)", boxShadow: tab === k ? "0 1px 3px rgba(0,0,0,0.15)" : "none" }}><Icon size={15} /> {label}</button>
+            <button key={k} onClick={() => setTab(k)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", borderRadius: "7px", fontSize: "13px", fontWeight: tab === k ? 700 : 500, cursor: "pointer", border: "none", background: tab === k ? "var(--color-card)" : "transparent", color: tab === k ? "var(--color-text-primary)" : "var(--color-text-secondary)", boxShadow: tab === k ? "0 1px 3px rgba(0,0,0,0.15)" : "none" }}><Icon size={15} /> {label}</button>
           ))}
         </div>
 
         <div style={{ display: tab === "text" ? "block" : "none" }}>
+        {!edit && (
+          <MetaPlaque
+            item={item}
+            article={article}
+            language={String(outline?.meta?.language ?? "en")}
+            onArticle={(txt) => setItem(prev => ({ ...prev, data: txt }))}
+          />
+        )}
         {(
           edit ? (
             <textarea className="tool-input" style={{ minHeight: "460px", resize: "vertical", fontFamily: "monospace", fontSize: "13px" }} value={editText} onChange={e => setEditText(e.target.value)} />
@@ -208,25 +496,31 @@ export default function SeoTextDetail({ item: initial }: { item: HistoryItem }) 
 }
 
 // ─── Fact-check tab (real per-section source verification) ───────────────────────
-function buildFcReport(results: any[]) {
+function buildFcReport(results: FactcheckSection[]) {
   let c = 0, p = 0, u = 0, src = 0;
-  results.forEach(sec => { (sec.facts || []).forEach((f: any) => { if (f.status === "confirmed") c++; else if (f.status === "unconfirmed") u++; else p++; }); src += (sec.sources || []).length; });
+  results.forEach(sec => { (sec.facts || []).forEach(f => { if (f.status === "confirmed") c++; else if (f.status === "unconfirmed") u++; else p++; }); src += (sec.sources || []).length; });
   const total = c + p + u || 1;
   return { overall_percent: Math.round((c + p * 0.5) / total * 100), summary: { confirmed: c, partial: p, unconfirmed: u }, total_facts: c + p + u, total_sources: src, sections: results };
 }
 
-function FactCheck({ item, setItem, article, t, autoStart }: any) {
+function FactCheck({ item, setItem, article, t, autoStart }: {
+  item: HistoryItem;
+  setItem: React.Dispatch<React.SetStateAction<HistoryItem>>;
+  article: string;
+  t: TranslateFn;
+  autoStart?: boolean;
+}) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [err, setErr] = useState("");
   const [fixing, setFixing] = useState(false);
   const [fixed, setFixed] = useState(false);
   const [allOpen, setAllOpen] = useState<boolean | null>(null);
-  const report = item.meta?.factcheck;
+  const report = item.meta?.factcheck as FactcheckReport | undefined;
   const hasSerp = typeof window !== "undefined" && !!getSerpCreds().apiKey;
   const badFacts: { claim: string; status: string; note: string }[] = (report?.sections || [])
-    .flatMap((sec: any) => (sec.facts || []).filter((f: any) => f.status !== "confirmed").map((f: any) => ({ claim: f.claim, status: f.status, note: f.note || "" })))
-    .filter((f: any) => f.claim);
+    .flatMap(sec => (sec.facts || []).filter(f => f.status !== "confirmed").map(f => ({ claim: f.claim, status: f.status, note: f.note || "" })))
+    .filter(f => f.claim);
 
   async function fixText() {
     const ai = getTaskCreds("text");
@@ -242,10 +536,10 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
         // Apply the fixed text AND drop the now-stale fact-check report so the user re-checks.
         updateHistory(item.id, data.text);
         patchHistory(item.id, { meta: { factcheck: undefined } });
-        setItem((prev: any) => ({ ...prev, data: data.text, meta: { ...prev.meta, factcheck: undefined } }));
+        setItem(prev => ({ ...prev, data: data.text, meta: { ...prev.meta, factcheck: undefined } }));
         setFixed(true);
       } else setErr(data.error || t("seoErrText"));
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setFixing(false);
   }
 
@@ -274,35 +568,35 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
 
     // Saver #1: build ONE shared competitor corpus and verify every section against it,
     // instead of a live SERP per section. Off by default; uses the same SERP+scrape path once.
-    let shared: any[] | null = null;
+    let shared: FactcheckSource[] | null = null;
     if (getFactReuseCorpus() && serp.apiKey) {
       try {
-        const sr = await fetch("/api/seo/serp", {
+        const sr: { results?: FactcheckSource[] } = await fetch("/api/seo/serp", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ keyword: item.keyword, provider: serp.provider, apiKey: serp.apiKey, num: 10, engine: "google" }),
+          body: JSON.stringify({ keyword: item.keyword, provider: serp.provider, apiKey: serp.apiKey, baseUrl: serp.baseUrl, num: 10, engine: "google" }),
         }).then(r => r.json());
         const results0 = sr.results || [];
         const cnt = getFactSourceCount();
-        const top = results0.slice(0, cnt).map((r: any) => r.url);
-        let pages: any[] = [];
+        const top = results0.slice(0, cnt).map(r => r.url);
+        let pages: ScrapePage[] = [];
         if (cnt > 0 && top.length) {
           pages = (await fetch("/api/seo/scrape", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: top, firecrawlKey: getFirecrawlKey() || undefined }) }).then(r => r.json())).pages || [];
         }
-        shared = results0.map((r: any) => {
-          const p = pages.find((x: any) => x.url === r.url);
+        shared = results0.map(r => {
+          const p = pages.find(x => x.url === r.url);
           const ev = p ? `${p.metaDescription || ""} ${p.textSample || ""}`.trim().slice(0, 1100) : "";
           return { title: r.title, snippet: ev || r.snippet, url: r.url, domain: r.domain };
         });
       } catch { shared = null; }
     }
 
-    const results: any[] = [];
+    const results: FactcheckSection[] = [];
     for (let i = 0; i < sections.length; i++) {
       const s = sections[i];
       try {
-        const body: any = { heading: s.heading, text: s.text, keyword: item.keyword, aiProvider: ai.provider, aiApiKey: ai.apiKey, model: ai.model || undefined, aiBaseUrl: ai.baseUrl || undefined };
+        const body: Record<string, unknown> = { heading: s.heading, text: s.text, keyword: item.keyword, aiProvider: ai.provider, aiApiKey: ai.apiKey, model: ai.model || undefined, aiBaseUrl: ai.baseUrl || undefined };
         if (shared) { body.sources = shared; } // reuse-corpus mode → route skips its own SERP
-        else { body.serpProvider = serp.provider; body.serpKey = serp.apiKey; body.firecrawlKey = getFirecrawlKey() || undefined; body.scrapeCount = getFactSourceCount(); body.engine = "google"; body.gl = gl; body.hl = hl; }
+        else { body.serpProvider = serp.provider; body.serpKey = serp.apiKey; body.serpBaseUrl = serp.baseUrl; body.firecrawlKey = getFirecrawlKey() || undefined; body.scrapeCount = getFactSourceCount(); body.engine = "google"; body.gl = gl; body.hl = hl; }
         const res = await fetch("/api/seo/factcheck-section", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -313,7 +607,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
       setProgress({ done: i + 1, total: sections.length });
       const partial = buildFcReport(results);
       patchHistory(item.id, { meta: { factcheck: partial } });
-      setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, factcheck: partial } }));
+      setItem(prev => ({ ...prev, meta: { ...prev.meta, factcheck: partial } }));
     }
     setRunning(false);
   }
@@ -331,7 +625,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
     </div>
   );
 
-  const s = report?.summary || {};
+  const s: { confirmed?: number; partial?: number; unconfirmed?: number } = report?.summary || {};
   const total = (s.confirmed || 0) + (s.partial || 0) + (s.unconfirmed || 0) || 1;
   return (
     <div>
@@ -383,7 +677,7 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
             <button onClick={() => setAllOpen(false)} style={{ background: "none", border: "none", color: "var(--color-accent-blue)", cursor: "pointer" }}>{t("seoCollapseAll")}</button>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {(report.sections || []).map((sec: any, i: number) => <FcSection key={i} sec={sec} t={t} forceOpen={allOpen} />)}
+            {(report.sections || []).map((sec, i: number) => <FcSection key={i} sec={sec} t={t} forceOpen={allOpen} />)}
           </div>
         </>
       )}
@@ -393,9 +687,9 @@ function FactCheck({ item, setItem, article, t, autoStart }: any) {
 function Stat({ n, label, color }: { n: number; label: string; color: string }) {
   return <div style={{ padding: "14px", borderRadius: "10px", border: `1px solid ${color}33`, background: `${color}0d` }}><div style={{ fontSize: "24px", fontWeight: 700, color }}>{n}</div><div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{label}</div></div>;
 }
-function statusColor(st: string) { return st === "confirmed" ? "var(--color-accent-green)" : st === "unconfirmed" ? "var(--color-accent-red)" : "var(--color-accent-orange)"; }
-function statusLabel(st: string, t: any) { return st === "confirmed" ? t("seoFcConfirmed") : st === "unconfirmed" ? t("seoFcUnconfirmed") : t("seoFcPartial"); }
-function FcSection({ sec, t, forceOpen }: any) {
+function statusColor(st: string | undefined) { return st === "confirmed" ? "var(--color-accent-green)" : st === "unconfirmed" ? "var(--color-accent-red)" : "var(--color-accent-orange)"; }
+function statusLabel(st: string | undefined, t: TranslateFn) { return st === "confirmed" ? t("seoFcConfirmed") : st === "unconfirmed" ? t("seoFcUnconfirmed") : t("seoFcPartial"); }
+function FcSection({ sec, t, forceOpen }: { sec: FactcheckSection; t: TranslateFn; forceOpen: boolean | null }) {
   const [open, setOpen] = useState(false);
   const isOpen = forceOpen != null ? forceOpen : open;
   const c = statusColor(sec.status);
@@ -417,7 +711,7 @@ function FcSection({ sec, t, forceOpen }: any) {
             <>
               <div className="tool-section-label" style={{ paddingTop: "12px", marginBottom: "8px" }}>{t("seoFcCheckedFacts")}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
-                {sec.facts.map((f: any, j: number) => {
+                {sec.facts.map((f, j: number) => {
                   const fc = statusColor(f.status);
                   return (
                     <div key={j} style={{ fontSize: "13px", color: "var(--color-text-secondary)", lineHeight: 1.55, padding: "9px 11px", borderRadius: "8px", background: `${fc}0d`, border: `1px solid ${fc}22` }}>
@@ -434,7 +728,7 @@ function FcSection({ sec, t, forceOpen }: any) {
             <>
               <div className="tool-section-label" style={{ paddingTop: "14px", marginBottom: "8px" }}>{t("seoFcSourcesTitle")} ({sources.length})</div>
               <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
-                {sources.map((src: any, k: number) => (
+                {sources.map((src, k: number) => (
                   <div key={k} style={{ fontSize: "12px", display: "flex", gap: "7px" }}>
                     <span style={{ color: "var(--color-text-tertiary)", flexShrink: 0 }}>[{k + 1}]</span>
                     <a href={src.url} target="_blank" rel="noreferrer" style={{ color: "var(--color-accent-blue)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{src.title || src.domain}</a>
@@ -453,11 +747,18 @@ function FcSection({ sec, t, forceOpen }: any) {
 // ─── Images tab ───────────────────────────────────────────────────────────────
 type GenStatus = { status: "generating" | "done" | "error"; url?: string; error?: string };
 
-function Images({ item, setItem, outline, article, t, autoStart }: any) {
+function Images({ item, setItem, outline, article, t, autoStart }: {
+  item: HistoryItem;
+  setItem: React.Dispatch<React.SetStateAction<HistoryItem>>;
+  outline: HistoryItem["data"];
+  article: string;
+  t: TranslateFn;
+  autoStart?: boolean;
+}) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState("");
-  const images = item.meta?.images;
+  const images = item.meta?.images as ImagePromptPlan | undefined;
 
   // Real image rendering (kie.ai) — separate from the prompt-generation step above.
   const [imgModel, setImgModel] = useState<ImageModelId>("gpt-image-2-text-to-image");
@@ -480,27 +781,55 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
       const data = await res.json();
       if (!res.ok) { setErr(data.error || "error"); setLoading(false); return; }
       patchHistory(item.id, { meta: { images: data.images } });
-      setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, images: data.images } }));
-    } catch (e: any) { setErr(String(e?.message ?? e)); }
+      setItem(prev => ({ ...prev, meta: { ...prev.meta, images: data.images } }));
+    } catch (e) { setErr(String((e as Error)?.message ?? e)); }
     setLoading(false);
   }
-  const copy = (txt: string, k: string) => navigator.clipboard.writeText(txt).then(() => { setCopied(k); setTimeout(() => setCopied(""), 1500); });
+  // txt can be undefined when a (LLM-written) image plan lacks a prompt — String() keeps the
+  // same coercion writeText itself would apply, so the clipboard sees the identical text.
+  const copy = (txt: string | undefined, k: string) => navigator.clipboard.writeText(String(txt)).then(() => { setCopied(k); setTimeout(() => setCopied(""), 1500); });
 
   // Create a kie.ai render task for one prompt (hero, or section index `s${i}`), poll it to
   // completion, then persist the resulting URL into item.meta.images so it survives a reload.
-  async function generateImage(key: string, prompt: string) {
-    const kieKey = getKieKey();
-    if (!kieKey) { setGenState(s => ({ ...s, [key]: { status: "error", error: t("seoImgNoKieKey") } })); return; }
+  // Persist a finished URL into item.meta.images so it survives a reload. Shared by both the
+  // synchronous provider and the tail of the polling loop.
+  function saveGeneratedUrl(key: string, url: string) {
+    setGenState(s => ({ ...s, [key]: { status: "done", url } }));
+    const nextImages: ImagePromptPlan = { ...images };
+    if (key === "hero") {
+      nextImages.hero = typeof nextImages.hero === "string" ? { prompt: nextImages.hero, generatedUrl: url } : { ...nextImages.hero, generatedUrl: url };
+    } else {
+      const idx = Number(key.slice(1));
+      nextImages.sections = (nextImages.sections || []).map((sec, i: number) => i === idx ? { ...sec, generatedUrl: url } : sec);
+    }
+    patchHistory(item.id, { meta: { images: nextImages } });
+    setItem(prev => ({ ...prev, meta: { ...prev.meta, images: nextImages } }));
+  }
+
+  async function generateImage(key: string, prompt: string | undefined) {
+    // Each model names the key it needs — kie.ai and Z.AI are billed separately, and picking a
+    // Z.AI model with only a kie.ai key configured used to fail with kie.ai's error text.
+    const def = imageModel(imgModel);
+    const apiKey = (typeof window === "undefined" ? "" : localStorage.getItem(def?.keyName || "aiKey_kie") || "");
+    if (!apiKey) { setGenState(s => ({ ...s, [key]: { status: "error", error: t("seoImgNoKieKey") } })); return; }
     setGenState(s => ({ ...s, [key]: { status: "generating" } }));
     try {
-      const input: Record<string, any> = { prompt, aspect_ratio: imgAspect, resolution: imgResolution };
+      const input: Record<string, unknown> = { prompt, aspect_ratio: imgAspect, resolution: imgResolution };
       if (imgModel === "nano-banana-2") input.output_format = "jpg";
       const createRes = await fetch("/api/seo/image-gen", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: imgModel, input, apiKey: kieKey }),
+        body: JSON.stringify({
+          model: imgModel, input, apiKey,
+          baseUrl: def?.provider === "zai" ? (localStorage.getItem("aiBaseUrl_zai") || undefined) : undefined,
+        }),
       });
       const createData = await createRes.json();
-      if (!createRes.ok || !createData.taskId) { setGenState(s => ({ ...s, [key]: { status: "error", error: createData.error || "error" } })); return; }
+      if (!createRes.ok) { setGenState(s => ({ ...s, [key]: { status: "error", error: createData.error || "error" } })); return; }
+
+      // Z.AI renders synchronously and hands back the URL in this same response — nothing to poll.
+      if (Array.isArray(createData.urls) && createData.urls.length) { saveGeneratedUrl(key, createData.urls[0]); return; }
+
+      if (!createData.taskId) { setGenState(s => ({ ...s, [key]: { status: "error", error: createData.error || "error" } })); return; }
       const taskId = createData.taskId;
 
       const deadline = Date.now() + 5 * 60 * 1000; // kie.ai docs: stop polling after ~10-15min; 5min is plenty for stills
@@ -508,28 +837,18 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
         await new Promise(r => setTimeout(r, 3000));
         const stRes = await fetch("/api/seo/image-gen/status", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ taskId, apiKey: kieKey }),
+          body: JSON.stringify({ taskId, apiKey }),
         });
         const st = await stRes.json();
         if (st.state === "success" && st.resultUrls?.length) {
-          const url = st.resultUrls[0];
-          setGenState(s => ({ ...s, [key]: { status: "done", url } }));
-          const nextImages = { ...images };
-          if (key === "hero") {
-            nextImages.hero = typeof nextImages.hero === "string" ? { prompt: nextImages.hero, generatedUrl: url } : { ...nextImages.hero, generatedUrl: url };
-          } else {
-            const idx = Number(key.slice(1));
-            nextImages.sections = (nextImages.sections || []).map((sec: any, i: number) => i === idx ? { ...sec, generatedUrl: url } : sec);
-          }
-          patchHistory(item.id, { meta: { images: nextImages } });
-          setItem((prev: any) => ({ ...prev, meta: { ...prev.meta, images: nextImages } }));
+          saveGeneratedUrl(key, st.resultUrls[0]);
           return;
         }
         if (st.state === "fail" || st.error) { setGenState(s => ({ ...s, [key]: { status: "error", error: st.error || "generation_failed" } })); return; }
         // waiting / queuing / generating → keep polling
       }
       setGenState(s => ({ ...s, [key]: { status: "error", error: "timeout" } }));
-    } catch (e: any) { setGenState(s => ({ ...s, [key]: { status: "error", error: String(e?.message ?? e) } })); }
+    } catch (e) { setGenState(s => ({ ...s, [key]: { status: "error", error: String((e as Error)?.message ?? e) } })); }
   }
 
   if (!images) return (
@@ -547,7 +866,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
         <select value={imgModel} onChange={e => setImgModel(e.target.value as ImageModelId)} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
           {IMAGE_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
         </select>
-        <select value={imgResolution} onChange={e => setImgResolution(e.target.value as any)} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
+        <select value={imgResolution} onChange={e => setImgResolution(e.target.value as "1K" | "2K" | "4K")} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
           <option value="1K">1K</option>
           <option value="2K">2K</option>
           <option value="4K">4K</option>
@@ -555,7 +874,11 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
         <select value={imgAspect} onChange={e => setImgAspect(e.target.value)} className="tool-input" style={{ width: "auto", padding: "6px 10px", fontSize: "12px" }}>
           {["auto", "1:1", "16:9", "9:16", "4:3", "3:4"].map(a => <option key={a} value={a}>{a}</option>)}
         </select>
-        {!getKieKey() && <span style={{ fontSize: "11px", color: "var(--color-accent-orange)" }}>{t("seoImgNoKieKey")}</span>}
+        {/* Warn about the key the SELECTED model needs, not always kie.ai's — the picker now spans
+            two providers with separate billing, and the old check called a working setup broken. */}
+        {typeof window !== "undefined" && !localStorage.getItem(imageModel(imgModel)?.keyName || "aiKey_kie") && (
+          <span style={{ fontSize: "11px", color: "var(--color-accent-orange)" }}>{t("seoImgNoKieKey")}</span>
+        )}
       </div>
 
       {images.hero && (() => {
@@ -575,7 +898,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
           </div>
         );
       })()}
-      {(images.sections || []).map((s: any, i: number) => (
+      {(images.sections || []).map((s, i: number) => (
         <div key={i} style={{ border: "1px solid var(--color-border)", borderRadius: "10px", padding: "14px 16px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", marginBottom: "8px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
@@ -596,7 +919,7 @@ function Images({ item, setItem, outline, article, t, autoStart }: any) {
 // One prompt's render state: idle → "Generate image" button; generating → spinner; done → <img>
 // + download link (kie.ai result URLs expire after ~24h, hence the download-now nudge).
 function GeneratedImageBlock({ genKey, prompt, generatedUrl, genState, onGenerate, t }: {
-  genKey: string; prompt: string; generatedUrl?: string; genState?: GenStatus; onGenerate: (key: string, prompt: string) => void; t: any;
+  genKey: string; prompt: string | undefined; generatedUrl?: string; genState?: GenStatus; onGenerate: (key: string, prompt: string | undefined) => void; t: TranslateFn;
 }) {
   const url = genState?.url || generatedUrl;
   const busy = genState?.status === "generating";

@@ -8,10 +8,21 @@
 //   traffic_drop  — a site's clicks over the last 7 days fell X%+ vs the previous 7 days
 //   ssl_expiry    — a site's SSL certificate expires within N days (from Site Health data)
 //   audit_score   — a completed site audit came back with health score below N
+//   lost_link     — referring domains above a DR threshold disappeared from the stored profile
+//   backlink_loss — link losses ran far above this site's own baseline (no fixed threshold)
+//   favorite_link — a link marked favourite was lost, downgraded to nofollow or re-targeted
+//   purchased_link — a BOUGHT placement (меджики) was lost, re-anchored, downgraded or re-targeted
 
-import { prisma } from "@/lib/prisma";
+import { prisma, dbAny } from "@/lib/prisma";
 import { notifyUser } from "@/lib/notify";
 import { NOTIFY_L, normalizeLang, type NotifyLang } from "@/lib/notifyI18n";
+import { lostSince } from "@/lib/seo/backlinkStore";
+import { detectLossAnomaly, lossCountsForEvent, BASELINE_WINDOW_DAYS } from "@/lib/backlinkDigest";
+import { refreshProviderBalances } from "@/lib/providerBalances";
+import { rawQuery } from "@/lib/db/raw";
+import { resolveCaptureBodies } from '@/lib/providerLog/bodies';
+import { withCallContext } from "@/lib/providerLog/context";
+import { sweepProviderLog } from "@/lib/providerLog/retention";
 
 const TICK_MS = 60 * 60 * 1000; // hourly
 
@@ -20,6 +31,28 @@ export interface AlertSettings {
   trafficDrop: { on: boolean; percent: number };
   ssl: { on: boolean; days: number };
   audit: { on: boolean; minScore: number };
+  lostLink: { on: boolean; minDr: number };
+  // У этих двух порога нет: он вычисляется от базовой линии самого сайта (backlinkLoss)
+  // или отсутствует по смыслу (favoriteLink — одна испорченная избранная ссылка это уже повод).
+  backlinkLoss: { on: boolean };
+  favoriteLink: { on: boolean };
+  // Порча купленных ссылок (меджики): lost / anchor_changed / rel_downgraded / target_changed
+  // на строках с purchaseProvider. Включён по умолчанию и молчит сам, пока купленные плейсменты
+  // не импортированы. В отличие от backlinkLoss не требует полной выгрузки Ahrefs: наша
+  // собственная проверка донора — прямое наблюдение, а не вывод из отсутствия в выгрузке.
+  purchasedLink: { on: boolean };
+  balanceLow: { on: boolean; percent: number; minUsd: number };
+  providerDown: { on: boolean; failures: number };
+  // SERP Monitor storm alert (serp_storm). On by default: it fires only for projects whose run
+  // actually beat its own baseline, and the per-project switch (SerpProject.alertStorm) is the
+  // finer-grained off switch. Field name follows the T6 brief (`enabled`), not the `on` of the
+  // neighbours above.
+  serpmonStorm: { enabled: boolean };
+  // R+ publish gate: a SCHEDULED post blocked by the uniqueness gate (or failing its respin)
+  // at send time. On by default with no settings-page row, same as the newer backlink alerts:
+  // it stays silent until something is actually deferred and blocked, so enabling it cannot
+  // produce noise. Fired from lib/publish/postScheduler, not from this hourly tick.
+  publishBlocked: { on: boolean };
   lang: NotifyLang; // language of delivered alerts (saved from the UI language)
 }
 
@@ -28,12 +61,28 @@ export const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   trafficDrop: { on: true, percent: 30 },
   ssl: { on: true, days: 14 },
   audit: { on: true, minScore: 50 },
+  // Off by default: it can only fire once a backlink profile has been loaded, and turning it
+  // on for users who never will would be a setting that does nothing.
+  lostLink: { on: false, minDr: 50 },
+  // Включены по умолчанию, в отличие от lostLink: оба молчат сами, пока по сайту нет
+  // ни одной завершённой полной выгрузки, поэтому пустым шумом это не станет.
+  backlinkLoss: { on: true },
+  favoriteLink: { on: true },
+  purchasedLink: { on: true },
+  // Provider watches. Оба молчат сами, пока для них нет данных: balance_low читает кэш
+  // балансов (наполняется refresh'ем и страницей балансов), provider_down — журнал вызовов
+  // провайдеров. percent — «осталось меньше N% лимита»; провайдеры без фиксированной квоты
+  // (DataForSEO) сравнивают остаток с абсолютным полом minUsd.
+  balanceLow: { on: true, percent: 15, minUsd: 10 },
+  providerDown: { on: true, failures: 5 },
+  serpmonStorm: { enabled: true },
+  publishBlocked: { on: true },
   lang: "en",
 };
 
 export async function getAlertSettings(userId: string): Promise<AlertSettings> {
   try {
-    const rows: any[] = await prisma.$queryRawUnsafe(`SELECT alertSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<Array<{ alertSettings?: string | null }>>(`SELECT alertSettings FROM "User" WHERE id = ?`, userId);
     const raw = rows?.[0]?.alertSettings;
     if (!raw) return DEFAULT_ALERT_SETTINGS;
     const s = JSON.parse(raw);
@@ -42,6 +91,14 @@ export async function getAlertSettings(userId: string): Promise<AlertSettings> {
       trafficDrop: { ...DEFAULT_ALERT_SETTINGS.trafficDrop, ...(s.trafficDrop ?? {}) },
       ssl: { ...DEFAULT_ALERT_SETTINGS.ssl, ...(s.ssl ?? {}) },
       audit: { ...DEFAULT_ALERT_SETTINGS.audit, ...(s.audit ?? {}) },
+      lostLink: { ...DEFAULT_ALERT_SETTINGS.lostLink, ...(s.lostLink ?? {}) },
+      backlinkLoss: { ...DEFAULT_ALERT_SETTINGS.backlinkLoss, ...(s.backlinkLoss ?? {}) },
+      favoriteLink: { ...DEFAULT_ALERT_SETTINGS.favoriteLink, ...(s.favoriteLink ?? {}) },
+      purchasedLink: { ...DEFAULT_ALERT_SETTINGS.purchasedLink, ...(s.purchasedLink ?? {}) },
+      balanceLow: { ...DEFAULT_ALERT_SETTINGS.balanceLow, ...(s.balanceLow ?? {}) },
+      providerDown: { ...DEFAULT_ALERT_SETTINGS.providerDown, ...(s.providerDown ?? {}) },
+      serpmonStorm: { ...DEFAULT_ALERT_SETTINGS.serpmonStorm, ...(s.serpmonStorm ?? {}) },
+      publishBlocked: { ...DEFAULT_ALERT_SETTINGS.publishBlocked, ...(s.publishBlocked ?? {}) },
       lang: normalizeLang(s.lang),
     };
   } catch {
@@ -50,6 +107,23 @@ export async function getAlertSettings(userId: string): Promise<AlertSettings> {
 }
 
 type Pending = { type: string; siteId?: string; title: string; message: string; dedupeKey: string };
+
+/** ProviderBalance row as the balance_low rule reads it (dbAny — the model may not be migrated yet). */
+interface BalanceRow {
+  provider: unknown;
+  fetchedAt: string | Date;
+  ok?: boolean;
+  left?: number | null;
+  limit?: number | null;
+  resetAt?: string | Date | null;
+  unit?: string | null;
+}
+
+/** ProviderCall row as the provider_down rule reads it. */
+interface ProviderCallRow {
+  provider: unknown;
+  status: number;
+}
 
 const isoDay = () => new Date().toISOString().slice(0, 10);
 const isoWeek = () => {
@@ -61,7 +135,69 @@ const isoWeek = () => {
 async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
   const L = NOTIFY_L[normalizeLang(s.lang)];
   const out: Pending[] = [];
-  const sites = await prisma.site.findMany({ where: { userId }, select: { id: true, url: true } });
+
+  // ── balance_low: провайдерские счётчики из локального кэша ProviderBalance. Сам тик ходит
+  // к провайдеру только когда кэш протух (>6ч) — балансовые эндпоинты дёшевы, но
+  // rate-limited, и алерт-тик, который фетчит на каждом проходе, стал бы самым громким
+  // клиентом. Провайдеры без фиксированной квоты (DataForSEO) сравниваются с абсолютным
+  // полом, остальные — процентом остатка от лимита. Скоро ресет → «мало» это норма конца
+  // периода, а не новость, поэтому за 36 часов до resetAt правило молчит.
+  if (s.balanceLow.on) {
+    try {
+      let rows: BalanceRow[] = await dbAny.providerBalance.findMany({ where: { userId } });
+      const freshest = rows.reduce((m: number, r: BalanceRow) => Math.max(m, new Date(r.fetchedAt).getTime()), 0);
+      if (Date.now() - freshest > 6 * 3600_000) {
+        await refreshProviderBalances(userId);
+        rows = await dbAny.providerBalance.findMany({ where: { userId } });
+      }
+      for (const r of rows) {
+        if (!r.ok || r.left == null) continue;
+        if (r.resetAt && new Date(r.resetAt).getTime() - Date.now() < 36 * 3600_000) continue;
+        const pctLeft = r.limit != null && r.limit > 0 ? (r.left / r.limit) * 100 : null;
+        const low = pctLeft != null ? pctLeft < s.balanceLow.percent : r.left < s.balanceLow.minUsd;
+        if (!low) continue;
+        const left = `${Math.round(r.left * 100) / 100} ${r.unit || ""}`.trim();
+        out.push({
+          type: "balance_low",
+          title: L.balanceLowTitle(String(r.provider)),
+          message: L.balanceLowMsg(String(r.provider), left, pctLeft != null ? Math.round(pctLeft) : null),
+          dedupeKey: `balance_low:${r.provider}:${isoDay()}`,
+        });
+      }
+    } catch { /* ProviderBalance ещё не мигрирована */ }
+  }
+
+  // ── provider_down: один провайдер набрал N+ сбоев за последний час по журналу вызовов
+  // (ProviderCall). «Сбой» = 0 (транспорт: сеть или таймаут — HTTP-статуса нет) или 5xx.
+  // 4xx — это наш ключ, квота или плохой запрос, а не лежащий провайдер: для ключей и квот
+  // есть настройки и balance_low, алертом «лежит» должен оставаться именно лежащий.
+  if (s.providerDown.on) {
+    try {
+      const since = new Date(Date.now() - 60 * 60_000);
+      const rows: ProviderCallRow[] = await dbAny.providerCall.findMany({
+        where: { at: { gte: since } },
+        select: { provider: true, status: true },
+        take: 5000,
+      });
+      const fails = new Map<string, number>();
+      for (const r of rows) {
+        if (r.status === 0 || r.status >= 500) fails.set(String(r.provider), (fails.get(String(r.provider)) ?? 0) + 1);
+      }
+      for (const [provider, n] of fails) {
+        if (n < s.providerDown.failures) continue;
+        out.push({
+          type: "provider_down",
+          title: L.providerDownTitle(provider),
+          message: L.providerDownMsg(provider, n),
+          dedupeKey: `provider_down:${provider}:${isoDay()}`,
+        });
+      }
+    } catch { /* ProviderCall ещё не мигрирована */ }
+  }
+
+  // Archived properties are excluded: a removed domain's traffic goes to zero by definition,
+  // which would fire a traffic-drop alert every single run.
+  const sites = await prisma.site.findMany({ where: { userId, archivedAt: null }, select: { id: true, url: true } });
   const siteName = new Map(sites.map(x => [x.id, x.url.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "")]));
   const siteIds = sites.map(x => x.id);
   if (!siteIds.length) return out;
@@ -92,8 +228,8 @@ async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
     const d14 = new Date(now); d14.setDate(d14.getDate() - 14);
     for (const site of sites) {
       const [cur, prev] = await Promise.all([
-        prisma.dailyMetric.aggregate({ where: { siteId: site.id, date: { gte: d7 } }, _sum: { clicks: true } }),
-        prisma.dailyMetric.aggregate({ where: { siteId: site.id, date: { gte: d14, lt: d7 } }, _sum: { clicks: true } }),
+        prisma.dailyMetric.aggregate({ where: { siteId: site.id, date: { gte: d7 }, searchType: "web" }, _sum: { clicks: true } }),
+        prisma.dailyMetric.aggregate({ where: { siteId: site.id, date: { gte: d14, lt: d7 }, searchType: "web" }, _sum: { clicks: true } }),
       ]);
       const c = cur._sum.clicks ?? 0, p = prev._sum.clicks ?? 0;
       if (p >= 50 && c < p * (1 - s.trafficDrop.percent / 100)) {
@@ -149,6 +285,159 @@ async function checkUser(userId: string, s: AlertSettings): Promise<Pending[]> {
     }
   }
 
+  // ── lost_link: referring domains above the DR threshold that went away in the last day.
+  // Reads only what a profile refresh already stored — this rule never calls a provider and
+  // therefore never spends anything on its own.
+  if (s.lostLink.on) {
+    const since = new Date(Date.now() - 26 * 3600_000).toISOString().slice(0, 10);
+    for (const site of sites) {
+      const target = site.url.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/^www\./, "").split("/")[0];
+      // Ahrefs DR, plus DataForSEO's own rank for sites refreshed from it (issue #26) — the
+      // threshold applies to each on its own 0–100 scale, and the message names which one.
+      const lost = [
+        ...(await lostSince(target, since, s.lostLink.minDr)).map(l => ({ ...l, scale: "DR" })),
+        ...(await lostSince(target, since, s.lostLink.minDr, "dataforseo")).map(l => ({ ...l, scale: "DFS" })),
+      ].filter((l, i, all) => all.findIndex(x => x.refDomain === l.refDomain) === i);
+      if (!lost.length) continue;
+      out.push({
+        type: "lost_link", siteId: site.id,
+        title: L.lostLinkTitle(String(siteName.get(site.id))),
+        message: L.lostLinkMsg(
+          String(siteName.get(site.id)), lost.length,
+          lost.slice(0, 5).map(l => `${l.refDomain} (${l.scale} ${Math.round(l.dr)})`).join(", "),
+          s.lostLink.minDr,
+        ),
+        // Per day, not per domain: five links lost at once is one piece of news, not five.
+        dedupeKey: `lost_link:${site.id}:${isoDay()}`,
+      });
+    }
+  }
+
+  // ── backlink_loss + favorite_link. Оба правила читают одни и те же события, поэтому
+  // читаются одним заходом. Всё внутри try: пока Backlinks v2 не мигрированы, таблиц нет,
+  // и это не повод ронять остальные правила.
+  if (s.backlinkLoss.on || s.favoriteLink.on) {
+    try {
+      const since = new Date(Date.now() - 26 * 3600_000);
+      const targetOf = (url: string) =>
+        url.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/^www\./, "").split("/")[0];
+
+      const [events, syncs, completeSyncs] = await Promise.all([
+        prisma.siteBacklinkEvent.findMany({
+          where: { siteId: { in: siteIds }, createdAt: { gte: since }, kind: { in: ["lost", "rel_downgraded", "target_changed", "anchor_changed"] } },
+          orderBy: { createdAt: "desc" }, take: 20_000,
+        }),
+        prisma.siteBacklinkSync.findMany({
+          where: { siteId: { in: siteIds }, startedAt: { lte: new Date() }, OR: [{ finishedAt: null }, { finishedAt: { gte: since } }] },
+          select: { siteId: true, kind: true, status: true, complete: true, startedAt: true, finishedAt: true },
+        }),
+        prisma.siteBacklinkSync.findMany({
+          where: { siteId: { in: siteIds }, status: "completed", complete: true },
+          select: { siteId: true }, distinct: ["siteId"],
+        }),
+      ]);
+      const completeSites = new Set(completeSyncs.map(r => r.siteId));
+
+      const ids = [...new Set(events.map(e => e.backlinkId))];
+      const linkRows = ids.length
+        ? await prisma.siteBacklink.findMany({ where: { id: { in: ids } }, select: { id: true, urlFrom: true, favorite: true, purchaseProvider: true } })
+        : [];
+      const linkById = new Map(linkRows.map(r => [r.id, r]));
+
+      // Потеря — вывод, который имеет право сделать только завершённый полный прогон.
+      const countsAsLoss = (e: { siteId: string; kind: string; createdAt: Date }) =>
+        e.kind === "lost" && completeSites.has(e.siteId) && lossCountsForEvent(e, syncs);
+
+      // 1. Аномальная потеря ссылок — порог считается от базовой линии сайта, не фиксирован.
+      if (s.backlinkLoss.on) {
+        const baselineFrom = new Date(Date.now() - BASELINE_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+        const targets = [...new Set(sites.map(x => targetOf(x.url)))];
+        const snapRows = targets.length
+          ? await prisma.backlinkSnapshot.findMany({
+              where: { target: { in: targets }, date: { gte: baselineFrom } },
+              select: { target: true, date: true, backlinks: true },
+            })
+          : [];
+        for (const site of sites) {
+          const lost = events.filter(e => e.siteId === site.id && countsAsLoss(e)).length;
+          if (!lost) continue;
+          // Один и тот же (target, date) может прийти от нескольких провайдеров — схлопываем.
+          const byDate = new Map<string, number>();
+          for (const r of snapRows) {
+            if (r.target !== targetOf(site.url) || typeof r.backlinks !== "number") continue;
+            byDate.set(r.date, Math.max(byDate.get(r.date) ?? 0, r.backlinks));
+          }
+          const snapshots = [...byDate.entries()].map(([date, backlinks]) => ({ date, backlinks }));
+          const verdict = detectLossAnomaly({ lost, periodDays: 1, snapshots });
+          if (!verdict.anomalous) continue;
+          out.push({
+            type: "backlink_loss", siteId: site.id,
+            title: L.alertBacklinkLossTitle(String(siteName.get(site.id))),
+            message: L.alertBacklinkLossBody(lost, verdict.timesLabel),
+            // Как у lost_link: сорок ссылок, снятых за раз, это одна новость, а не сорок.
+            dedupeKey: `backlink_loss:${site.id}:${isoDay()}`,
+          });
+        }
+      }
+
+      // 2. Порча избранной ссылки — порога нет, одна такая ссылка это уже повод.
+      if (s.favoriteLink.on) {
+        for (const e of events) {
+          const row = linkById.get(e.backlinkId);
+          if (!row?.favorite) continue;
+          // rel_downgraded и target_changed рождаются сравнением старого значения с новым
+          // на уже существующей строке — частичный прогон их не выдумает, поэтому гейт
+          // по полноте выгрузки нужен только для "lost".
+          if (e.kind === "lost" && !countsAsLoss(e)) continue;
+          const what = e.kind === "lost" ? L.dglWhatLost
+            : e.kind === "rel_downgraded" ? L.dglWhatDowngraded
+            : e.kind === "anchor_changed" ? L.dglWhatAnchorChanged
+            : L.dglWhatTargetChanged;
+          out.push({
+            type: "favorite_link", siteId: e.siteId,
+            title: L.alertFavoriteLinkTitle(String(siteName.get(e.siteId))),
+            message: L.alertFavoriteLinkBody(row.urlFrom, what),
+            // Дедуп по id события, как audit_score по id аудита: один факт — одно письмо.
+            dedupeKey: `favorite_link:${e.id}`,
+          });
+        }
+      }
+
+      // 3. Порча купленной ссылки (меджики). Без порога и без гейта полноты выгрузки: строка
+      // существует, потому что за неё заплатили, а lost здесь — прямое наблюдение нашей
+      // проверки («страница открылась, ссылки нет»), а не вывод из отсутствия в выгрузке.
+      if (s.purchasedLink.on) {
+        const WHAT: Record<string, string> = {
+          lost: L.dglWhatLost,
+          anchor_changed: L.dglWhatAnchorChanged,
+          rel_downgraded: L.dglWhatDowngraded,
+          target_changed: L.dglWhatTargetChanged,
+        };
+        const bySite = new Map<string, Array<{ urlFrom: string; kind: string }>>();
+        for (const e of events) {
+          if (!(e.kind in WHAT)) continue;
+          const row = linkById.get(e.backlinkId);
+          if (!row?.purchaseProvider) continue;
+          const list = bySite.get(e.siteId) ?? [];
+          list.push({ urlFrom: row.urlFrom, kind: e.kind });
+          bySite.set(e.siteId, list);
+        }
+        for (const [siteId, list] of bySite) {
+          const hostOf = (u: string) => { try { return new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`).hostname; } catch { return u; } };
+          const lines = list.slice(0, 8).map(x => `• ${hostOf(x.urlFrom)} — ${WHAT[x.kind]}`).join("\n");
+          out.push({
+            type: "purchased_link", siteId,
+            title: L.alertPurchasedTitle(String(siteName.get(siteId))),
+            message: L.alertPurchasedBody(list.length, lines),
+            // Как у backlink_loss: день, а не событие — десять снятых за один проход ссылок
+            // это одна новость, а не десять писем.
+            dedupeKey: `purchased_link:${siteId}:${isoDay()}`,
+          });
+        }
+      }
+    } catch { /* таблицы Backlinks v2 ещё не мигрированы */ }
+  }
+
   return out;
 }
 
@@ -156,9 +445,9 @@ export async function runAlertsOnce(userId?: string): Promise<number> {
   // Users worth checking = users with a connected Telegram or Slack Webhook (alerts go nowhere otherwise).
   let userIds: string[] = [];
   try {
-    const rows: any[] = userId
+    const rows = userId
       ? [{ id: userId }]
-      : await prisma.$queryRawUnsafe(`SELECT id FROM "User" WHERE (telegramBotToken IS NOT NULL AND telegramChatId IS NOT NULL) OR slackWebhook IS NOT NULL`);
+      : await rawQuery<{ id: string }[]>(`SELECT id FROM "User" WHERE (telegramBotToken IS NOT NULL AND telegramChatId IS NOT NULL) OR slackWebhook IS NOT NULL`);
     userIds = rows.map(r => r.id);
   } catch {
     return 0; // columns not migrated yet
@@ -166,23 +455,28 @@ export async function runAlertsOnce(userId?: string): Promise<number> {
 
   let fired = 0;
   for (const uid of userIds) {
-    try {
-      const settings = await getAlertSettings(uid);
-      const pending = await checkUser(uid, settings);
-      for (const p of pending) {
-        // Unique dedupeKey — a second tick with the same event is a silent no-op.
-        try {
-          await prisma.alertEvent.create({
-            data: { userId: uid, type: p.type, siteId: p.siteId, title: p.title, message: p.message, dedupeKey: p.dedupeKey },
-          });
-        } catch { continue; } // duplicate — already alerted
-        const ok = await notifyUser(uid, `${p.title}\n\n${p.message}`);
-        if (ok) await prisma.alertEvent.updateMany({ where: { userId: uid, dedupeKey: p.dedupeKey }, data: { sent: true } });
-        fired++;
+    // Wrapped even though today's rules read only stored data: delivery goes out over the
+    // network, and the next rule that asks a provider anything must not have to remember this.
+    const captureBodies = await resolveCaptureBodies(uid);
+    await withCallContext({ userId: uid, feature: "alert-cron", captureBodies }, async () => {
+      try {
+        const settings = await getAlertSettings(uid);
+        const pending = await checkUser(uid, settings);
+        for (const p of pending) {
+          // Unique dedupeKey — a second tick with the same event is a silent no-op.
+          try {
+            await prisma.alertEvent.create({
+              data: { userId: uid, type: p.type, siteId: p.siteId, title: p.title, message: p.message, dedupeKey: p.dedupeKey },
+            });
+          } catch { continue; } // duplicate — already alerted
+          const ok = await notifyUser(uid, `${p.title}\n\n${p.message}`);
+          if (ok) await prisma.alertEvent.updateMany({ where: { userId: uid, dedupeKey: p.dedupeKey }, data: { sent: true } });
+          fired++;
+        }
+      } catch (e) {
+        console.warn(`[alert-cron] user ${uid} failed:`, e);
       }
-    } catch (e) {
-      console.warn(`[alert-cron] user ${uid} failed:`, e);
-    }
+    });
   }
   return fired;
 }
@@ -200,6 +494,13 @@ export function startAlertScheduler() {
     try {
       const n = await runAlertsOnce();
       if (n) console.log(`[alert-cron] fired ${n} alert(s)`);
+      // The provider log's housekeeping rides here rather than on a scheduler of its own. This is
+      // the least busy tick in the process — hourly, and its rules read stored data — so the
+      // deletes contend with the least, and a sweep that skips an hour costs nothing.
+      const swept = await sweepProviderLog();
+      if (swept.bodiesCleared || swept.rowsDeleted) {
+        console.log(`[alert-cron] provider log: cleared ${swept.bodiesCleared} body(s), deleted ${swept.rowsDeleted} row(s)`);
+      }
     } catch (e) {
       console.warn("[alert-cron] tick failed:", e);
     } finally {

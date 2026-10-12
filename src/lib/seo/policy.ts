@@ -70,21 +70,26 @@ export const DEFAULT_POLICY: EditorialPolicy = {
 
 // Backfill any missing fields on a loaded/partial policy so the whole app can rely
 // on the full canonical shape (e.g. policies saved before a field existed, or AI drafts).
+type DeepPartial<T> = T extends readonly unknown[] ? T : { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
+
 export function normalizePolicy(p: Partial<EditorialPolicy> & { name?: string }): EditorialPolicy {
   const d = DEFAULT_POLICY;
+  // Stored/AI-drafted policies are JSON any nested field may be missing, so the backfill
+  // below merges against a deep-partial view rather than trusting the shallow Partial.
+  const part = p as DeepPartial<EditorialPolicy>;
   return {
     name: p.name || "Untitled",
     createdAt: p.createdAt,
-    brand: { ...d.brand, ...(p.brand as any) },
-    audience: { ...d.audience, ...(p.audience as any) },
-    voice: { ...d.voice, ...(p.voice as any) },
+    brand: { ...d.brand, ...part.brand },
+    audience: { ...d.audience, ...part.audience },
+    voice: { ...d.voice, ...part.voice },
     structure: {
-      ...d.structure, ...(p.structure as any),
-      elements: { ...d.structure.elements, ...((p.structure as any)?.elements) },
+      ...d.structure, ...part.structure,
+      elements: { ...d.structure.elements, ...part.structure?.elements },
     },
-    quality: { ...d.quality, ...(p.quality as any) },
-    restrictions: { ...d.restrictions, ...(p.restrictions as any) },
-    variables: { ...(p.variables as any) },
+    quality: { ...d.quality, ...part.quality },
+    restrictions: { ...d.restrictions, ...part.restrictions },
+    variables: { ...p.variables },
   };
 }
 

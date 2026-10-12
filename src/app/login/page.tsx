@@ -1,7 +1,8 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
-import { TrendingUp, Globe, Shield, Moon, Sun } from "lucide-react";
+import { TrendingUp, Globe, Shield, Moon, Sun, Eye, EyeOff } from "lucide-react";
 import { useTheme } from "@/lib/ThemeContext";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
@@ -30,7 +31,11 @@ const content = {
     getStarted: "Get started",
     signInSub: "Sign in with your Google account. The first account becomes the owner of this dashboard.",
     signIn: "Sign in with Google",
-    bullets: ["Google OAuth only — no passwords", "Connect multiple Google accounts", "Self-hosted on your VPS"],
+    signInSubOwner: "Sign in with your email and password. Google stays connected for Search Console and Analytics data.",
+    signInSubBoth: "Sign in with the owner's Google account. Team members sign in with a password.",
+    errBootstrapEmail: "This Google account may not set up this instance — it is not listed in OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "Sign-in is temporarily unavailable: the database did not answer. Try again in a moment.",
+    bullets: ["Google connects your Search Console and Analytics data", "Connect multiple Google accounts", "Self-hosted on your VPS"],
   },
   ru: {
     tagline: "Твой личный",
@@ -45,7 +50,11 @@ const content = {
     getStarted: "Войти",
     signInSub: "Войди через Google аккаунт. Первый аккаунт становится владельцем этого дашборда.",
     signIn: "Войти через Google",
-    bullets: ["Только Google OAuth — никаких паролей", "Можно подключить несколько аккаунтов", "Self-hosted на вашем VPS"],
+    signInSubOwner: "Войди по email и паролю. Google остаётся подключён для данных Search Console и Analytics.",
+    signInSubBoth: "Войди через Google-аккаунт владельца. Участники команды входят по паролю.",
+    errBootstrapEmail: "Этот Google-аккаунт не может настроить инстанс — его нет в OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "Вход временно недоступен: база данных не ответила. Попробуй ещё раз чуть позже.",
+    bullets: ["Google подключает данные Search Console и Analytics", "Можно подключить несколько аккаунтов", "Self-hosted на вашем VPS"],
   },
   uk: {
     tagline: "Твій особистий",
@@ -60,7 +69,87 @@ const content = {
     getStarted: "Увійти",
     signInSub: "Увійди через Google акаунт. Перший акаунт стає власником цього дашборду.",
     signIn: "Увійти через Google",
-    bullets: ["Лише Google OAuth — без паролів", "Можна підключити кілька акаунтів", "Self-hosted на вашому VPS"],
+    signInSubOwner: "Увійди за email і паролем. Google лишається підключеним для даних Search Console та Analytics.",
+    signInSubBoth: "Увійди через Google-акаунт власника. Учасники команди входять за паролем.",
+    errBootstrapEmail: "Цей Google-акаунт не може налаштувати інстанс — його немає в OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "Вхід тимчасово недоступний: база даних не відповіла. Спробуй ще раз трохи згодом.",
+    bullets: ["Google підключає дані Search Console та Analytics", "Можна підключити кілька акаунтів", "Self-hosted на вашому VPS"],
+  },
+  fr: {
+    tagline: "Votre",
+    highlight: "Search Console",
+    tagline2: "personnel",
+    sub: "Tous vos comptes Google, tous vos sites — un tableau de bord épuré. Sans limites, sans bruit, sans abonnement.",
+    features: [
+      { title: "Tous vos comptes au même endroit", desc: "Connectez plusieurs comptes Google et voyez tous vos sites GSC sur un seul écran." },
+      { title: "Le trafic d'un coup d'œil", desc: "Des mini-graphiques pour chaque site. Repérez aussitôt les gains, les chutes et les tendances." },
+      { title: "Vos données, votre serveur", desc: "Self-hosted. Vos données Search Console ne quittent jamais votre VPS." },
+    ],
+    getStarted: "Commencer",
+    signInSub: "Connectez-vous avec votre compte Google. Le premier compte devient propriétaire de ce tableau de bord.",
+    signIn: "Se connecter avec Google",
+    signInSubOwner: "Connectez-vous avec votre e-mail et votre mot de passe. Google reste connecté pour les données Search Console et Analytics.",
+    signInSubBoth: "Connectez-vous avec le compte Google du propriétaire. Les membres de l'équipe se connectent avec un mot de passe.",
+    errBootstrapEmail: "Ce compte Google ne peut pas configurer cette instance — il ne figure pas dans OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "Connexion momentanément indisponible : la base de données n'a pas répondu. Réessayez dans un instant.",
+    bullets: ["Google fournit vos données Search Console et Analytics", "Connectez plusieurs comptes Google", "Self-hosted sur votre VPS"],
+  },
+  es: {
+    tagline: "Tu",
+    highlight: "Search Console",
+    tagline2: "personal",
+    sub: "Todas tus cuentas de Google, todos tus sitios — un panel limpio. Sin límites, sin ruido, sin suscripción.",
+    features: [
+      { title: "Todas las cuentas en un solo lugar", desc: "Conecta varias cuentas de Google y ve todos tus sitios de GSC en una sola pantalla." },
+      { title: "El tráfico de un vistazo", desc: "Minigráficas para cada sitio. Detecta al instante las subidas, las caídas y las tendencias." },
+      { title: "Tus datos, tu servidor", desc: "Self-hosted. Los datos de Search Console nunca salen de tu VPS." },
+    ],
+    getStarted: "Empezar",
+    signInSub: "Inicia sesión con tu cuenta de Google. La primera cuenta pasa a ser la propietaria de este panel.",
+    signIn: "Iniciar sesión con Google",
+    signInSubOwner: "Inicia sesión con tu correo y contraseña. Google sigue conectado para los datos de Search Console y Analytics.",
+    signInSubBoth: "Inicia sesión con la cuenta de Google del propietario. Los miembros del equipo entran con contraseña.",
+    errBootstrapEmail: "Esta cuenta de Google no puede configurar esta instancia: no figura en OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "El inicio de sesión no está disponible: la base de datos no respondió. Inténtalo de nuevo en un momento.",
+    bullets: ["Google conecta tus datos de Search Console y Analytics", "Conecta varias cuentas de Google", "Self-hosted en tu VPS"],
+  },
+  de: {
+    tagline: "Dein persönliches",
+    highlight: "Search Console",
+    tagline2: "Kontrollzentrum",
+    sub: "Alle deine Google-Konten, alle deine Websites — ein aufgeräumtes Dashboard. Keine Limits, kein Rauschen, kein Abo.",
+    features: [
+      { title: "Alle Konten an einem Ort", desc: "Verbinde mehrere Google-Konten und sieh alle deine GSC-Websites auf einem Bildschirm." },
+      { title: "Traffic auf einen Blick", desc: "Mini-Diagramme für jede Website. Gewinner, Einbrüche und Trends sofort erkennen." },
+      { title: "Deine Daten, dein Server", desc: "Self-hosted. Deine Search-Console-Daten verlassen nie deinen VPS." },
+    ],
+    getStarted: "Loslegen",
+    signInSub: "Melde dich mit deinem Google-Konto an. Das erste Konto wird zum Besitzer dieses Dashboards.",
+    signIn: "Mit Google anmelden",
+    signInSubOwner: "Melde dich mit E-Mail und Passwort an. Google bleibt für Search-Console- und Analytics-Daten verbunden.",
+    signInSubBoth: "Melde dich mit dem Google-Konto des Besitzers an. Teammitglieder melden sich mit einem Passwort an.",
+    errBootstrapEmail: "Dieses Google-Konto darf diese Instanz nicht einrichten — es steht nicht in OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "Anmeldung vorübergehend nicht möglich: Die Datenbank hat nicht geantwortet. Versuche es gleich noch einmal.",
+    bullets: ["Google liefert deine Search-Console- und Analytics-Daten", "Mehrere Google-Konten verbinden", "Self-hosted auf deinem VPS"],
+  },
+  zh: {
+    tagline: "你的专属",
+    highlight: "Search Console",
+    tagline2: "指挥中心",
+    sub: "所有 Google 账号、所有网站 —— 一个清爽的仪表盘。无限制、无干扰、无订阅。",
+    features: [
+      { title: "所有账号集中管理", desc: "连接多个 Google 账号，在同一块屏幕上查看所有 GSC 网站。" },
+      { title: "流量一目了然", desc: "每个站点都有迷你走势图，立刻看出上涨、下跌和趋势。" },
+      { title: "你的数据，你的服务器", desc: "Self-hosted。Search Console 数据永远不会离开你的 VPS。" },
+    ],
+    getStarted: "开始使用",
+    signInSub: "用你的 Google 账号登录。第一个账号将成为本仪表盘的所有者。",
+    signIn: "使用 Google 登录",
+    signInSubOwner: "使用邮箱和密码登录。Google 仍保持连接，用于获取 Search Console 和 Analytics 数据。",
+    signInSubBoth: "使用所有者的 Google 账号登录。团队成员使用密码登录。",
+    errBootstrapEmail: "此 Google 账号不能初始化本实例 —— 它不在 OPENGSC_OWNER_EMAIL 列表中。",
+    errUnavailable: "暂时无法登录：数据库没有响应。请稍后再试。",
+    bullets: ["Google 用于连接 Search Console 和 Analytics 数据", "可连接多个 Google 账号", "Self-hosted 在你的 VPS 上"],
   },
 };
 
@@ -72,8 +161,33 @@ const featureIcons = [
 
 export default function LoginPage() {
   const { dark, setDark } = useTheme();
-  const { language, setLanguage } = useLanguage();
+  const { language, setLanguage, t } = useLanguage();
   const c = content[language];
+
+  // Which doors are open. The server enforces the same rule in the NextAuth `signIn` callback, so
+  // this only decides what the page offers: until the answer arrives nothing is offered, which avoids
+  // flashing a Google button that the next frame takes away.
+  //
+  // The `?error=` notice is read in the same callback, after mount rather than during render: the
+  // server has no URL to read, and a notice present only on the client is a hydration mismatch.
+  const [doors, setDoors] = useState<{ ownerExists: boolean; google: boolean; password: boolean } | null>(null);
+  const [reason, setReason] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    const settle = (body: { ownerExists: boolean; google: boolean; password: boolean }) => {
+      if (!live) return;
+      setDoors(body);
+      setReason(new URLSearchParams(window.location.search).get("error"));
+    };
+    fetch("/api/auth/login-options", { cache: "no-store" })
+      .then(res => res.ok ? res.json() : Promise.reject(new Error(String(res.status))))
+      .then(settle)
+      // Unknown state: offer both and let the server refuse.
+      .catch(() => settle({ ownerExists: true, google: true, password: true }));
+    return () => { live = false; };
+  }, []);
+  const pageNotice = reason === "bootstrap_email" ? c.errBootstrapEmail : reason === "unavailable" ? c.errUnavailable : null;
+  const subtitle = !doors ? "" : !doors.ownerExists ? c.signInSub : doors.google ? c.signInSubBoth : c.signInSubOwner;
 
   return (
     <div style={{
@@ -96,12 +210,12 @@ export default function LoginPage() {
           border: "1px solid var(--color-border)",
           borderRadius: "8px", overflow: "hidden",
         }}>
-          {(["en", "ru", "uk"] as const).map(lang => (
+          {(["en", "ru", "uk", "fr", "es", "de", "zh"] as const).map(lang => (
             <button
               key={lang}
               onClick={() => setLanguage(lang)}
               style={{
-                padding: "6px 12px",
+                padding: "6px 9px",
                 fontSize: "12px", fontWeight: 600,
                 border: "none", cursor: "pointer",
                 background: language === lang ? "var(--color-accent-purple)" : "transparent",
@@ -157,7 +271,7 @@ export default function LoginPage() {
 
         {/* Logo */}
         <div style={{ marginBottom: "56px" }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+          { }
           <img src="/logo.svg" alt="OpenGSC" height={36} style={{ display: "block" }} />
         </div>
 
@@ -220,10 +334,14 @@ export default function LoginPage() {
             {c.getStarted}
           </h2>
           <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", marginBottom: "32px", lineHeight: 1.6 }}>
-            {c.signInSub}
+            {subtitle}
           </p>
 
-          <button
+          {pageNotice && <p style={{ margin: "-16px 0 16px", fontSize: 12, lineHeight: 1.5, color: "var(--color-accent-orange)" }}>{pageNotice}</p>}
+
+          {!doors && <div style={{ height: "48px" }} />}
+
+          {doors?.google && <button
             onClick={() => signIn("google", { callbackUrl: "/" })}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center", gap: "12px",
@@ -247,7 +365,12 @@ export default function LoginPage() {
           >
             <GoogleIcon />
             {c.signIn}
-          </button>
+          </button>}
+
+          {/* A fresh instance has no one who could sign in with a password yet. With Google closed
+              the form is the only door, so it opens straight away. */}
+          {doors?.password && <MemberSignIn t={t as (key: string) => string} passwordOnly={!doors.google} />}
+
 
           <div style={{ margin: "28px 0", height: "1px", background: "var(--color-border)" }} />
 
@@ -263,4 +386,73 @@ export default function LoginPage() {
       </div>
     </div>
   );
+}
+
+
+/**
+ * Password sign-in — for team members always, and for the owner once they have set a password.
+ * Collapsed under the Google button while Google is still a login (an owner without a password);
+ * open on its own once Google is closed, because then it is the only way in. A member's account has
+ * no Google connection at all, on purpose: their own Search Console properties must not end up in
+ * someone else's workspace.
+ */
+function MemberSignIn({ t, passwordOnly }: { t: (key: string) => string; passwordOnly: boolean }) {
+  const reason = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("error");
+  const [open, setOpen] = useState(passwordOnly || reason === "use_password" || reason === "owner_only");
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // Show/hide for the password field: a typo you cannot see is undiagnosable, and the fix
+  // (reset on the server) costs minutes — the eye costs one click.
+  const [reveal, setReveal] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError("");
+    const result = await signIn("credentials", { ...form, redirect: false });
+    setBusy(false);
+    if (result?.error) { setError("invalid"); return; }
+    window.location.assign(`${window.location.origin}/`);
+  }
+
+  const notice = reason === "use_password" ? t("loginErrorUsePassword")
+    : reason === "owner_only" ? t("loginErrorOwnerOnly") : null;
+
+  if (!open) {
+    return <>
+      {notice && <p style={{ marginTop: 12, fontSize: 12, lineHeight: 1.5, color: "var(--color-accent-orange)", textAlign: "center" }}>{notice}</p>}
+      <button
+      onClick={() => setOpen(true)}
+      style={{ display: "block", width: "100%", marginTop: "13px", background: "transparent", border: 0, color: "var(--color-accent-blue)", fontSize: "12px", fontWeight: 650, cursor: "pointer" }}
+      >{t("loginMemberToggle")}</button>
+    </>;
+  }
+
+  return <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: passwordOnly ? 0 : 14 }}>
+    {notice && <span style={{ fontSize: 12, lineHeight: 1.5, color: "var(--color-accent-orange)" }}>{notice}</span>}
+    <input
+      className="tool-input" type="email" required autoComplete="username" placeholder={t("teamEmail")}
+      value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+    />
+    <div style={{ position: "relative" }}>
+      <input
+        className="tool-input" type={reveal ? "text" : "password"} required autoComplete="current-password" placeholder={t("teamPassword")}
+        value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+        style={{ paddingRight: 38 }}
+      />
+      <button type="button" onClick={() => setReveal(v => !v)} aria-label={reveal ? "hide password" : "show password"}
+        title={reveal ? "hide password" : "show password"}
+        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: 0, color: "var(--color-text-secondary)", cursor: "pointer", padding: 0 }}>
+        {reveal ? <EyeOff size={15} /> : <Eye size={15} />}
+      </button>
+    </div>
+    {error && <span style={{ fontSize: 12, color: "var(--color-accent-red)" }}>{t("loginMemberFailed")}</span>}
+    <button type="submit" disabled={busy} style={{ padding: "10px 14px", borderRadius: 9, border: 0, background: "var(--color-accent-blue)", color: "#fff", fontSize: 14, fontWeight: 650, cursor: "pointer" }}>
+      {busy ? "…" : t("loginMemberSubmit")}
+    </button>
+    {!passwordOnly && <span style={{ fontSize: 11, color: "var(--color-text-secondary)", textAlign: "center" }}>{t("loginMemberHint")}</span>}
+    {/* There is no mailer behind this login: a forgotten password is reset from the server
+        console, and the form must say so instead of leaving the operator to guess. */}
+    <span style={{ fontSize: 11, lineHeight: 1.5, color: "var(--color-text-tertiary)", textAlign: "center" }}>{t("loginMemberForgot")}</span>
+  </form>;
 }

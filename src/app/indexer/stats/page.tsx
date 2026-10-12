@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Play, ShieldAlert, CheckCircle, RefreshCw, Download } from "lucide-react";
+import { ShieldAlert, CheckCircle, RefreshCw, Download } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
@@ -45,8 +45,7 @@ export default function IndexerStatsPage() {
   const { t } = useLanguage();
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [simulating, setSimulating] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg] = useState<string | null>(null);
   const [isLarge, setIsLarge] = useState(false);
 
   // Pagination state for tables
@@ -69,9 +68,11 @@ export default function IndexerStatsPage() {
     setVisibleSeries(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const fetchStats = async () => {
+  // The API caches its aggregate for a minute; `refresh=1` bypasses that when the operator asks
+  // for fresh numbers explicitly, so the cache never gets in the way of checking a live crawl.
+  const fetchStats = async (force = false) => {
     try {
-      const res = await fetch("/api/indexer/stats");
+      const res = await fetch(`/api/indexer/stats${force ? "?refresh=1" : ""}`, { cache: "no-store" });
       const d = await res.json();
       setData(d);
     } catch (e) {
@@ -94,9 +95,12 @@ export default function IndexerStatsPage() {
 
   if (loading) {
     return (
-      <div style={{ padding: "40px 0", textAlign: "center", color: "var(--color-text-secondary)" }}>
-        <RefreshCw size={24} className="animate-spin" style={{ margin: "0 auto 12px" }} />
-        Loading indexer statistics...
+      // An SVG is inline by default, so `margin: 0 auto 12px` centred nothing and the icon sat on
+      // the text baseline instead of above it. A flex column puts the spinner and the label on
+      // their own lines and centres both without relying on text-align.
+      <div style={{ padding: "40px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", color: "var(--color-text-secondary)" }}>
+        <RefreshCw size={24} className="spin" />
+        <span>{t("idxStatsLoading")}</span>
       </div>
     );
   }
@@ -299,7 +303,9 @@ export default function IndexerStatsPage() {
             </div>
 
             <div style={{ width: "100%", height: "220px", marginTop: "10px" }}>
-              <ResponsiveContainer width="100%" height="100%">
+              {/* initialDimension seeds the pre-measure render: recharts 3.x defaults it to -1×-1
+                  and logs a width(-1)/height(-1) warning before the first ResizeObserver report */}
+              <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 220 }}>
                 <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
                   <defs>
                     <linearGradient id="colorGoogle" x1="0" y1="0" x2="0" y2="1">

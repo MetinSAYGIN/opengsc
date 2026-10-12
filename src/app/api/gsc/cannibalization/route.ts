@@ -1,172 +1,64 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { prisma } from '@/lib/prisma';
+import { findRelatedIntent } from '@/lib/cannibalization/related';
+import { findCannibalization } from '@/lib/cannibalization/query';
+import { brandTermsOf } from '@/lib/cannibalization/exact';
+import {
+  intParam, parseSiteSelection, reportParams, resolveReportSites, resolveReportUserId,
+} from '@/lib/gsc/reportScope';
 
-// Extract brand terms from site URL for non-brand filtering
-function brandTerms(siteUrl: string): string[] {
-  const clean = siteUrl
-    .replace(/^https?:\/\//, '')
-    .replace(/^sc-domain:/, '')
-    .replace(/^www\./, '')
-    .split('/')[0]
-    .split('.')[0];
-  return [clean.toLowerCase()];
-}
+// GET|POST /api/gsc/cannibalization  { siteId, mode=exact|related, minImpressions=30, limit, sites? }
+//
+// exact   — every site's own competing-URL groups (src/lib/cannibalization/exact.ts), plus a
+//           per-site summary for the portfolio picker. POST carries the picker's selection.
+// related — deterministic related-intent conflicts (src/lib/cannibalization/related.ts): per
+//           site, with per-day rows for "winner changes", plus the same per-site summary.
+// `days` is accepted and ignored: the rows are one 90-day total per pair; `window` says which.
+async function handle(req: Request) {
+  const p = await reportParams(req);
+  if (!p) return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
+  const siteId = String(p.siteId ?? '');
+  const userId = await resolveReportUserId(req, siteId);
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const sites = await resolveReportSites(userId, siteId);
+  if (!sites) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-// GET /api/gsc/cannibalization?siteId=&days=90&minImpressions=30&limit=60
-export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  let userId = (session?.user as any)?.id as string | undefined;
-  if (!userId) {
-    // Guest access via a share link: the token must match the requested site (never 'all').
-    const sp = new URL(req.url).searchParams;
-    const shareToken = sp.get('shareToken') ?? '';
-    const sharedSiteId = sp.get('siteId') ?? '';
-    if (shareToken && sharedSiteId && sharedSiteId !== 'all') {
-      const shared = await prisma.site.findFirst({ where: { id: sharedSiteId, shareToken, shareEnabled: true } });
-      if (shared) userId = shared.userId;
-    }
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const minImpr = intParam(p.minImpressions, 30, 1, 1_000_000);
+  const only = parseSiteSelection(p.sites);
+  const brand = sites.length === 1 ? brandTermsOf(sites[0].siteId) : [];
+
+  if (p.mode === 'related') {
+    const res = await findRelatedIntent(
+      sites.map(s => ({ id: s.id, url: s.url, siteId: s.siteId, tags: s.tags })),
+      { minImpressions: minImpr, limit: intParam(p.limit, 200, 1, 500), onlySites: only },
+    );
+    return NextResponse.json({
+      mode: 'related',
+      groups: res.groups,
+      total: res.total,
+      brand,
+      methodology: { deterministic: true, paidCalls: 0, candidateIndex: ['query_tokens', 'ranking_urls'], autoActions: false },
+      truncated: res.truncated,
+      window: res.window,
+      mixedWindows: res.mixedWindows,
+      dailyWindow: res.dailyWindow,
+      sites: res.sites,
+    });
   }
 
-  const { searchParams } = new URL(req.url);
-  const siteId  = searchParams.get('siteId') ?? '';
-  const days    = Math.min(parseInt(searchParams.get('days') ?? '90'), 365);
-  const minImpr = parseInt(searchParams.get('minImpressions') ?? '30');
-  const limit   = Math.min(parseInt(searchParams.get('limit') ?? '60'), 200);
-
-  let siteIds: string[];
-  let siteMap: Map<string, any>;
-
-  if (siteId === 'all' || !siteId) {
-    const sites = await prisma.site.findMany({ where: { userId } });
-    siteIds = sites.map(s => s.id);
-    siteMap = new Map(sites.map(s => [s.id, s]));
-  } else {
-    const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
-    if (!site) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    siteIds = [site.id];
-    siteMap = new Map([[site.id, site]]);
-  }
-
-  const since = new Date();
-  since.setDate(since.getDate() - days);
-
-  // ── Aggregate (query, url) pairs ───────────────────────────────────────────────
-  type AggRow = { siteId: string; url: string; query: string; _sum: { clicks: number | null; impressions: number | null }; _avg: { ctr: number | null; position: number | null } };
-  const aggsRaw = await prisma.dailyMetric.groupBy({
-    by: ['siteId', 'query', 'url'],
-    where: { siteId: { in: siteIds }, date: { gte: since } },
-    _sum: { clicks: true, impressions: true },
-    _avg: { ctr: true, position: true },
-    orderBy: { _sum: { impressions: 'desc' } },
-    take: 10000,
+  const res = await findCannibalization(
+    sites.map(s => ({ id: s.id, url: s.url, siteId: s.siteId, tags: s.tags })),
+    { minImpressions: minImpr, limit: intParam(p.limit, 5000, 1, 20000), onlySites: only },
+  );
+  return NextResponse.json({
+    groups: res.groups,
+    total: res.total,
+    truncated: res.truncated,
+    brand,
+    window: res.window,
+    mixedWindows: res.mixedWindows,
+    sites: res.sites,
   });
-  // Exclude site-level aggregate rows (url='' or query='') that have no per-URL meaning
-  const aggs: AggRow[] = (aggsRaw as unknown as AggRow[]).filter(a => a.url !== '' && a.query !== '');
-
-  // ── Build siteId + URL → top query map ──
-  const urlBest = new Map<string, { query: string; impr: number }>();
-  for (const a of aggs) {
-    const key = `${a.siteId}::${a.url}`;
-    const impr = a._sum.impressions ?? 0;
-    const cur  = urlBest.get(key);
-    if (!cur || impr > cur.impr) urlBest.set(key, { query: a.query, impr });
-  }
-
-  // ── Group by siteId + query ─────────────────────────────────────────────────────────────
-  const queryMap = new Map<string, typeof aggs>();
-  for (const a of aggs) {
-    const key = `${a.siteId}::${a.query}`;
-    if (!queryMap.has(key)) queryMap.set(key, []);
-    queryMap.get(key)!.push(a);
-  }
-
-  // ── Build cannibalization groups ───────────────────────────────────────────────
-  const groups: {
-    query: string;
-    siteId: string;
-    siteName: string;
-    pages: {
-      url: string; fullUrl: string; topQuery: string;
-      impressions: number; clicks: number; ctr: number; position: number;
-    }[];
-    isTrue: boolean;
-  }[] = [];
-
-  for (const [key, entries] of queryMap) {
-    const [grpSiteId, query] = key.split('::');
-    const grpSite = siteMap.get(grpSiteId);
-    if (!grpSite) continue;
-
-    const brand = brandTerms(grpSite.siteId);
-
-    // Skip branded queries
-    if (brand.some(b => query.toLowerCase().includes(b))) continue;
-
-    // Need 2+ distinct URLs
-    const uniqueUrls = [...new Set(entries.map(e => e.url))];
-    if (uniqueUrls.length < 2) continue;
-
-    // Aggregate per URL (sum across dates already done by groupBy)
-    const perUrl = uniqueUrls.map(url => {
-      const row = entries.find(e => e.url === url)!;
-      return {
-        url,
-        impressions: row._sum.impressions ?? 0,
-        clicks:      row._sum.clicks ?? 0,
-        ctr:         Math.round((row._avg.ctr ?? 0) * 1000) / 10,
-        position:    Math.round((row._avg.position ?? 0) * 10) / 10,
-      };
-    }).sort((a, b) => b.impressions - a.impressions);
-
-    const totalImpr = perUrl.reduce((s, p) => s + p.impressions, 0);
-    if (totalImpr < minImpressions(minImpr)) continue;
-
-    // Filter: remove pages with <10% share of query impressions
-    const significant = perUrl.filter(p => (p.impressions / totalImpr) >= 0.10);
-    if (significant.length < 2) continue;
-
-    // Filter: if position gap between top-2 > 20, not really competing
-    const pos1 = significant[0].position;
-    const pos2 = significant[1].position;
-    if (Math.abs(pos2 - pos1) > 20) continue;
-
-    // Build result pages
-    const pages = significant.map(p => ({
-      url:         p.url.replace(/^https?:\/\/[^/]+/, '') || '/',
-      fullUrl:     p.url,
-      topQuery:    urlBest.get(`${grpSiteId}::${p.url}`)?.query ?? query,
-      impressions: p.impressions,
-      clicks:      p.clicks,
-      ctr:         p.ctr,
-      position:    p.position,
-    }));
-
-    // True cannibalization: top queries overlap with group query keywords
-    const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-    const topQueries = pages.map(p => p.topQuery.toLowerCase());
-    const sameTopQuery = new Set(topQueries).size < topQueries.length;
-    const overlapping  = queryWords.length > 0 && topQueries.filter(tq =>
-      queryWords.some(w => tq.includes(w))
-    ).length >= 2;
-    const isTrue = sameTopQuery || overlapping;
-
-    const domain = grpSite.url.replace("sc-domain:", "").replace(/^https?:\/\//, "").replace(/\/$/, "");
-
-    groups.push({ query, siteId: grpSiteId, siteName: domain, pages, isTrue });
-  }
-
-  // Sort by total impressions desc, limit
-  const result = groups
-    .sort((a, b) =>
-      b.pages.reduce((s, p) => s + p.impressions, 0) -
-      a.pages.reduce((s, p) => s + p.impressions, 0)
-    )
-    .slice(0, limit);
-
-  return NextResponse.json({ groups: result, brand: siteIds.length === 1 ? brandTerms(siteMap.values().next().value.siteId) : [] });
 }
 
-function minImpressions(n: number) { return n; }
+export const GET = handle;
+export const POST = handle;

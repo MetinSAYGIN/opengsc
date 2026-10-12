@@ -1,28 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { workspaceUserId } from "@/lib/team/workspace";
+import { prisma, dbAny } from "@/lib/prisma";
+import { assertSafeTarget } from "@/lib/security/safeFetch";
 import * as tls from "tls";
-import * as https from "https";
 
 // ─── SSL check ────────────────────────────────────────────────────────────────
 async function checkSSL(hostname: string): Promise<{
   valid: boolean; daysLeft: number; issuer: string; subject: string;
   protocol: string; grade: string; error?: string;
 }> {
+  let address: { address: string; family: 4 | 6 };
+  try {
+    const target = await assertSafeTarget(`https://${hostname}`);
+    address = target.addresses[0];
+  } catch (error) {
+    return { valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: (error as { code?: string })?.code || "unsafe_target" };
+  }
+
   return new Promise(resolve => {
+    let settled = false;
+    let socket: tls.TLSSocket | null = null;
+    const finish = (result: { valid: boolean; daysLeft: number; issuer: string; subject: string; protocol: string; grade: string; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket?.destroy();
+      resolve(result);
+    };
     const timeout = setTimeout(() => {
-      resolve({ valid: false, daysLeft: 0, issuer: "", subject: "", protocol: "", grade: "F", error: "Timeout" });
+      finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: "Timeout" });
     }, 8000);
 
     try {
-      const socket = tls.connect(443, hostname, { servername: hostname, rejectUnauthorized: false }, () => {
-        clearTimeout(timeout);
-        const cert = socket.getPeerCertificate(true);
-        socket.destroy();
+      const connectedSocket = tls.connect(443, address.address, { servername: hostname, rejectUnauthorized: false }, () => {
+        const cert = connectedSocket.getPeerCertificate(true);
 
         if (!cert || !cert.valid_to) {
-          return resolve({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: "No certificate" });
+          return finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: "No certificate" });
         }
 
         const expiry   = new Date(cert.valid_to);
@@ -36,21 +50,20 @@ async function checkSSL(hostname: string): Promise<{
                       ?? (Array.isArray(rawIssuerCN) ? rawIssuerCN[0] : rawIssuerCN)
                       ?? "Unknown";
         const subject  = (Array.isArray(rawSubjectCN) ? rawSubjectCN[0] : rawSubjectCN) ?? hostname;
-        const protocol = socket.getProtocol() ?? "TLS";
+        const protocol = connectedSocket.getProtocol() ?? "TLS";
 
         // Simple grade: A+ = valid + 60+ days, A = valid + 14+ days, B = valid, F = expired
         const grade = !valid ? "F" : daysLeft >= 60 ? "A+" : daysLeft >= 14 ? "A" : "B";
 
-        resolve({ valid, daysLeft, issuer, subject, protocol, grade });
+        finish({ valid, daysLeft, issuer, subject, protocol, grade });
       });
+      socket = connectedSocket;
 
-      socket.on("error", (err) => {
-        clearTimeout(timeout);
-        resolve({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: err.message });
+      connectedSocket.on("error", (err) => {
+        finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: err.message });
       });
-    } catch (err: any) {
-      clearTimeout(timeout);
-      resolve({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: err.message });
+    } catch (err) {
+      finish({ valid: false, daysLeft: 0, issuer: "", subject: hostname, protocol: "", grade: "F", error: (err as Error).message });
     }
   });
 }
@@ -76,23 +89,36 @@ async function checkSafeBrowsing(domain: string, apiKey: string): Promise<{
     );
     const data = await res.json();
     if (data.error) return { safe: true, threats: [], error: data.error.message };
-    const threats = (data.matches ?? []).map((m: any) => m.threatType as string);
+    const threats = (data.matches ?? []).map((m: { threatType?: unknown }) => m.threatType as string);
     return { safe: threats.length === 0, threats };
-  } catch (err: any) {
-    return { safe: true, threats: [], error: err.message };
+  } catch (err) {
+    return { safe: true, threats: [], error: (err as Error).message };
   }
 }
 
 // ─── Core Web Vitals (PageSpeed Insights API) ─────────────────────────────────
 async function checkVitals(domain: string, apiKey: string): Promise<{
-  lcp: number | null; fid: number | null; cls: number | null; ttfb: number | null;
+  lcp: number | null; inp: number | null; cls: number | null; ttfb: number | null;
   score: number | null; category: string; error?: string;
 }> {
-  const empty = { lcp: null, fid: null, cls: null, ttfb: null, score: null, category: "unknown" };
+  // INP replaced FID as a Core Web Vital in March 2024. Lighthouse exposed the old metric as the
+  // "max-potential-fid" audit; the replacement is "interaction-to-next-paint". Pulling the old
+  // audit name returns a deprecated number that no longer matches what Google ranks on, so a page
+  // could look healthy here while failing the CWV assessment in Search Console.
+  const empty = { lcp: null, inp: null, cls: null, ttfb: null, score: null, category: "unknown" };
   if (!apiKey) return { ...empty, error: "no_key" };
   try {
     const url = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=https://${domain}&strategy=mobile&key=${apiKey}&category=PERFORMANCE`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    // Lighthouse lab runs routinely exceed 20 s on slow sites; 45 s keeps us under the ~60 s front-proxy cap.
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(45000) });
+    } catch (err) {
+      if ((err as Error)?.name === "TimeoutError") {
+        return { ...empty, error: "PageSpeed timed out after 45 s — Lighthouse could not finish on this site" };
+      }
+      throw err;
+    }
     const data = await res.json();
     if (data.error) return { ...empty, error: data.error.message };
 
@@ -103,14 +129,14 @@ async function checkVitals(domain: string, apiKey: string): Promise<{
 
     const audits = lhr?.audits ?? {};
     const lcp   = audits["largest-contentful-paint"]?.numericValue ?? null;
-    const fid   = audits["max-potential-fid"]?.numericValue ?? null;
+    const inp   = audits["interaction-to-next-paint"]?.numericValue ?? null;
     const cls   = audits["cumulative-layout-shift"]?.numericValue ?? null;
     const ttfb  = audits["server-response-time"]?.numericValue ?? null;
 
     const category = score == null ? "unknown" : score >= 90 ? "good" : score >= 50 ? "needs_improvement" : "poor";
-    return { lcp: lcp ? Math.round(lcp) : null, fid: fid ? Math.round(fid) : null, cls: cls ? parseFloat(cls.toFixed(3)) : null, ttfb: ttfb ? Math.round(ttfb) : null, score, category };
-  } catch (err: any) {
-    return { ...empty, error: err.message };
+    return { lcp: lcp ? Math.round(lcp) : null, inp: inp ? Math.round(inp) : null, cls: cls ? parseFloat(cls.toFixed(3)) : null, ttfb: ttfb ? Math.round(ttfb) : null, score, category };
+  } catch (err) {
+    return { ...empty, error: (err as Error).message };
   }
 }
 
@@ -135,20 +161,20 @@ async function checkVirusTotal(domain: string, apiKey: string): Promise<{
     const harmless    = stats.harmless ?? 0;
     const total       = malicious + suspicious + undetected + harmless;
     return { clean: malicious === 0 && suspicious === 0, malicious, suspicious, undetected, total };
-  } catch (err: any) {
-    return { ...empty, error: err.message };
+  } catch (err) {
+    return { ...empty, error: (err as Error).message };
   }
 }
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
+  const userId = await workspaceUserId();
   const { searchParams } = new URL(req.url);
   const siteId = searchParams.get("siteId");
   if (!siteId) return NextResponse.json({ error: "siteId required" }, { status: 400 });
 
   // Session OR a valid share token for this exact site (read-only guest dashboards).
-  if (!session?.user?.email) {
+  if (!userId) {
     const shareToken = searchParams.get("shareToken") ?? "";
     const shared = shareToken
       ? await prisma.site.findFirst({ where: { id: siteId, shareToken, shareEnabled: true } })
@@ -156,7 +182,9 @@ export async function GET(req: NextRequest) {
     if (!shared) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const site = await (prisma as any).site.findUnique({ where: { id: siteId }, include: { siteHealth: true } });
+  const site = userId
+    ? await dbAny.site.findFirst({ where: { id: siteId, userId }, include: { siteHealth: true } })
+    : await dbAny.site.findUnique({ where: { id: siteId }, include: { siteHealth: true } });
   if (!site) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Return cached result if less than 24 h old
@@ -179,19 +207,25 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = await workspaceUserId("act");
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json();
   const { siteId, safeBrowsingKey = "", googleApiKey = "", virusTotalKey = "" } = body;
   if (!siteId) return NextResponse.json({ error: "siteId required" }, { status: 400 });
 
-  const site = await (prisma as any).site.findUnique({ where: { id: siteId } });
+  const site = await dbAny.site.findFirst({ where: { id: siteId, userId } });
   if (!site) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // Extract clean hostname
-  let hostname = site.siteId as string;
-  hostname = hostname.replace(/^sc-domain:/, "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+  // Extract clean hostname. siteId may be a Domain Property ("sc-domain:example.com"),
+  // a URL property with a path, or a bare domain. new URL() on "sc-domain:..." does NOT
+  // throw — it silently returns an empty hostname — so only http(s) values go through URL parsing.
+  const rawSiteId = String(site.siteId || site.url || "");
+  const stripped = rawSiteId.replace(/^sc-domain:/, "").split("/")[0];
+  let hostname = stripped;
+  if (/^https?:\/\//i.test(rawSiteId)) {
+    try { hostname = new URL(rawSiteId).hostname || stripped; } catch { hostname = stripped; }
+  }
 
   // Run all checks in parallel
   const [ssl, safeBrowsing, vitals, virusTotal] = await Promise.all([
@@ -202,7 +236,7 @@ export async function POST(req: NextRequest) {
   ]);
 
   // Upsert to DB
-  await (prisma as any).siteHealth.upsert({
+  await dbAny.siteHealth.upsert({
     where:  { siteId },
     update: {
       checkedAt:    new Date(),

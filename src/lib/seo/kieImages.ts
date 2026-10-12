@@ -4,6 +4,8 @@
 // (recordInfo). No callBackUrl here — this app is typically self-hosted without a public callback
 // URL, so we poll instead (same trade-off the docs call out).
 
+import { loggedFetch } from "@/lib/providerLog/log";
+
 const KIE_BASE = "https://api.kie.ai";
 
 export const IMAGE_MODELS = [
@@ -22,18 +24,23 @@ export interface ImageGenInput {
 
 export async function createKieImageTask(model: ImageModelId, input: ImageGenInput, apiKey: string): Promise<{ taskId?: string; error?: string }> {
   try {
-    const res = await fetch(`${KIE_BASE}/api/v1/jobs/createTask`, {
+    const { res, call } = await loggedFetch(`${KIE_BASE}/api/v1/jobs/createTask`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model, input }),
       signal: AbortSignal.timeout(20000),
-    });
+    }, { provider: "kie", model });
     const data = await res.json().catch(() => null);
     const taskId = data?.data?.taskId;
-    if (!res.ok || !taskId) return { error: data?.msg || `kie_createTask_${res.status}` };
+    if (!res.ok || !taskId) {
+      const error = data?.msg || `kie_createTask_${res.status}`;
+      call.finish({ error, responseBody: data });
+      return { error };
+    }
+    call.finish({ responseBody: data });
     return { taskId };
-  } catch (e: any) {
-    return { error: e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+  } catch (e) {
+    return { error: (e as Error)?.name === "AbortError" ? "timeout" : String((e as Error)?.message ?? e) };
   }
 }
 
@@ -41,19 +48,26 @@ export type KieTaskState = "waiting" | "queuing" | "generating" | "success" | "f
 
 export async function getKieImageTask(taskId: string, apiKey: string): Promise<{ state: KieTaskState; resultUrls?: string[]; progress?: number; error?: string }> {
   try {
-    const res = await fetch(`${KIE_BASE}/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
+    // The poll is a request like any other, and a render is polled until it finishes: a task
+    // that never completes shows up here as a run of rows rather than as nothing at all.
+    const { res, call } = await loggedFetch(`${KIE_BASE}/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(15000),
-    });
+    }, { provider: "kie" });
     const data = await res.json().catch(() => null);
     const d = data?.data;
-    if (!res.ok || !d) return { state: "fail", error: data?.msg || `kie_recordInfo_${res.status}` };
+    if (!res.ok || !d) {
+      const error = data?.msg || `kie_recordInfo_${res.status}`;
+      call.finish({ error, responseBody: data });
+      return { state: "fail", error };
+    }
+    call.finish({ responseBody: data });
     const state: KieTaskState = d.state || "waiting";
     if (state === "fail") return { state, error: d.failMsg || "generation_failed" };
     let resultUrls: string[] | undefined;
     if (d.resultJson) { try { resultUrls = JSON.parse(d.resultJson)?.resultUrls; } catch { /* leave undefined */ } }
     return { state, resultUrls, progress: typeof d.progress === "number" ? d.progress : undefined };
-  } catch (e: any) {
-    return { state: "fail", error: e?.name === "AbortError" ? "timeout" : String(e?.message ?? e) };
+  } catch (e) {
+    return { state: "fail", error: (e as Error)?.name === "AbortError" ? "timeout" : String((e as Error)?.message ?? e) };
   }
 }

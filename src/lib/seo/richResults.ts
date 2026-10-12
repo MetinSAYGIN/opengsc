@@ -47,11 +47,41 @@ function proxyFromEnv(): { server: string; username?: string; password?: string 
 //   3) optionally a residential proxy (GOOGLEBOT_PROXY) so the IP isn't a flagged datacenter one.
 // If the origin cloaks by User-Agent, this returns the doorway. If it cloaks strictly by Google IP,
 // this returns the user page (undetectable without Google's own crawler) — then use Rich Results.
-export async function fetchAsGooglebotBrowser(url: string, opts?: { mobile?: boolean; timeoutMs?: number }): Promise<RichResultsFetch> {
-  let chromium: any;
+// Minimal structural slices of Playwright's API. Playwright is an optionalDependency loaded
+// through a non-literal dynamic import precisely so it is NOT required at type-check time;
+// these mirror exactly the surface the two automations below touch, nothing more.
+interface PwLocator { count(): Promise<number>; first(): PwLocator; click(options?: unknown): Promise<void> }
+interface PwRoute { request(): { url(): string }; continue(): Promise<void>; abort(code: string): Promise<void> }
+interface PwResponse { request(): { resourceType(): string }; text(): Promise<string> }
+interface PwPage {
+  route(glob: string, handler: (route: PwRoute) => Promise<void>): Promise<void>;
+  on(event: "response", handler: (response: PwResponse) => void): void;
+  goto(url: string, options?: { waitUntil?: string; timeout?: number }): Promise<unknown>;
+  waitForFunction(fn: () => boolean, options?: { timeout?: number }): Promise<unknown>;
+  waitForTimeout(ms: number): Promise<void>;
+  content(): Promise<string>;
+  locator(selector: string): PwLocator;
+  getByRole(role: string, options?: { name?: RegExp }): PwLocator;
+  getByText(text: RegExp): PwLocator;
+  evaluate<T>(fn: () => T): Promise<T>;
+  screenshot(options?: { type?: string }): Promise<Buffer>;
+}
+interface PwContext {
+  newPage(): Promise<PwPage>;
+  newCDPSession(page: PwPage): Promise<{ send(method: string, params?: Record<string, unknown>): Promise<void> }>;
+}
+interface PwBrowser { newContext(options?: Record<string, unknown>): Promise<PwContext>; close(): Promise<void> }
+interface PwChromium { launch(options?: Record<string, unknown>): Promise<PwBrowser> }
+interface PwModule { chromium?: PwChromium }
+
+export async function fetchAsGooglebotBrowser(
+  url: string,
+  opts: { pinnedAddress: string; mobile?: boolean; timeoutMs?: number },
+): Promise<RichResultsFetch> {
+  let chromium: PwChromium | undefined;
   try {
     const spec = "playwright";
-    const mod: any = await import(spec);
+    const mod: PwModule = await import(spec);
     chromium = mod.chromium;
     if (!chromium) throw new Error("no chromium");
   } catch {
@@ -61,18 +91,43 @@ export async function fetchAsGooglebotBrowser(url: string, opts?: { mobile?: boo
   const ua = opts?.mobile === false ? GB_UA_DESKTOP : GB_UA_MOBILE;
   const timeout = opts?.timeoutMs ?? 60_000;
   const proxy = proxyFromEnv();
-  let browser: any;
+  const target = new URL(url);
+  const targetHostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  let browser: PwBrowser | undefined;
   try {
-    browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"], ...(proxy ? { proxy } : {}) });
+    // Chrome keeps the original hostname for Host/TLS while opening the socket only to the IP
+    // already checked by safeFetch. This closes the DNS-rebinding window between route validation
+    // and page.goto. Cross-host requests are aborted below; direct Googlebot view needs the page's
+    // HTML, not third-party analytics, ads or fonts.
+    const resolverRule = `MAP ${targetHostname} ${opts.pinnedAddress},EXCLUDE localhost`;
+    browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled", `--host-resolver-rules=${resolverRule}`],
+      ...(proxy ? { proxy } : {}),
+    });
     const context = await browser.newContext({ userAgent: ua, locale: "en-US" });
     const page = await context.newPage();
+
+    await page.route("**/*", async (route: PwRoute) => {
+      try {
+        const requestUrl = new URL(route.request().url());
+        const hostname = requestUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        if ((requestUrl.protocol === "http:" || requestUrl.protocol === "https:") && hostname === targetHostname) {
+          await route.continue();
+        } else {
+          await route.abort("blockedbyclient");
+        }
+      } catch {
+        await route.abort("blockedbyclient");
+      }
+    });
 
     // Force the UA on EVERY request of the session (challenge + origin), via CDP.
     try { const cdp = await context.newCDPSession(page); await cdp.send("Network.setUserAgentOverride", { userAgent: ua }); } catch {}
 
     // Capture the final top-level document HTML the origin actually served.
     let docHtml = "";
-    page.on("response", async (r: any) => {
+    page.on("response", async (r: PwResponse) => {
       try {
         if (r.request().resourceType() === "document") {
           const body = await r.text();
@@ -94,9 +149,9 @@ export async function fetchAsGooglebotBrowser(url: string, opts?: { mobile?: boo
       return { ok: false, error: "cloudflare_block" };
     }
     return { ok: true, html: finalHtml };
-  } catch (e: any) {
+  } catch (e) {
     try { await browser?.close(); } catch {}
-    return { ok: false, error: String(e?.message ?? e) };
+    return { ok: false, error: String((e as Error)?.message ?? e) };
   }
 }
 
@@ -112,13 +167,16 @@ function looksLikeHtml(s: string): boolean {
   return t.startsWith("<!doctype") || t.startsWith("<html") || (t.includes("<html") && t.includes("<head"));
 }
 
-export async function fetchRichResultsHtml(url: string, opts?: { storageState?: any; timeoutMs?: number }): Promise<RichResultsFetch> {
-  let chromium: any;
+export async function fetchRichResultsHtml(
+  url: string,
+  opts?: { storageState?: string | { cookies: unknown[]; origins: unknown[] }; timeoutMs?: number },
+): Promise<RichResultsFetch> {
+  let chromium: PwChromium | undefined;
   try {
     // Non-literal specifier: keeps `playwright` an optional runtime dep (not required at build /
     // type-check time). If it isn't installed, the import throws and we report it gracefully.
     const spec = "playwright";
-    const mod: any = await import(spec);
+    const mod: PwModule = await import(spec);
     chromium = mod.chromium;
     if (!chromium) throw new Error("no chromium export");
   } catch {
@@ -126,7 +184,7 @@ export async function fetchRichResultsHtml(url: string, opts?: { storageState?: 
   }
 
   const timeout = opts?.timeoutMs ?? 90_000;
-  let browser: any;
+  let browser: PwBrowser | undefined;
   try {
     browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"] });
     const context = await browser.newContext({
@@ -152,7 +210,7 @@ export async function fetchRichResultsHtml(url: string, opts?: { storageState?: 
     }
 
     // Wait for the test to finish — the "View tested page" affordance appears when done.
-    let viewBtn: any = null;
+    let viewBtn: PwLocator | null = null;
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       if (await page.locator("iframe[src*='recaptcha']").count().catch(() => 0)) { await browser.close(); return { ok: false, error: "captcha" }; }
@@ -198,8 +256,8 @@ export async function fetchRichResultsHtml(url: string, opts?: { storageState?: 
 
     if (html && looksLikeHtml(html)) return { ok: true, html, screenshot };
     return { ok: false, error: "html_not_found", screenshot };
-  } catch (e: any) {
+  } catch (e) {
     try { await browser?.close(); } catch {}
-    return { ok: false, error: String(e?.message ?? e) };
+    return { ok: false, error: String((e as Error)?.message ?? e) };
   }
 }

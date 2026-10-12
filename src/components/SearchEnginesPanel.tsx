@@ -7,13 +7,30 @@
 // passed per-request, matching the app's key convention.
 
 import { useEffect, useState } from "react";
-import { Loader2, Send, RefreshCw, ExternalLink, Settings } from "lucide-react";
+import { Loader2, Send, RefreshCw, Settings } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { resolveEngineKey } from "@/lib/engineKeys";
 
 const card: React.CSSProperties = { background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px", display: "flex", flexDirection: "column", gap: "10px" };
 const btn: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: "6px", padding: "8px 13px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 const inputS: React.CSSProperties = { padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "12px", outline: "none", width: "100%", boxSizing: "border-box" };
+
+/** One connected-account row, as SeoKeysSync stores it in localStorage. */
+interface EngineAccount { id: string; name: string; key: string }
+
+/** The Bing figures this panel renders (top-traffic day + top queries, Bing's own casing). */
+interface BingStats {
+  clicks: number | null;
+  impressions: number | null;
+  queries: { Query?: string; query?: string; Clicks?: number; clicks?: number }[];
+}
+
+/** The Yandex GET response fields this panel renders. */
+interface YandexStats {
+  summary?: { sqi?: number; searchable_pages_count?: number; excluded_pages_count?: number };
+  recrawlQuota?: { daily_quota: number; quota_remainder?: number | null };
+  queries?: { query_text: string; indicators?: { TOTAL_CLICKS?: number; TOTAL_SHOWS?: number } }[];
+}
 
 function Head({ logo, color, title, connected, hintKey, settingsTab }: { logo: string; color: string; title: string; connected: boolean; hintKey: string; settingsTab: string }) {
   const { t } = useLanguage();
@@ -23,7 +40,7 @@ function Head({ logo, color, title, connected, hintKey, settingsTab }: { logo: s
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{title}</div>
         {!connected && (
-          <a href={`/settings?tab=${settingsTab}`} style={{ fontSize: "11px", color: "var(--color-accent-blue)", textDecoration: "none" }}>{t(hintKey as any)}</a>
+          <a href={`/settings?tab=${settingsTab}`} style={{ fontSize: "11px", color: "var(--color-accent-blue)", textDecoration: "none" }}>{t(hintKey as Parameters<typeof t>[0])}</a>
         )}
       </div>
       {connected && <span style={{ fontSize: "11px", color: "#10B981", fontWeight: 600 }}>●</span>}
@@ -46,8 +63,8 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
   const [overridesSaved, setOverridesSaved] = useState(false);
 
   // Connected Accounts Lists
-  const [bingAccounts, setBingAccounts] = useState<any[]>([]);
-  const [yandexAccounts, setYandexAccounts] = useState<any[]>([]);
+  const [bingAccounts, setBingAccounts] = useState<EngineAccount[]>([]);
+  const [yandexAccounts, setYandexAccounts] = useState<EngineAccount[]>([]);
   const [selectedBingAccId, setSelectedBingAccId] = useState("");
   const [selectedYandexAccId, setSelectedYandexAccId] = useState("");
 
@@ -59,12 +76,12 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
 
       try {
         setBingAccounts(JSON.parse(localStorage.getItem("seoKey_bing_accounts_list") || "[]"));
-      } catch (e) {
+      } catch {
         setBingAccounts([]);
       }
       try {
         setYandexAccounts(JSON.parse(localStorage.getItem("seoKey_yandex_accounts_list") || "[]"));
-      } catch (e) {
+      } catch {
         setYandexAccounts([]);
       }
 
@@ -134,7 +151,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
   // ── Bing state ──
   const [bingBusy, setBingBusy] = useState("");
   const [bingMsg, setBingMsg] = useState("");
-  const [bingStats, setBingStats] = useState<any>(null);
+  const [bingStats, setBingStats] = useState<BingStats | null>(null);
 
   const bingLoad = async () => {
     setBingBusy("stats"); setBingMsg("");
@@ -145,7 +162,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
         const last = Array.isArray(d.traffic) && d.traffic.length ? d.traffic[d.traffic.length - 1] : null;
         setBingStats({ clicks: last?.Clicks ?? null, impressions: last?.Impressions ?? null, queries: (d.queries ?? []).slice(0, 5) });
       }
-    } catch (e: any) { setBingMsg(String(e?.message ?? e)); }
+    } catch (e) { setBingMsg(String((e as Error)?.message ?? e)); }
     setBingBusy("");
   };
 
@@ -156,15 +173,17 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ siteUrl: `https://${cleanDomain}/`, sitemapUrl, apiKey: bingKey || undefined }),
       }).then(r => r.json());
-      setBingMsg(d.ok ? `✓ ${t("sePanelSitemapOk")} (${d.method})` : String(d.error ?? "error"));
-    } catch (e: any) { setBingMsg(String(e?.message ?? e)); }
+      // No "(method)" suffix any more: there is one way in since the anonymous ping endpoint
+      // was retired, so naming it only raised the question of what the other one was.
+      setBingMsg(d.ok ? `✓ ${t("sePanelSitemapOk")}` : String(d.error ?? "error"));
+    } catch (e) { setBingMsg(String((e as Error)?.message ?? e)); }
     setBingBusy("");
   };
 
   // ── Yandex state ──
   const [yBusy, setYBusy] = useState("");
   const [yMsg, setYMsg] = useState("");
-  const [yStats, setYStats] = useState<any>(null);
+  const [yStats, setYStats] = useState<YandexStats | null>(null);
   const [recrawlText, setRecrawlText] = useState("");
 
   const yLoad = async () => {
@@ -173,7 +192,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
       const d = await fetch(`/api/indexing/yandex?siteUrl=${encodeURIComponent(cleanDomain)}&token=${encodeURIComponent(yandexToken)}`).then(r => r.json());
       if (d.error) setYMsg(d.error === "host_not_found" ? t("seYandexHostNotFound") : d.error === "host_not_verified" ? t("seYandexHostNotVerified") : String(d.error));
       else setYStats(d);
-    } catch (e: any) { setYMsg(String(e?.message ?? e)); }
+    } catch (e) { setYMsg(String((e as Error)?.message ?? e)); }
     setYBusy("");
   };
 
@@ -187,11 +206,11 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
       }).then(r => r.json());
       if (action === "sitemap") setYMsg(d.ok ? `✓ ${t("sePanelSitemapOk")}${d.alreadyAdded ? ` (${t("seYandexAlready")})` : ""}` : String(d.error ?? "error"));
       else {
-        const ok = (d.results ?? []).filter((r: any) => r.ok).length;
+        const ok = (d.results ?? []).filter((r: { ok: boolean }) => r.ok).length;
         setYMsg(d.results ? `✓ ${ok}/${d.results.length} ${t("seYandexRecrawlSent")}` : String(d.error ?? "error"));
         if (ok) setRecrawlText("");
       }
-    } catch (e: any) { setYMsg(String(e?.message ?? e)); }
+    } catch (e) { setYMsg(String((e as Error)?.message ?? e)); }
     setYBusy("");
   };
 
@@ -210,7 +229,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
       }).then(r => r.json());
       setInMsg(d.ok ? `✓ ${t("seIndexNowOk")} (${urls.length})` : String(d.error ?? "error"));
       if (d.ok) setInText("");
-    } catch (e: any) { setInMsg(String(e?.message ?? e)); }
+    } catch (e) { setInMsg(String((e as Error)?.message ?? e)); }
     setInBusy(false);
   };
 
@@ -267,7 +286,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
               <label style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-secondary)", display: "block", marginBottom: "4px" }}>Bing Webmaster Account</label>
               <select value={selectedBingAccId} onChange={e => setSelectedBingAccId(e.target.value)} style={{ ...inputS, background: "var(--color-bg)", padding: "7px 10px" }}>
                 <option value="">Use Global Default</option>
-                {bingAccounts.map((acc: any) => (
+                {bingAccounts.map(acc => (
                   <option key={acc.id} value={acc.id}>Account: {acc.name}</option>
                 ))}
                 <option value="custom">-- Custom API Key Override --</option>
@@ -280,7 +299,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
               <label style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--color-text-secondary)", display: "block", marginBottom: "4px" }}>Yandex Webmaster Account</label>
               <select value={selectedYandexAccId} onChange={e => setSelectedYandexAccId(e.target.value)} style={{ ...inputS, background: "var(--color-bg)", padding: "7px 10px" }}>
                 <option value="">Use Global Default</option>
-                {yandexAccounts.map((acc: any) => (
+                {yandexAccounts.map(acc => (
                   <option key={acc.id} value={acc.id}>Account: {acc.name}</option>
                 ))}
                 <option value="custom">-- Custom Token Override --</option>
@@ -322,7 +341,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
           {bingStats && (
             <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.7 }}>
               {bingStats.clicks != null && <div>{t("clicks")}: <b style={{ color: "var(--color-text-primary)" }}>{bingStats.clicks}</b> · {t("impressions")}: <b style={{ color: "var(--color-text-primary)" }}>{bingStats.impressions}</b></div>}
-              {bingStats.queries.map((q: any, i: number) => (
+              {bingStats.queries.map((q, i: number) => (
                 <div key={i} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>· {q.Query ?? q.query} — {q.Clicks ?? q.clicks ?? 0}</div>
               ))}
             </div>
@@ -345,7 +364,7 @@ export default function SearchEnginesPanel({ siteDbId, domain }: { siteDbId: str
             <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.7 }}>
               <div>SQI: <b style={{ color: "var(--color-text-primary)" }}>{yStats.summary.sqi ?? "—"}</b> · {t("seYandexInSearch")}: <b style={{ color: "var(--color-text-primary)" }}>{yStats.summary.searchable_pages_count ?? "—"}</b> · {t("seYandexExcluded")}: <b style={{ color: "var(--color-text-primary)" }}>{yStats.summary.excluded_pages_count ?? "—"}</b></div>
               {yStats.recrawlQuota && <div>{t("seYandexQuota")}: <b style={{ color: "var(--color-text-primary)" }}>{yStats.recrawlQuota.daily_quota - (yStats.recrawlQuota.quota_remainder != null ? yStats.recrawlQuota.daily_quota - yStats.recrawlQuota.quota_remainder : 0)}</b>/{yStats.recrawlQuota.daily_quota}</div>}
-              {(yStats.queries ?? []).slice(0, 4).map((q: any, i: number) => (
+              {(yStats.queries ?? []).slice(0, 4).map((q, i: number) => (
                 <div key={i} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>· {q.query_text} — {q.indicators?.TOTAL_CLICKS ?? 0} / {q.indicators?.TOTAL_SHOWS ?? 0}</div>
               ))}
             </div>

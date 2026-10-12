@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { verifyAuthOrShare } from '@/lib/authShare';
 import { google } from 'googleapis';
 import { makeOAuth2, dateWindows, pct, GA4_API_METRICS, type GoogleAccount } from '@/lib/ga4';
+import { daysParam } from '@/lib/periodWindow';
 
 type Totals = { sessions: number; engagement: number; events: number; revenue: number };
 
@@ -36,7 +35,7 @@ export async function GET(req: Request) {
   if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { userId, site } = auth;
 
-  const propertyId = (site as any).ga4PropertyId as string | null;
+  const propertyId = (site as { ga4PropertyId?: string | null }).ga4PropertyId as string | null;
   if (!propertyId) {
     return NextResponse.json({ linked: false });
   }
@@ -46,7 +45,7 @@ export async function GET(req: Request) {
     select: { id: true, access_token: true, refresh_token: true, expires_at: true },
   })) as GoogleAccount[];
 
-  const w = dateWindows(period);
+  const w = dateWindows(period, daysParam(searchParams.get('days')));
   const property = `properties/${propertyId}`;
 
   // Try each linked account until one can read this property.
@@ -110,7 +109,7 @@ export async function GET(req: Request) {
 
       return NextResponse.json({
         linked: true,
-        property: { id: propertyId, name: (site as any).ga4PropertyName ?? '' },
+        property: { id: propertyId, name: (site as { ga4PropertyName?: string | null }).ga4PropertyName ?? '' },
         range: { start: w.start, end: w.end },
         totals: {
           sessions: Math.round(curr.sessions),
@@ -126,8 +125,8 @@ export async function GET(req: Request) {
         },
         series,
       });
-    } catch (err: any) {
-      lastError = err?.message ?? 'error';
+    } catch (err) {
+      lastError = (err as Error)?.message ?? 'error';
       continue;
     }
   }

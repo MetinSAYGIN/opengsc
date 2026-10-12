@@ -68,6 +68,20 @@ model User {
   // Cursor, etc.) query this user's SEO data. Generated in Settings → API & MCP.
   mcpToken String? @unique
 
+  // ─── Workspace membership ──────────────────────────────────────────────────
+  // A workspace is the owner's account: members act on the owner's data and own nothing
+  // themselves. The owner is the account that connected Google and pays for every API key, so
+  // exactly one user carries `isOwner`. Instances that predate this column resolve it lazily on
+  // first use — the first user by id, matching the old rule in `auth.ts`.
+  isOwner       Boolean @default(false)
+  workspaceName String?
+  // Members sign in with a password instead of Google, on purpose: an employee's Google account
+  // carries their own Search Console properties, and pulling those into the agency workspace is
+  // both wrong and something nobody agreed to. Null for the owner, who uses Google.
+  passwordHash       String?
+  mustChangePassword Boolean @default(false)
+  passwordUpdatedAt  DateTime?
+
   // Notifications: user-owned Telegram bot (BotFather token + detected chat id) and
   // JSON settings for the alert rules / digest schedule. Accessed via raw SQL (same
   // graceful-degradation convention as seoSettings).
@@ -76,6 +90,10 @@ model User {
   slackWebhook     String? // Slack Incoming Webhook URL — optional second delivery channel
   alertSettings    String? // JSON: { rankDrop: {on,threshold}, trafficDrop: {on,percent}, ssl: {on,days}, audit: {on,minScore} }
   digestSettings   String? // JSON: { enabled, frequency: "daily"|"weekly", hourUtc, tag, days, ai, lastSentAt }
+  syncSettings     String? // JSON: { enabled, hour, timeZone, lastRunAt } — automatic GSC sync, see src/lib/syncSchedule.ts
+  auditQueueSettings String? // JSON: { concurrency, defaultIntervalDays, scheduleHourUtc, retryAttempts, retryDelayMin, paused } — audit queue + scheduler knobs, see src/lib/audit/queue.ts
+  uptimeSettings   String? // JSON: UptimeWorkspaceSettings (src/lib/uptime/types.ts)
+  notifyChannels   String? // JSON: NotifyChannelsConfig (src/lib/notify/types.ts) — secrets inside, never sent to the browser unmasked
 
   // Third-party API integrations
   neuralIndexerToken String?
@@ -90,8 +108,51 @@ model User {
   // SEO Tools background generation jobs
   seoJobs             SeoJob[]
 
+  // Content Operations is a publishing workflow layered on top of the existing
+  // Demand / Outline / Text / Rewrite tools. Repository credentials stay server-only.
+  contentRepositories ContentRepository[]
+  contentOperations   ContentOperation[]
+
   // GEO Audits (how AI search engines perceive the brand/niche)
   geoAudits           GeoAudit[]
+  memberships         Membership[] @relation("MembershipMember")
+  workspaceMembers    Membership[] @relation("MembershipOwner")
+
+  // ─── wave-nov (N8/N9/N11/N1/N4) — see docs/tasks/wave-nov/CONTRACT.md §1 ─────
+  reportBranding  String?          // JSON: ReportBranding (N8)
+  widgetKey       String? @unique  // public id of the workspace's audit widget (N9)
+  widgetSettings  String?          // JSON: WidgetSettings (N9)
+  extToken        String? @unique  // browser-extension bearer token (N11), separate from mcpToken so it can be revoked alone
+  footprintIgnore String?          // JSON: string[] — footprint skeletons the operator marked as fine (N1)
+  extAllowedIds   String?          // newline-separated extension ids allowed by CORS (N11)
+  gbpToken        String?          // JSON: { refresh_token, access_token, expires_at, scope } — Business Profile OAuth (N4), server-only
+}
+
+// One person's access to one workspace. Rows exist only for members — the owner's access comes
+// from owning the data, which is why no membership can grant or revoke it.
+model Membership {
+  id      String  @id @default(cuid())
+  ownerId String  // the workspace being granted
+  userId  String? // set once the account exists; null while an invite is outstanding
+  email   String  // lowercased, the identity a member signs in with
+  role    String  @default("viewer") // viewer | editor | admin
+  status  String  @default("active") // active | invited | suspended
+
+  // Only the SHA-256 of an invite token is stored: a leaked database must not hand out logins.
+  inviteHash      String?   @unique
+  inviteExpiresAt DateTime?
+
+  invitedById String
+  invitedAt   DateTime  @default(now())
+  acceptedAt  DateTime?
+  lastSeenAt  DateTime?
+
+  owner  User  @relation("MembershipOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  member User? @relation("MembershipMember", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, email])
+  @@index([userId])
+  @@index([ownerId, status])
 }
 
 model VerificationToken {
@@ -111,6 +172,47 @@ model Site {
   brandedKeywords  String?  // JSON array e.g. ["ikea","ikea chair"]
   createdAt        DateTime @default(now())
 
+  // Which search market this site targets, as a 2-letter gl code.
+  //
+  // Nullable on purpose, and null does NOT mean "United States". Every keyword figure in the app
+  // is priced and cached per country, so guessing the market silently writes paid data into a
+  // cell nothing will read again. A ccTLD fills this in by itself; a .com/.org/.vip cannot be
+  // guessed from anything the app knows, so it stays empty and is asked for in the UI instead.
+  market           String?
+
+  // Set when the property is no longer returned by Google's sites.list.
+  // Archived sites keep all their history but are hidden from the main dashboard.
+  archivedAt       DateTime?
+
+  // Dashboard decluttering, as workspace properties rather than browser state. A hidden site
+  // drops out of the site-wide opportunity reports (striking distance, cannibalization, decay)
+  // the same way an archived one does — hiding is how you shelve a property you no longer work
+  // on, and a report that still counts it quietly overstates the portfolio. Pinned sites float
+  // to the favorites group on the dashboard. Both stay on the dashboard itself (collapsed
+  // groups), so nothing is unreachable.
+  pinned           Boolean   @default(false)
+  hidden           Boolean   @default(false)
+
+  // AI Visibility (AEO Tracker) settings.
+  //
+  // Country/city are not decoration: an AI answer to a local-intent question is geolocated, and
+  // checking "transfer from Thessaloniki airport" from a US datacentre measures a market the
+  // site does not sell in. Null means "ask without a location", which is a real choice and not
+  // the same as guessing one.
+  //
+  // aeoAuto is off by default. These checks spend the user's own AI credits, so the background
+  // scheduler only touches sites where somebody deliberately opted in.
+  aeoModel         String?
+  aeoCountry       String?   // ISO-3166 alpha-2, lowercase (same gl codes as SEO Tools)
+  aeoCity          String?
+  aeoLanguage      String?   // ISO-639-1, lowercase
+  aeoAuto          Boolean   @default(false)
+
+  // Site Audit scheduling: per-site override for the workspace audit scheduler.
+  // JSON { mode: "inherit" | "custom" | "off", intervalDays? } — inherit takes the
+  // workspace default interval, off stops automatic audits (manual runs always work).
+  auditSettings    String?
+
   // Sitemap indexing
   sitemapUrl       String?   // custom sitemap URL (defaults to url + /sitemap.xml)
   crawlInterval    String?   // "disabled" | "daily" | "weekly" | "monthly"
@@ -118,6 +220,7 @@ model Site {
 
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   metrics               DailyMetric[]
+  queryPageDaily        QueryPageDaily[]
   contentGroups         ContentGroup[]
   topicClusters         TopicCluster[]
   pageInspections       PageInspection[]
@@ -126,10 +229,16 @@ model Site {
   sitemapUrls           SitemapUrl[]
   indexingOperations    IndexingOperation[]
   backlinks             Backlink[]
+  siteBacklinks         SiteBacklink[]
   siteAudits            SiteAudit[]
   claritySnapshots      ClaritySnapshot[]
   trackedKeywords       TrackedKeyword[]
   trackedQuestions      TrackedQuestion[]
+  annotations           Annotation[]
+  magicPurchases        MagicPurchase[]
+  contextSections       SiteContextSection[]
+  keyPages              SiteKeyPage[]
+  researchLog           SiteResearchLog[]
 
   // Microsoft Clarity integration
   clarityToken          String?   // Data Export API token (per-project in Clarity)
@@ -140,11 +249,44 @@ model Site {
   ga4PropertyId         String?   // GA4 numeric property ID (e.g. "123456789")
   ga4PropertyName       String?   // GA4 property display name (cached for UI)
 
+  // Uptime monitor (T2). One monitor per site; created lazily by the uptime scheduler when the
+  // workspace has autoEnroll on, or explicitly from the site's Health tab.
+  uptimeMonitor         UptimeMonitor?
+
+  // Automatic URL Inspection (T4). JSON: IndexInspectSettings (src/lib/indexing/types.ts).
+  // Null = defaults (DEFAULT_INDEX_INSPECT).
+  indexInspect          String?
+  indexCoverage         IndexCoverageDaily[]
+
+  // Brand mentions (T6). JSON: MentionSettings (src/lib/mentions/types.ts). Null = off.
+  mentionSettings       String?
+  brandMentions         BrandMention[]
+
+  // AI share of voice (T7). JSON: AiCompetitor[] (src/lib/visibility/types.ts). Null = none.
+  aeoCompetitors        String?
+
   // Client read-only share settings
   shareEnabled          Boolean   @default(false)
   shareToken            String?   @unique
 
+  // ─── wave-nov — see docs/tasks/wave-nov/CONTRACT.md §1 ──────────────────────
+  // Backlink toxicity (N2). JSON: { ownNiche: string[] } — marker-group codes from
+  // src/lib/drops/toxicity/markers.ts that are NOT toxic for this site (e.g. ["gambling"]).
+  backlinkNiche   String?
+  localProfile    LocalProfile?
+  localCitations  LocalCitation[]
+  gbpPosts        GbpPost[]
+  gbpReviews      GbpReview[]
+  trendSeeds      TrendSeed[]
+  trendItems      TrendItem[]
+  clientReports   ClientReport[]
+  gridScans        GridScan[]
+  gridPresets      GridPreset[]
+  blogConnections  BlogConnection[]
+  publishedPosts   PublishedPost[]
+
   @@unique([userId, siteId])
+  @@index([userId, archivedAt])
 }
 
 model SitemapUrl {
@@ -152,11 +294,41 @@ model SitemapUrl {
   siteId        String
   url           String
 
+  // Sitemap Inventory. These fields are additive: the indexing providers below keep their
+  // existing semantics, while syncs can now explain where a URL came from and how it changed.
+  sourceSitemap       String?
+  sitemapType         String    @default("standard") // standard | image | video | news | mixed
+  lastmod             String?   // raw W3C value; invalid values remain inspectable
+  lastmodValid        Boolean?
+  imageCount          Int       @default(0)
+  videoCount          Int       @default(0)
+  newsCount           Int       @default(0)
+  firstSeenAt         DateTime  @default(now())
+  lastSeenAt          DateTime  @default(now())
+  lastSeenSync        String?
+  missingSyncs        Int       @default(0)
+  inventoryStatus     String    @default("active") // active | pending_missing | missing
+  changeStatus        String    @default("added")  // added | changed | restored | unchanged | pending_missing | missing
+
+  // Bounded, explicit metadata verification. Content is never stored; only a normalized hash
+  // and small response facts are retained so noisy lastmod values can be identified.
+  contentHash         String?
+  contentType         String?
+  contentHttpStatus   Int?
+  contentTitle        String?
+  contentCheckedAt    DateTime?
+  contentLastmod      String?
+  lastmodReliability  String    @default("unknown") // unknown | reliable | suspicious
+
   // Google URL Inspection status
   googleStatus   String?   // "Submitted and indexed", "URL is not on Google", etc.
   googleCoverage String?   // raw coverage state
   googleReason   String?
   googleChecked  DateTime?
+  googleVerdict   String?   // PASS | NEUTRAL | FAIL | PARTIAL | VERDICT_UNSPECIFIED (raw from the API)
+  googleLastCrawl DateTime?
+  googleCanonical String?   // Google-selected canonical, when it differs from the URL it is worth showing
+  googleNextCheck DateTime? // when the auto-inspection queue may pick this URL again (T4)
 
   // XML River check
   xrStatus      String?   // "indexed" | "not_indexed" | "error"
@@ -171,6 +343,11 @@ model SitemapUrl {
   neuralAt       DateTime?
   neuralQueue    String?
 
+  // ─── wave-nov (N6): index estimate from a site: SERP query, NOT Google's own verdict ──
+  serpIndexStatus   String?   // indexed | not_indexed | error — from a site: query (N6), NOT Google's own verdict
+  serpIndexChecked  DateTime?
+  serpIndexProvider String?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -178,6 +355,44 @@ model SitemapUrl {
 
   @@unique([siteId, url])
   @@index([siteId])
+  @@index([siteId, inventoryStatus])
+  @@index([siteId, changeStatus])
+  @@index([siteId, googleNextCheck])
+}
+
+// A one-off X-ray of any domain — usually somebody else's.
+//
+// Deliberately not a Site: the sites table is the operator's own portfolio, joined to Search
+// Console, metrics and audits, and a competitor scanned once must not leak into portfolio counts,
+// digests or alerts. Scans are their own history, keyed by hostname, and they store the fingerprints
+// that make the interesting question answerable: which of these domains belong to the same person?
+model SiteScan {
+  id        String   @id @default(cuid())
+  userId    String
+  host      String   // normalized, lowercase, no www
+  url       String   // what was requested
+  finalUrl  String?  // after redirects — a dropped domain merged into another shows up here
+  status    String   @default("running") // running | completed | error
+  httpStatus Int     @default(0)
+  score     Int?
+  error     String?
+
+  // Everything the scan found, as JSON: page facts, findings, platform, infrastructure, scale.
+  // A scan is a snapshot of a moment, so it is stored whole rather than normalized into columns
+  // that would then have to be migrated every time a detector is added.
+  report    String?
+
+  // Cross-scan identity signals, kept as their own column so they can be searched across scans:
+  // ["ga4:G-XXXX","gtm:GTM-YYYY","adsense:ca-pub-1","ns:ns1.example.net","ip:1.2.3.4"].
+  // A shared analytics container across unrelated domains is the strongest cheap signal that one
+  // person runs both.
+  fingerprints String?
+
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([userId, host])
 }
 
 model Backlink {
@@ -187,6 +402,11 @@ model Backlink {
   title         String?   // page title from 404-check crawl
   isAlive       Boolean?  // null = not checked; true = alive; false = dead/404
   aliveChecked  DateTime?
+  aliveStatus   String?   // "alive" | "dead" | "blocked" — richer than isAlive. "blocked" = bot
+                          // protection (Cloudflare/WAF 403/429) hid the page, so a 403 is no longer
+                          // misread as a dead link. isAlive is kept in sync for back-compat (older
+                          // rows and the old UI path): blocked maps to isAlive=null ("unknown"),
+                          // never to false, because it is not a death — it is a refusal to answer.
   xrStatus      String?   // "indexed" | "not_indexed" | "error"
   xrChecked     DateTime?
   twoIndexStatus String?  // "submitted"
@@ -197,6 +417,190 @@ model Backlink {
 
   @@unique([siteId, url])
   @@index([siteId])
+}
+
+// ─── Backlinks v2 ────────────────────────────────────────────────────────────
+// SiteBacklink replaces nothing: the old `Backlink` above keeps working, keeps its rows and
+// keeps answering /api/backlinks/check-alive. This model exists because that check answers the
+// wrong question, and no amount of extra columns on it would have made the answer right.
+//
+// A row here is one (donor page → our page) pair, written by three independent parties that
+// must never overwrite each other: the Ahrefs export (api*), our own page fetch (check* and
+// page*), and the operator (urlTo, favorite, note, priceNote). The write rule lives in
+// docs/tasks/CONTRACT.md §1 and is worth repeating: an `update` names only its own group.
+// A blanket spread here erases a check the user paid for in time or in units.
+model SiteBacklink {
+  id            String   @id @default(cuid())
+  siteId        String
+
+  // --- identity ---
+  // urlFrom is kept exactly as it arrived (from an import or from the API) so a row can still be
+  // joined against the client's own spreadsheet, where the URL is whatever they typed.
+  // urlFromNorm is the normalized dedupe key; the two differ on purpose and neither is derivable
+  // from the other after the fact. urlTo is "" and not null when the target is unknown, because
+  // it takes part in @@unique and SQL treats every NULL as distinct — nullable here would let the
+  // same donor page be inserted an unbounded number of times.
+  urlFrom       String
+  urlFromNorm   String
+  urlTo         String   @default("")   // our page; "" when unknown
+  domainFrom    String   @default("")
+
+  // --- what the provider (Ahrefs) says ---
+  // Kept as its own group rather than merged into the check* answer: the provider's view is a
+  // crawl from days ago, ours is from seconds ago, and the whole product value is in the places
+  // where the two disagree (CONTRACT.md §0). Merging them would delete the signal.
+  apiSeen       Boolean   @default(false)
+  apiLost       Boolean   @default(false)
+  apiLostReason String    @default("")
+  apiAnchor     String    @default("")
+  apiAlt        String    @default("")
+  apiDofollow   Boolean   @default(true)
+  apiNofollow   Boolean   @default(false)
+  apiSponsored  Boolean   @default(false)
+  apiUgc        Boolean   @default(false)
+  apiContent    Boolean   @default(true)    // is_content: in the body, not in the footer
+  apiImage      Boolean   @default(false)
+  // Ahrefs only found the link after rendering JavaScript. A raw-HTML check cannot confirm such a
+  // link, so this flag is what stops the checker's "missing" from being read as a removed link.
+  apiJsCrawl    Boolean   @default(false)
+  apiDr         Float?
+  apiHttpCode   Int?
+  apiLinkType   String    @default("")
+  apiSnippet    String    @default("")      // snippet_left + snippet_right, truncated to 500
+  apiFirstSeen  String    @default("")      // YYYY-MM-DD, as the API returns it — no timezone to lose
+  apiLastSeen   String    @default("")
+  // DataForSEO's per-link spam score, 0–100 (issue #26). Null for every other provider — it is
+  // their opinion of the link, an extra toxicity signal, never a replacement for our own rules.
+  apiSpamScore  Int?
+  apiFetchedAt  DateTime?
+
+  // --- what our own page fetch says ---
+  // "Is our link still on that page?" — the question the old check never asked.
+  checkStatus        String   @default("unchecked") // unchecked|found|missing|blocked|error
+  checkAnchor        String   @default("")
+  checkRel           String   @default("")   // raw rel, exactly as it appeared in the HTML
+  // rel is stored raw *and* parsed: a boolean "nofollow" is not enough, because sponsored and ugc
+  // also stop weight from passing while nofollow itself may be absent.
+  checkNofollow      Boolean  @default(false)
+  checkSponsored     Boolean  @default(false)
+  checkUgc           Boolean  @default(false)
+  checkFoundUrl      String   @default("")   // absolute URL of the link that was found
+  checkMatchedDomain String   @default("")   // which of our domains matched
+  checkTargetOk      Boolean?                // link points at the promised urlTo; null = not judged
+  checkError         String   @default("")
+  // The page was only readable with certificate verification switched off. Kept on the row rather
+  // than in a log, because everything else in the check* group was derived from that content and
+  // the UI has to be able to say so.
+  checkInsecure      Boolean  @default(false)
+  checkedAt          DateTime?
+
+  // --- reachability of the donor page itself (heir to the old check-alive) ---
+  // pageStatus and checkStatus are two fields and not one, and this is the entire reason this
+  // wave exists. pageStatus answers "does the donor page respond?", checkStatus answers "is our
+  // link on it?". The old code had only the first and painted a green tick from it, so a site
+  // could quietly strip the link, leave the page up, and keep looking paid-for.
+  // pageStatus = "alive" together with checkStatus = "missing" is the headline case — the money
+  // was taken and the link is gone. Never derive one of these from the other.
+  pageStatus    String    @default("unknown") // unknown|alive|dead|blocked
+  pageTitle     String    @default("")
+  pageCheckedAt DateTime?
+
+  // --- indexation (carried over from the old Backlink model) ---
+  xrStatus       String    @default("")   // indexed|not_indexed|error
+  xrCheckedAt    DateTime?
+  twoIndexStatus String    @default("")   // submitted
+  twoIndexAt     DateTime?
+
+  // --- operator data ---
+  // source is who created the row; sources is every channel that has since confirmed it, so a
+  // link first pasted by hand and later seen by Ahrefs reads "manual,api" instead of losing its
+  // provenance to whichever writer touched it last.
+  source    String   @default("api")  // api|csv|manual|purchase|self
+  sources   String   @default("")     // comma-separated: "api,csv"
+  favorite  Boolean  @default(false)
+  priceNote String   @default("")
+  note      String   @default("")
+
+  // --- purchased placement provenance (меджики loop) ---
+  // Set when the donor URL arrived from a paid order's publication list (a FieldLink destination
+  // or a 369Team article) rather than from Ahrefs or the operator. The purchase import is a
+  // fourth writer next to CONTRACT.md §1's three: on create it names identity + source/sources
+  // + these two fields; on an existing row it only claims provenance (purchase* + appends
+  // "purchase" to sources) and never touches check*, api* or tox* — those groups belong to
+  // their own writers, and a bought placement on a donor Ahrefs already knows must not lose
+  // either side's story.
+  purchaseProvider String   @default("")  // "" | fieldlink | magic369
+  purchaseOrderId  String   @default("")  // the provider's order id, deep-links back to the order
+
+  // --- toxicity of the donor, for THIS site's niche (N2) ---
+  toxLevel      String    @default("unknown") // unknown|clean|suspicious|toxic
+  toxScore      Int?                          // 0..100
+  toxSignals    String?                       // JSON: string[] — KNOWN_TOX_SIGNALS codes
+  toxCheckedAt  DateTime?
+  disavow       Boolean   @default(false)     // operator decision, never set automatically
+  disavowNote   String    @default("")
+
+  addedAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  // Identity is (site, normalized donor page, target) — the same donor page legitimately links to
+  // two different pages of ours and those are two placements, not a duplicate.
+  @@unique([siteId, urlFromNorm, urlTo])
+  @@index([siteId, checkStatus])
+  @@index([siteId, apiLost])
+  @@index([siteId, favorite])
+  @@index([siteId, domainFrom])
+  @@index([siteId, addedAt])
+  @@index([siteId, toxLevel])
+}
+
+// Append-only history of what changed on a link. Kept separate from SiteBacklink because the row
+// there is a current-state record that all three writers overwrite; without this table a link
+// that was lost and came back before anyone looked leaves no trace, and the digest has nothing to
+// count. `origin` says which writer noticed, so a disagreement between Ahrefs and our own check
+// stays visible in the history instead of collapsing into one timeline.
+model SiteBacklinkEvent {
+  id         String   @id @default(cuid())
+  siteId     String
+  backlinkId String
+  // appeared | lost | returned | rel_downgraded | rel_upgraded | anchor_changed | target_changed
+  kind       String
+  detail     String   @default("")   // JSON: {"from":"...","to":"..."}
+  origin     String   @default("api") // api | check
+  createdAt  DateTime @default(now())
+
+  @@index([siteId, createdAt])
+  @@index([backlinkId, createdAt])
+}
+
+// One run — either an API export (kind = "api") or a placement check (kind = "verify").
+// Progress lives in the database rather than in memory because these runs outlive the request
+// that started them, and heartbeatAt is what lets a later request tell a slow run from a dead one.
+model SiteBacklinkSync {
+  id             String    @id @default(cuid())
+  siteId         String
+  kind           String    @default("api")      // api | verify
+  status         String    @default("running")  // running | completed | error
+  stage          String    @default("pull")     // pull | persist | completed | error
+  progress       Int       @default(0)          // 0..100
+  pagesPulled    Int       @default(0)
+  rowsSeen       Int       @default(0)
+  unitsSpent     Int       @default(0)
+  // Whether conclusions about *losses* may be drawn from this run (CONTRACT.md §4). A run that
+  // was filtered, capped or cut short may add rows but may never mark anything lost: the first
+  // partial export would otherwise announce "8000 links lost" that were never there and mail it
+  // out as an alert. Until one completed run has complete = true, the digest stays silent.
+  complete       Boolean   @default(false)
+  paginationMode String    @default("")         // offset | keyset
+  summary        String?                        // JSON, shape of SyncSummary in backlinkTypes.ts
+  error          String?
+  heartbeatAt    DateTime?
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  @@index([siteId, startedAt])
 }
 
 model IndexingOperation {
@@ -218,6 +622,11 @@ model DailyMetric {
   date        DateTime
   url         String
   query       String
+  // Which GSC search type this row belongs to ("web" | "discover" | "news" | "image" |
+  // "video"). Only the date-only rollup (url='' query='') is synced per type; page/query
+  // rows are web-only. Readers of rollup rows MUST filter by type or web aggregates will
+  // count every type five times.
+  searchType  String   @default("web")
   clicks      Int
   impressions Int
   ctr         Float
@@ -226,8 +635,32 @@ model DailyMetric {
   site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
 
   @@index([siteId, date])
+  @@index([siteId, searchType, date])
   @@index([url])
   @@index([query])
+}
+
+// Per-day query + page rows for the last QUERY_PAGE_DAILY_DAYS (gscSync Step 5).
+//
+// Kept apart from DailyMetric on purpose: every reader of DailyMetric's query+page rows
+// (striking distance, cannibalization, CTR, optimization briefs) assumes ONE 90-day total per
+// pair, and per-day rows mixed in there would be summed into those totals. This table answers
+// the one question a total can't — which page won a query on which day — for Related intent's
+// "winner changes" signal. Replaced wholesale on every sync, so it never grows past the window.
+model QueryPageDaily {
+  id          String   @id @default(cuid())
+  siteId      String
+  date        DateTime
+  query       String
+  url         String
+  clicks      Int
+  impressions Int
+  position    Float
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, date])
+  @@index([siteId, query])
 }
 
 // ─── Rank Tracker (SERP position monitoring) ─────────────────────────────────
@@ -249,10 +682,17 @@ model TrackedKeyword {
   bestPosition  Int?
   lastUrl       String?   // ranking URL found on the last check
 
+  // ─── wave-nov (N3): local rank. `location` changes the keyword's identity — the same query
+  // from Thessaloniki and from Athens is two different tracked keywords — so it joins the
+  // unique constraint. "" (the default) is the country-level keyword every existing row
+  // already is, which is why replacing the old 4-column unique below needs no data change.
+  location      String    @default("")  // "" = country-level (as before) | city name | "lat,lng"
+  lastLocalPack Int?                    // 1..3 = place in the map pack, null = not in pack / no pack
+
   site   Site        @relation(fields: [siteId], references: [id], onDelete: Cascade)
   checks RankCheck[]
 
-  @@unique([siteId, keyword, device, country])
+  @@unique([siteId, keyword, device, country, location])
   @@index([siteId])
   @@index([lastCheckedAt])
 }
@@ -294,9 +734,18 @@ model SiteAudit {
   id           String    @id @default(cuid())
   siteId       String
   status       String    @default("running") // "running" | "completed" | "error"
+  stage        String    @default("crawl")   // crawl | analyze | persist | completed | error
+  progress     Int       @default(0)          // 0..100, monotonic within an attempt
+  attempt      Int       @default(1)
+  heartbeatAt  DateTime?
+  options      String?   // JSON: ignore patterns and per-run crawler options
+  baselineAuditId String? // explicit audit this run verifies; no relation so old rows stay portable
+  verification String?   // JSON: resolved / stillPresent / regressions / inconclusive
+  trigger      String    @default("manual") // how this run was started: manual | bulk | scheduled | retry
+  nextAttemptAt DateTime? // queue retry gate — a row becomes eligible for a slot when this passes (null = now)
   startedAt    DateTime  @default(now())
   finishedAt   DateTime?
-  maxPages     Int       @default(200)
+  maxPages     Int       @default(5000) // safety ceiling, not a target — see crawler.ts
   pagesCrawled Int       @default(0)
   summary      String?   // JSON: issue counts, totals
   error        String?
@@ -305,6 +754,9 @@ model SiteAudit {
   pages SiteAuditPage[]
 
   @@index([siteId, startedAt])
+  // The workspace-wide history (GET /api/audit without siteId) orders every audit of the
+  // workspace by date — no siteId to anchor on, so the composite index above can't serve it.
+  @@index([startedAt])
 }
 
 model SiteAuditPage {
@@ -326,6 +778,11 @@ model SiteAuditPage {
   loadMs          Int     @default(0)
   depth           Int     @default(0)
   issues          String? // JSON array of issue codes, e.g. ["title_missing","broken_links"]
+  // JSON map of issue code -> the value that actually triggered it, e.g.
+  // {"open_graph_incomplete":"og:image, og:type","security_headers_missing":"CSP, HSTS"}.
+  // Without it a report says a page has a problem but not what the problem is, which is the
+  // difference between a list someone can act on and a list they must re-investigate.
+  evidence        String?
   brokenLinks     String? // JSON array of hrefs on this page that resolved 4xx/5xx
 
   audit SiteAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
@@ -337,10 +794,17 @@ model RankCheck {
   id        String   @id @default(cuid())
   keywordId String
   checkedAt DateTime @default(now())
-  position  Int?     // null = not found
+  position  Int?     // null = not found — ORGANIC only. Never write a map-pack place here:
+                     // position feeds graphs, bestPosition and the rank_drop alert (wave-nov §0.2)
   url       String?
   depth     Int?     // how many results were scanned
   error     String?
+  provider  String?  // SERP provider whose answer was stored (fallback id when it stepped in)
+
+  // ─── wave-nov (N3): the map pack is a separate number, never folded into `position` ──
+  localPack      Int?     // 1..3, null = not in pack
+  localPackTitle String?  // business name Google showed at that place
+  hasLocalPack   Boolean? // the SERP had a map pack at all; null = provider does not say
 
   keyword TrackedKeyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
 
@@ -381,6 +845,21 @@ model AeoCheck {
   url        String?
   snippet    String?
   error      String?
+
+  // A bare "cited: false" is unfalsifiable — when it disagrees with what the user sees in the
+  // browser there is nothing to inspect. So the whole answer is kept: the model that produced
+  // it, whether a live search actually ran, who got cited instead of us, and where we placed.
+  status     String?  // "cited" | "mentioned" | "absent"
+  rank       Int?     // 1-based position of our domain among the distinct cited domains
+  model      String?  // model id that produced this answer
+  searched   Boolean? // the engine ran a live web search rather than answering from weights
+  answerText String?  // full answer text
+  citations  String?  // JSON: [{ url, domain, title }]
+
+  // ─── wave-nov (N7): HOW the answer talks about the brand, not just whether it does ──
+  sentiment      String?  // positive | neutral | negative | mixed; null = not analysed
+  sentimentScore Float?   // -1..1
+  sentimentNote  String?  // ≤ 300 chars, what the answer says about the brand
 
   question TrackedQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
   @@index([questionId, checkedAt])
@@ -449,7 +928,7 @@ model SiteHealth {
   checkedAt    DateTime @default(now())
   sslData      String?  // JSON: { valid, daysLeft, issuer, grade, error? }
   safeBrowsing String?  // JSON: { safe, threats?, error? }
-  vitals       String?  // JSON: { lcp, fid, cls, ttfb, score, error? }
+  vitals       String?  // JSON: { lcp, inp, cls, ttfb, score, error? }
   virusTotal   String?  // JSON: { clean, malicious, suspicious, error? }
 
   site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
@@ -472,6 +951,7 @@ model IndexerDomain {
   
   user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   logs            IndexerLog[]
+  dailyStats      IndexerDailyStat[]
   queue           IndexerQueue[]
 
   @@unique([userId, domain])
@@ -490,6 +970,20 @@ model IndexerLog {
 
   domain    IndexerDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
   @@index([domainId, timestamp])
+}
+
+model IndexerDailyStat {
+  id         String        @id @default(cuid())
+  domainId   String
+  date       String        // "YYYY-MM-DD"
+  botType    String        // "google", "bing", "yandex", "mailru", "ai", "other", "redirect"
+  statusCode Int           @default(200)
+  count      Int           @default(0)
+
+  domain     IndexerDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, date, botType, statusCode])
+  @@index([domainId, date])
 }
 
 model IndexerQueue {
@@ -525,6 +1019,12 @@ model SeoJob {
   type      String   // "outline" | "text" | "analysis" | "landing"
   keyword   String   @default("")
   status    String   @default("processing") // "processing" | "completed" | "error"
+  stage     String   @default("queued")
+  progress  Int      @default(0)
+  attempt   Int      @default(1)
+  heartbeatAt DateTime?
+  checkpoint String? // JSON; never contains provider credentials
+  resumable Boolean  @default(false)
   result    String?  // JSON string of the result (outline object / { text, ... } / report)
   error     String?
   meta      String?  // JSON string (tone, promptType, outlineId, factcheck/images flags…)
@@ -564,10 +1064,11 @@ model RagSlot {
 
 // Cached Ahrefs Domain Rating (free public API, 7-day TTL). Attribution required in UI:
 // "Domain Rating by Ahrefs" → https://ahrefs.com/ (see ahrefs.com/legal/domain-rating-license).
-// Server-side copy of the SEO Tools generation history (outlines/texts/analyses).
-// The browser's localStorage stays the working cache; this table survives browser resets.
+// The SEO Tools generation history (outlines/texts/analyses) — the SOURCE OF TRUTH.
+// Every record ever pushed stays here (the History page paginates it); the browser's
+// localStorage is only a cache of the newest records.
 model SeoHistory {
-  id        String   @id            // client-generated history id
+  id        String   @id            // history id (the job id for records born as SeoJob rows)
   userId    String
   type      String
   keyword   String   @default("")
@@ -580,10 +1081,174 @@ model SeoHistory {
   @@index([userId, createdAt])
 }
 
+// ─── Content Operations — editorial queue and explicit GitHub PR delivery ────────────────
+// This deliberately does not replace SeoHistory or the existing generators. A queue item may
+// point at one of their results, but it owns only approval/review/publishing state.
+model ContentRepository {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  owner       String
+  repo        String
+  baseBranch  String   @default("main")
+  contentRoot String   @default("content")
+  tokenCipher String   // AES-256-GCM; never returned by an API
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operations  ContentOperation[]
+  sourceAudits SourceAuditRun[]
+
+  @@unique([userId, owner, repo])
+  @@index([userId])
+}
+
+// Read-only static repository checks. This is intentionally separate from the runtime SiteAudit
+// crawler: it scans a bounded GitHub source snapshot and never writes to the repository.
+model SourceAuditRun {
+  id             String   @id @default(cuid())
+  userId         String
+  repositoryId   String
+  ref            String
+  commitSha      String?
+  framework      String   @default("unknown")
+  status         String   @default("running") // running | completed | error | interrupted
+  stage          String   @default("tree")     // tree | fetch | analyze | completed | error | interrupted
+  progress       Int      @default(0)
+  attempt        Int      @default(1)
+  heartbeatAt    DateTime?
+  filesScanned   Int      @default(0)
+  totalFiles     Int      @default(0)
+  truncated      Boolean  @default(false)
+  score          Int?
+  summary        String?  // JSON: severity/category counters
+  findings       String?  // JSON: bounded deterministic findings, no source bodies or secrets
+  error          String?
+  startedAt      DateTime @default(now())
+  finishedAt     DateTime?
+
+  repository ContentRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startedAt])
+  @@index([repositoryId, startedAt])
+}
+
+model ContentOperation {
+  id             String   @id @default(cuid())
+  userId         String
+  repositoryId   String?
+  title          String
+  keyword        String   @default("")
+  operationType  String   @default("new") // "new" | "update"
+  sourceType     String   @default("manual") // "manual" | "history" | "demand" | "gsc" | "content_gap"
+  sourceRef      String?
+  targetUrl      String?
+  filePath       String?
+  content        String   @default("")
+  status         String   @default("idea") // idea → approved → review → pr_open → pr_merged → live
+  gates          String?  // JSON snapshot of the latest deterministic preflight
+  prNumber       Int?
+  prUrl          String?
+  branchName     String?
+  commitSha      String?
+  error          String?
+  approvedAt     DateTime?
+  prCreatedAt    DateTime?
+  mergedAt       DateTime?
+  liveAt         DateTime?
+
+  // Post-deploy outcome. These are plain scalar ids rather than relations on purpose: a deleted
+  // site or keyword must not cascade into the editorial audit trail, and the reader already has
+  // to tolerate a missing row (the operation outlives both).
+  siteId              String?
+  trackedKeywordId    String?
+  indexingLinkedAt    DateTime?
+  measurementStartedAt DateTime?
+  lastMeasuredAt      DateTime?
+  // JSON: { baseline, checkpoints: [{ day, capturedAt, clicks, impressions, position, rank }] }.
+  // Checkpoints are append-only — a captured 7-day figure is never recomputed later, because the
+  // point of the record is what the page actually did in that window.
+  outcomeJson         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository     ContentRepository?  @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  events         ContentOperationEvent[]
+
+  @@index([userId, status, updatedAt])
+  @@index([repositoryId])
+}
+
+model ContentOperationEvent {
+  id          String   @id @default(cuid())
+  operationId String
+  userId      String
+  fromStatus  String?
+  toStatus    String
+  note        String   @default("")
+  meta        String?
+  createdAt   DateTime @default(now())
+
+  operation   ContentOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  @@index([operationId, createdAt])
+  @@index([userId, createdAt])
+}
+
 model DrCache {
   domain    String   @id
   dr        Float
   checkedAt DateTime @default(now())
+}
+
+// Monthly DR history, one row per (domain, month) — the self-accumulated answer to "what did
+// this domain's DR do over time", which a single overwritten DrCache row cannot give. A sharp
+// fall across months is the expired-domain veto signal: DR 22→8 reads as a Google filter, not
+// lost links. Written as a side effect of every fresh DR measurement (never on cache hits);
+// the monthly key dedupes repeats within the month. Same pattern as BacklinkSnapshot.
+model DrSnapshot {
+  domain    String
+  month     String // YYYY-MM
+  dr        Float
+  source    String   @default("ahrefs-free") // ahrefs-free | goanyapi
+  checkedAt DateTime @default(now())
+
+  @@id([domain, month])
+  @@index([domain, checkedAt])
+}
+
+// Domain traffic estimates (GoAnyAPI). Cached like DrCache and for the same reason — every call
+// costs credits — but with a much longer life: the upstream figures are monthly, so refetching
+// within the same month buys the identical numbers twice.
+//
+// The whole response is kept as JSON rather than split into columns. It is a wide, nested and
+// vendor-shaped object (monthly series, channel shares, country shares, top keywords), only ever
+// read whole, and pinning it to columns would mean a migration every time the vendor adds a
+// channel — which, given they added GenAI recently, is a live possibility.
+model TrafficCache {
+  domain    String
+  // One row per (domain, provider): GoAnyAPI and Semrush TA are two vendors estimating the
+  // same truth, and keeping both lets the chip switch sources without refetching.
+  provider  String   @default("goanyapi")
+  payload   String
+  checkedAt DateTime @default(now())
+
+  @@id([domain, provider])
+}
+
+// Ads Intelligence (GoAnyAPI Ads Transparency), one cached section per row: overview
+// (advertisers + hostId), titles, statistics, images, and countries (key = the ad title).
+// Sections cache independently so detailing a tab never re-buys the overview.
+model AdIntelCache {
+  domain    String
+  section   String
+  key       String   @default("")
+  payload   String
+  checkedAt DateTime @default(now())
+
+  @@id([domain, section, key])
 }
 
 // ─── Link Monitor (Ahrefs API v3) — track fresh quality backlinks to watched brands ──
@@ -612,6 +1277,82 @@ model LinkMention {
 
   @@index([userId, brand])
   @@index([userId, domainFrom])
+}
+
+// ─── Outreach Workspace — manual, auditable follow-up for Link Monitor prospects ──
+// No row in this group sends email or performs an external action. It persists the operator's
+// workflow and a snapshot of the evidence that justified adding a prospect; LinkMention rows are
+// refreshed on every monitor run and therefore cannot be the only copy of that evidence.
+model OutreachCampaign {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  status      String   @default("active") // active | archived
+  targetAsset String   @default("")
+  notes       String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  prospects OutreachProspect[]
+
+  @@unique([userId, name])
+  @@index([userId, status])
+}
+
+model OutreachProspect {
+  id              String   @id @default(cuid())
+  userId          String
+  campaignId      String?
+  domain          String
+  stage           String   @default("discovered") // discovered | qualified | ready | contacted | replied | negotiating | won | lost
+
+  // Immutable-at-add evidence snapshot from Link Monitor (or a manual source URL).
+  sourceUrl       String   @default("")
+  sourceTitle     String   @default("")
+  sourceBrand     String   @default("")
+  sourceAnchor    String   @default("")
+  sourceDr        Float    @default(0)
+  sourceFirstSeen String   @default("")
+  sourceDofollow  Boolean  @default(true)
+
+  contactName     String   @default("")
+  contactEmail    String   @default("")
+  contactUrl      String   @default("")
+  contactSource   String   @default("")
+  pitchAngle      String   @default("")
+  targetAsset     String   @default("")
+  notes           String   @default("")
+
+  lastContactAt   DateTime?
+  nextFollowUpAt  DateTime?
+  backlinkId      String?  // validated against a Backlink owned through one of this user's sites
+  wonBacklinkUrl  String   @default("")
+  wonAt           DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  campaign OutreachCampaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  events   OutreachStageEvent[]
+
+  @@unique([userId, domain])
+  @@index([userId, stage])
+  @@index([userId, nextFollowUpAt])
+  @@index([campaignId])
+}
+
+model OutreachStageEvent {
+  id         String   @id @default(cuid())
+  prospectId String
+  userId     String
+  fromStage  String
+  toStage    String
+  note       String   @default("")
+  createdAt  DateTime @default(now())
+
+  prospect OutreachProspect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+
+  @@index([prospectId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model RagCasino {
@@ -649,4 +1390,1298 @@ model GeoAudit {
 
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@index([userId, createdAt])
+}
+
+// A dated note about something you changed on the site — a content refresh, a redirect, a template
+// swap. Its value is entirely in the comparison it enables: metrics for the N days before the date
+// against the N days after, so "did rewriting these pages actually move anything" has an answer
+// instead of a feeling. The metrics themselves are never stored — they are derived from
+// DailyMetric on read, so a note written today becomes meaningful as GSC data arrives (which it
+// does with a 2-3 day lag), and re-syncing history corrects old notes automatically.
+model Annotation {
+  id          String   @id @default(cuid())
+  siteId      String
+  date        DateTime // the day the change went live
+  title       String
+  description String?
+  scope       String   @default("all") // "all" | "pages"
+  urls        String?  // newline-separated URL filters, used when scope = "pages"
+  createdAt   DateTime @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, date])
+}
+
+// Magic-links purchase ledger (src/lib/magiclinks/purchases.ts) — one row per accepted brief
+// of a PAID order, written only after the provider accepted it. A created-but-unpaid task is
+// not a purchase. Chart markers and the annotations timeline derive from this table on read
+// (one event per order), so nothing duplicates and old orders appear retroactively. Accessed
+// through raw SQL like Annotation, with the same graceful degradation before db push.
+model MagicPurchase {
+  id        String   @id @default(cuid())
+  siteId    String
+  provider  String   // "fieldlink" | "magic369" (369Team articles) | "magic369links" (369Team homepage links)
+  orderId   String
+  taskId    String?  // FieldLink only; 369Team has tasks nowhere, only orders
+  query     String   // the striking-distance query this row was bought for
+  targetUrl String
+  anchor    String?
+  language  String
+  quantity  Int
+  // Set once the order's placements have been imported into SiteBacklink — or the order reached
+  // a terminal state with none to import. Null = the tracking pass (/magiclinks detail view or
+  // the verify scheduler) should still poll this order.
+  trackedAt DateTime?
+  createdAt DateTime @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, createdAt])
+  @@index([orderId])
+}
+
+// ─── Third-party metric cache (Ahrefs / Semrush) ──────────────────────────────
+// Two delivery paths write into these tables: a CSV export the user downloaded from their own
+// browser subscription (source = "csv", costs nothing) and paid API calls (source = "api").
+// Both are read the same way, so every feature works with or without an API key — the key only
+// removes the manual step. `source` and `checkedAt` are what let the UI say where a number came
+// from and how old it is, and what stops an old CSV from overwriting fresher API data.
+
+// Which columns a given API host actually forwards.
+//
+// A reseller gateway speaks the official protocol but may not proxy every field of every
+// endpoint — measured on a live instance, `keyword_difficulty` arrives on keywords-explorer and
+// never on site-explorer/organic-keywords. Since those columns carry a price surcharge, guessing
+// wrong means charging for data that will not come. Learned from the first response rather than
+// hard-coded, because a gateway's coverage is not ours to predict and changes without notice.
+//
+// `supported = 0` is the only actionable state: it suppresses the field and its surcharge.
+// A row is written per (host, endpoint, field) so an official key and a reseller key on the same
+// account keep separate verdicts.
+model GatewayFieldSupport {
+  host      String
+  endpoint  String
+  field     String
+  supported Int      @default(1)
+  checkedAt DateTime @default(now())
+
+  @@id([host, endpoint, field])
+}
+
+model KeywordMetricCache {
+  keyword      String
+  country      String   @default("us")
+  provider     String   @default("ahrefs")
+
+  volume       Int?
+  difficulty   Int?     // KD 0-100; the single most expensive field (10 units/row on Ahrefs)
+  cpc          Float?
+  globalVolume Int?
+  parentTopic  String?
+  intents      String?  // JSON array as returned by the provider
+  payload      String?  // full raw row, so new fields need no migration to be readable
+
+  source       String   @default("api") // "api" | "csv"
+  checkedAt    DateTime @default(now())
+
+  @@id([keyword, country, provider])
+  @@index([checkedAt])
+}
+
+model DomainMetricCache {
+  domain      String
+  provider    String   @default("ahrefs")
+
+  dr          Float?
+  refDomains  Int?
+  backlinks   Int?
+  orgTraffic  Float?
+  orgKeywords Int?
+  orgCost     Float?
+  payload     String?
+
+  source      String   @default("api")
+  checkedAt   DateTime @default(now())
+
+  @@id([domain, provider])
+  @@index([checkedAt])
+}
+
+// ─── Backlink profile ─────────────────────────────────────────────────────────
+// One row per referring domain per target. `lost` is derived, not fetched: a refreshed pull
+// returns the live set, and anything previously stored but absent from it has gone away. That
+// makes "new" and "lost" fall out of a single call instead of costing a second one, and it is
+// the reason `fetchedAt` matters — it is what distinguishes "absent from the last pull" from
+// "never seen".
+model RefDomainRow {
+  target        String   // the site's own domain
+  refDomain     String
+  provider      String   @default("ahrefs")
+
+  dr            Float?
+  linksToTarget Int?
+  dofollow      Boolean  @default(true)
+  firstSeen     String   @default("")
+
+  // Majestic extras (null/empty on Ahrefs rows): Citation Flow, top Topical
+  // Trust Flow topic, donor IP — the columns a PBN-check actually uses.
+  cf            Float?
+  topic         String   @default("")
+  ip            String   @default("")
+
+  lost          Boolean  @default(false)
+  lostAt        String   @default("")
+  source        String   @default("api") // "api" | "csv"
+  fetchedAt     DateTime @default(now())
+
+  @@id([target, refDomain, provider])
+  @@index([target, lost])
+  @@index([target, dr])
+}
+
+// Daily summary, kept as history rather than overwritten. The alert rules need a baseline to
+// compare against, and a single current value cannot answer "did this drop".
+model BacklinkSnapshot {
+  target      String
+  date        String   // YYYY-MM-DD
+  provider    String   @default("ahrefs")
+
+  refDomains  Int?
+  backlinks   Int?
+  dofollowPct Float?
+  source      String   @default("api")
+  createdAt   DateTime @default(now())
+
+  @@id([target, date, provider])
+  @@index([target, date])
+}
+
+// ─── Competitor gap ───────────────────────────────────────────────────────────
+// A competitor's organic keywords, stored per (site, competitor). The gap itself is never
+// stored: it is the join of these rows against the site's own GSC data, and GSC changes daily
+// while this list changes slowly. Persisting the join would mean recomputing — and paying for —
+// competitor keywords every time the user's own positions moved.
+model CompetitorKeyword {
+  siteId     String
+  competitor String
+  keyword    String
+  country    String  @default("us")
+
+  position   Int?
+  volume     Int?
+  difficulty Int?
+  url        String  @default("")
+
+  source     String   @default("api")
+  fetchedAt  DateTime @default(now())
+
+  @@id([siteId, competitor, keyword, country])
+  @@index([siteId, country])
+  @@index([siteId, competitor])
+}
+
+// Monthly demand for a keyword, cached separately from the keyword metrics themselves because
+// it answers a different question (is the market shrinking) and is fetched for far fewer terms.
+model KeywordVolumeHistory {
+  keyword   String
+  country   String   @default("us")
+  provider  String   @default("ahrefs")
+  points    String   // JSON: [{ date, volume }]
+  fetchedAt DateTime @default(now())
+
+  @@id([keyword, country, provider])
+}
+
+// Spent units per user/provider/month. Written before the request goes out (the cost of an
+// Ahrefs call is fully known from `select` and row count in advance), so a monthly cap can
+// refuse a call instead of discovering the overspend in the response.
+/// One outbound provider request. Append-only in spirit: a row is inserted when the request
+/// settles and completed once the caller has parsed the response, but never restated.
+///
+/// Deliberately NOT a replacement for ApiUsage below, which is a monthly counter written BEFORE
+/// a request to enforce a spending cap. This describes what actually happened, afterwards.
+model ProviderCall {
+  id        String   @id
+  at        DateTime @default(now())
+
+  /// Null when the call had no established context — a visible gap, never a guessed owner.
+  userId    String?
+  /// Route path, or a job type like "outline_auto". Null for the same reason as userId.
+  feature   String?
+
+  provider  String
+  model     String?
+  /// Origin + path only. Query strings and credentials are stripped before this is written.
+  endpoint  String
+
+  /// HTTP status, or 0 for a transport failure that never got one.
+  status    Int
+  /// Wall time from the start of the call to the moment the caller finished it — which is what
+  /// the call actually cost, since `await fetch` returns on headers and an LLM does its
+  /// generating inside the caller's `res.json()`. For a call nobody ever finished, it is the
+  /// time the response headers took to arrive.
+  ms        Int
+  /// Which attempt of a retry ladder this was; 1 for a single-shot call.
+  attempt   Int      @default(1)
+
+  promptTokens     Int?
+  completionTokens Int?
+  /// ONLY what the provider stated. Never computed from a price table — a stale table puts a
+  /// wrong number on screen that looks exactly like a right one.
+  costUsd          Float?
+
+  error     String?
+
+  /// Whether the caller closed this call after parsing.
+  ///
+  /// Without it, null tokens mean two different things — the row was never completed, or the
+  /// provider reported no usage — and this whole feature exists to stop conflating facts like
+  /// that.
+  complete  Boolean  @default(false)
+
+  /// Present only when body capture was switched on. Redacted and truncated.
+  requestBody  String?
+  responseBody String?
+
+  @@index([userId, at])
+  @@index([provider, at])
+  @@index([at])
+}
+
+model ApiUsage {
+  userId    String
+  provider  String
+  month     String   // "YYYY-MM"
+  units     Int      @default(0)
+  requests  Int      @default(0)
+  updatedAt DateTime @default(now())
+
+  @@id([userId, provider, month])
+}
+
+// Latest known balance/quota for one provider, as the provider's own counters report it —
+// authoritative for spend made outside this app too (another tool, a teammate, the same key).
+// Read by the balances page and the balance_low alert; written only by the balance refresh,
+// never on page load. Values live in the provider's own billing unit ("USD", "units", "pages").
+// ok=false means the last fetch failed — provider_down territory, not balance_low's.
+model ProviderBalance {
+  userId    String
+  provider  String
+  unit      String   @default("")
+  left      Float?   // spendable amount right now; null = the provider reports no balance
+  limit     Float?   // total quota for the current period; null = no fixed quota
+  resetAt   DateTime? // when the quota resets (Ahrefs units), null = rolling
+  ok        Boolean  @default(true)
+  error     String?
+  fetchedAt DateTime @default(now())
+
+  @@id([userId, provider])
+}
+
+// ─── Demand ───────────────────────────────────────────────────────────────────
+// One keyword-discovery search, cached whole. Unlike KeywordMetricCache — which answers "what
+// is this keyword worth" and is shared by every feature — this answers "what did this seed
+// return", a question only the Demand tab asks. Storing the result set as JSON rather than as
+// rows is deliberate: it is never queried by keyword, only replayed intact, and the seed→results
+// mapping is what re-running a search would otherwise have to pay for again.
+//
+// `cacheKey` folds in every parameter that changes the result (seed, country, language, mode,
+// limit, clickstream), because two searches that differ in any of them are different purchases.
+model DemandSearch {
+  userId    String
+  cacheKey  String
+  seed      String
+  country   String   @default("us")
+  language  String   @default("en")
+  mode      String   @default("auto") // auto | related | suggestions | ideas
+  source    String   @default("")     // where the rows actually came from, incl. google_ads
+  rows      String                    // JSON: DemandRow[]
+  createdAt DateTime @default(now())
+
+  @@id([userId, cacheKey])
+  @@index([userId, createdAt])
+}
+
+// ─── Drop catalogue (/drops) — expired domains with a live link profile ──────────────
+//
+// A drop is a domain the user does NOT own and, for 49 999 rows out of 50 000, never will.
+// That is why it is not a `Site` with extra columns: it has its own funnel, its own lifecycle
+// and its own throwaway volume, and only becomes a `Site` on the rare occasion it is bought.
+//
+// `userId` is a bare column with no relation, matching EnginePortfolioCache and ProviderBalance:
+// nothing here is ever loaded through the user, so a relation would only add a join.
+
+/// One import or extraction — a pasted list, a donor's referring domains, a zone diff.
+/// Exists so the catalogue can be filtered by "Запуск" instead of being one flat 50k table.
+model DropRun {
+  id         String    @id @default(cuid())
+  userId     String
+  label      String?
+  source     String    // csv | ahrefs_refdomains | ahrefs_broken | crawler | zone_diff
+  sourceRef  String?   // donor domain, file name, or the zone date this came from
+  total      Int       @default(0)   // rows accepted after normalisation
+  skipped    Int       @default(0)   // rows rejected on the way in
+  skipReport String?                 // JSON: Record<SkipReason, number>
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  candidates DropCandidate[]
+
+  @@index([userId, createdAt])
+}
+
+/// A user-curated bucket of candidates — "выкупить в октябре", "отложить", "спросить партнёра".
+/// Outbound proxies for the drops registry check.
+///
+/// Stored per owner and used ONLY by the availability stage: the pool changes which address a
+/// registry sees, never how often one address asks. Credentials live here in plain text, the
+/// same way the rest of this app keeps third-party keys — they are the user's own paid proxies,
+/// and they never leave the server except as `redactProxy` output.
+model DropProxy {
+  id        String   @id @default(cuid())
+  userId    String
+  /// http | socks5. WHOIS needs socks5: port 43 is raw TCP and HTTP proxies refuse CONNECT.
+  kind      String   @default("http")
+  host      String
+  port      Int
+  username  String?
+  password  String?
+  enabled   Boolean  @default(true)
+  /// Health, as the last run left it. Advisory only — a fresh run starts from a clean pool.
+  lastOkAt      DateTime?
+  lastCheckedAt DateTime?
+  lastError     String?
+  failures      Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, kind, host, port])
+  @@index([userId, enabled])
+}
+
+/// Orthogonal to both the funnel stage and the import run: a group can span runs and stages,
+/// because the decision it records ("what do I want to do with these") is the user's, not the
+/// pipeline's. Per-user and name-unique; deleting one leaves its rows in the catalogue.
+model DropGroup {
+  id     String @id @default(cuid())
+  userId String
+  name   String
+
+  createdAt DateTime @default(now())
+
+  candidates DropCandidate[]
+
+  @@unique([userId, name])
+  @@index([userId, createdAt])
+}
+
+/// One candidate domain.
+///
+/// Unique per (userId, domain), not per run: the same name arriving from three sources is one
+/// thing to check, not three. `runId` records where it was last seen, so a run can still be
+/// filtered on, and is nulled rather than cascaded when a run is deleted — losing the checking
+/// history because an import was tidied away would be the wrong trade.
+model DropCandidate {
+  id     String  @id @default(cuid())
+  userId String
+  runId  String?
+  domain String
+  tld    String
+
+  // ── funnel ───────────────────────────────────────────────────────────────────────
+  stage             String    @default("ingested")
+  // ingested | dns_checked | resolved_taken | checking | available | taken
+  // | confirmed | rejected | acquired
+  dnsHasRecords     Boolean?
+  lastStatus        String?   // registered | available | rate_limited | error
+  lastHttp          Int?
+  lastError         String?
+  lastVia           String?   // rdap | whois | dns | aparser
+  /// An `available` seen by only one source. Never alert on it, never show it as free.
+  corroborated      Boolean   @default(false)
+  consecutiveErrors Int       @default(0)
+  checkIntervalMin  Int       @default(1440)
+  nextCheckAt       DateTime?
+  lastCheckedAt     DateTime?
+  registryExpiresAt DateTime?
+  registryCreatedAt DateTime?
+  registryStatus    String?   // comma-separated EPP statuses, e.g. "pendingDelete"
+  nameServers       String?   // JSON: string[]
+
+  // ── enrichment (Ahrefs) ──────────────────────────────────────────────────────────
+  dr                 Float?
+  refdomains         Int?
+  refdomainsDofollow Int?
+  liveBacklinks      Int?
+  topAnchors         String?   // JSON: { anchor: string, count: number }[]
+  metricsAt          DateTime?
+
+  // ── enrichment (Majestic) ────────────────────────────────────────────────────────
+  /// Trust Flow / Citation Flow from GetIndexItemInfo. Kept in their own columns rather
+  /// than folded into `dr`: TF is a different scale, and the buy decision reads both —
+  /// DR without TF misses a PBN-heavy profile, TF without DR misses a fresh one.
+  majesticTf Float?
+  majesticCf Float?
+  majesticAt DateTime?
+
+  // ── history (Wayback) ────────────────────────────────────────────────────────────
+  waybackSnapshots Int?
+  waybackFirstAt   DateTime?
+  waybackLastAt    DateTime?
+  waybackGapDays   Int?
+  historyVerdict   String?   // clean | topic_shift | spam_period | unknown
+  historyNote      String?
+  historyAt        DateTime?
+
+  score     Float?
+  /// The veto that fired when the score was computed (spam_history | idle_over_2y |
+  /// dr_drop | pbn_profile), or null. Stored beside the score so the list can filter
+  /// "no vetoes" and render the chip without recomputing anything.
+  veto      String?
+  starred   Boolean  @default(false)
+  /// Watched rows are re-checked by the drops scheduler until the registry says they are free,
+  /// then alert once (corroborated verdicts only) and stop watching. See lib/drops/scheduler.ts.
+  watched   Boolean  @default(false)
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  run    DropRun?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+  group  DropGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  events DropEvent[]
+
+  /// A user-curated bucket ("выкупить в октябре", "отложить") — orthogonal to the funnel
+  /// stage and to the run. Deleting a group leaves the rows in place, ungrouped.
+  groupId String?
+
+  @@unique([userId, domain])
+  @@index([userId, stage])
+  @@index([userId, score])
+  @@index([runId])
+  @@index([groupId])
+  @@index([nextCheckAt])
+  @@index([watched, nextCheckAt])
+}
+
+/// Append-only trail. Without it there is no way to answer why a domain read "free" yesterday
+/// and "taken" today, or which registry reply produced either verdict.
+model DropEvent {
+  id          String   @id @default(cuid())
+  candidateId String
+  type        String   // info | available | taken | rate_limited | error | bought
+  message     String
+  createdAt   DateTime @default(now())
+
+  candidate DropCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId, createdAt])
+}
+
+// ─── Drops — activation of acquired domains ─────────────────────────────────
+// The funnel ends at `acquired`; these rows pick up there. See
+// docs/tasks/drops-activation/CONTRACT.md and docs/DROPS-ACTIVATION.md.
+
+/// One acquired domain being (re-)activated. `candidateId` is a plain string, not an
+/// FK: activation must survive catalogue tidy-ups, and DropCandidate stays untouched.
+model DropAsset {
+  id          String   @id @default(cuid())
+  userId      String
+  domain      String
+  candidateId String?
+  stage       String   @default("new")
+  // new | harvesting | ready | live | paused
+
+  gscSiteUrl             String?
+  gscSitemapPath         String?
+  gscSitemapSubmittedAt  DateTime?
+
+  sitemapUrl     String?
+  sitemapBuiltAt DateTime?
+
+  indexnowKey        String?
+  indexnowPushedAt   DateTime?
+  indexnowCount      Int       @default(0)
+  indexnowLastStatus String?
+
+  lastGoogleHitAt DateTime?
+  googleHits7d    Int      @default(0)
+
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  urls       DropLegacyUrl[]
+  donors     DropDonor[]
+  placements DropDonorPlacement[]
+
+  @@unique([userId, domain])
+  @@index([userId, stage])
+}
+
+/// One legacy URL of an asset, harvested from Wayback CDX and/or seen in GSC.
+/// The sitemap is built from these rows.
+model DropLegacyUrl {
+  id         String    @id @default(cuid())
+  assetId    String
+  url        String
+  source     String    @default("wayback") // wayback | gsc | manual
+  inGsc      Boolean   @default(false)
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  asset DropAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, url])
+  @@index([assetId, inGsc])
+}
+
+/// A donor page — a third-party page that (already) links to the asset. Doorways
+/// link to these; nothing ever links from a doorway to the asset itself.
+model DropDonor {
+  id        String   @id @default(cuid())
+  assetId   String
+  url       String
+  createdAt DateTime @default(now())
+
+  asset DropAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, url])
+}
+
+/// One (doorway, donor) pair actually enqueued into the indexer network. The queue
+/// row in `IndexerQueue` is the live injection; this row is the activation-view trail.
+model DropDonorPlacement {
+  id             String    @id @default(cuid())
+  assetId        String
+  doorway        String
+  donorUrl       String
+  placedAt       DateTime  @default(now())
+  active         Boolean   @default(true)
+  lastVerifiedAt DateTime?
+  verifyOk       Boolean?
+
+  asset DropAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, doorway, donorUrl])
+  @@index([assetId, active])
+}
+
+// ─── SERP Monitor (full top-N snapshots per market) ──────────────────────────
+// A project is a market (engine · country · language · device) plus a keyword set. Every run
+// stores the whole top-N per keyword; diffs are host-level and computed once, at write time.
+// See docs/SERP-MONITOR.md.
+
+model SerpProject {
+  id            String    @id @default(cuid())
+  userId        String                          // workspace owner, from workspaceUserId()
+  name          String
+  engine        String    @default("google")    // v1: "google" only
+  device        String    @default("desktop")   // v1: "desktop" only; "mobile" reserved
+  country       String                          // gl, 2 letters, lower-case
+  lang          String                          // hl
+  provider      String    @default("aparser")   // v1: "aparser" only
+  aparserPreset String    @default("default")   // SE::Google preset in A-Parser (captcha solver etc. live there)
+  depth         Int       @default(100)         // one of SERPMON_DEPTHS
+  intervalHours Int       @default(24)          // one of SERPMON_INTERVALS; 0 = manual only
+  ownDomains    String    @default("")          // newline-separated hosts, highlighted in UI
+  ignoreHosts   String    @default("")          // newline-separated, added to DEFAULT_PLATFORM_HOSTS
+  retentionDays Int       @default(180)         // full snapshots older than this are thinned to one per ISO week
+  alertStorm    Boolean   @default(true)
+  paused        Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  firstRunAt    DateTime?                       // finishedAt of the first done run — "new domain" starts after it
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+
+  keywords SerpKeyword[]
+  runs     SerpRun[]
+
+  @@index([userId])
+  @@index([paused, nextRunAt])
+}
+
+model SerpKeyword {
+  id              String    @id @default(cuid())
+  projectId       String
+  keyword         String                   // normaliseKeyword(); ≤ 191 chars
+  groupName       String    @default("")   // cluster label from the import
+  active          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  lastOkAt        DateTime?
+  lastSnapshotId  String?                  // last snapshot with status ok|partial
+  lastStatus      String    @default("")   // status of the most recent snapshot, any status
+  lastProblem     String?
+  lastDetail      String?                  // raw provider/transport error, sanitized (no password), ≤ 300 chars
+  lastChangeCount Int       @default(0)    // visible host changes in the last comparison
+  lastVolatility  Float?
+
+  project   SerpProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshots SerpSnapshot[]
+
+  @@unique([projectId, keyword])
+  @@index([projectId, active])
+}
+
+model SerpRun {
+  id         String    @id @default(cuid())
+  projectId  String
+  trigger    String                        // "schedule" | "manual"
+  status     String    @default("running") // running | done | aborted
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  planned    Int       @default(0)
+  ok         Int       @default(0)
+  partial    Int       @default(0)
+  failed     Int       @default(0)
+  compared   Int       @default(0)         // keywords that had a comparable previous snapshot
+  volatility Float?                        // median keyword volatility over compared keywords
+  volTop10   Float?
+  shareHigh  Float?                        // share of compared keywords above their own p90
+  stormScore Float?                        // robust z vs baseline; null while calibrating
+  storm      Boolean   @default(false)
+  error      String?
+
+  project   SerpProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshots SerpSnapshot[]
+
+  @@index([projectId, startedAt])
+  @@index([status])
+}
+
+model SerpSnapshot {
+  id           String   @id @default(cuid())
+  projectId    String
+  keywordId    String
+  runId        String
+  takenAt      DateTime @default(now())
+  status       String                    // ok | partial | failed
+  problem      String?                   // SnapshotProblem
+  detail       String?                   // raw provider/transport error, sanitized (no password), ≤ 300 chars
+  depth        Int                       // requested
+  got          Int      @default(0)      // organic rows returned (after dedupe)
+  totalCount   String   @default("")     // engine-reported count, as text
+  // JSON: [position, urlId][] ordered by position. "[]" for failed.
+  rows         String   @default("[]")
+  // JSON: string[] — SERP features seen (e.g. "paa", "related"), "" when the provider does not say
+  features     String   @default("")
+  prevId       String?                   // the snapshot this one was compared with
+  comparedDepth Int?
+  volatility   Float?
+  volTop10     Float?
+  changeCount  Int      @default(0)      // visible (non-ignored) host changes
+  attempts     Int      @default(1)      // how many times this keyword was asked in this run (retry pass)
+
+  keyword SerpKeyword  @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  run     SerpRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  changes SerpChange[]
+
+  @@unique([runId, keywordId])
+  @@index([keywordId, takenAt])
+}
+
+model SerpUrl {
+  id          Int      @id @default(autoincrement())
+  urlHash     String   @unique            // sha1(url) hex — the dedupe key; url itself can exceed 191
+  url         String
+  hostId      Int
+  title       String   @default("")       // last seen
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  @@index([hostId])
+}
+
+model SerpHost {
+  id                 Int       @id @default(autoincrement())
+  host               String    @unique    // hostOfUrl(): lower-case, no "www.", ≤ 191
+  registrable        String    @default("") // apexOf(host) from lib/drops/registries; "" when unknown
+  firstSeenAt        DateTime  @default(now())
+  registeredAt       DateTime?            // creation date of `registrable` (RDAP/WHOIS)
+  ageCheckedAt       DateTime?
+  ageError           String?
+  dr                 Float?
+  drCheckedAt        DateTime?
+  refdomains         Int?                 // referring domains of `registrable` (paid metrics stats call)
+  refdomainsCheckedAt DateTime?
+
+  @@index([registrable])
+  @@index([ageCheckedAt])
+  @@index([drCheckedAt])
+  @@index([refdomainsCheckedAt])
+}
+
+model SerpChange {
+  id         String   @id @default(cuid())
+  projectId  String
+  keywordId  String
+  snapshotId String
+  hostId     Int
+  kind       String                       // enter | exit | up | down
+  fromPos    Int?
+  toPos      Int?
+  urls       Int      @default(1)
+  hidden     Boolean  @default(false)     // platform/ignored host — stored, not shown by default
+  takenAt    DateTime
+
+  snapshot SerpSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, takenAt])
+  @@index([projectId, hostId, takenAt])
+  @@index([snapshotId])
+}
+
+model SerpProjectHost {
+  projectId    String
+  hostId       Int
+  firstSeenAt  DateTime                   // first snapshot of this project the host appeared in
+  lastSeenAt   DateTime
+  keywords     Int      @default(0)       // active keywords whose latest ok|partial snapshot contains the host
+  prevKeywords Int      @default(0)       // the same number one run earlier — trend arrow
+  top10        Int      @default(0)
+  top30        Int      @default(0)
+  bestPos      Int?
+  avgPos       Float?
+  bounces      Int      @default(0)       // enter→exit on the same keyword within BOUNCE_RUNS runs
+
+  @@id([projectId, hostId])
+  @@index([projectId, keywords])
+}
+
+// ─── Uptime monitor (T2) ─────────────────────────────────────────────────────
+// One HTTP check per site every intervalMin. Raw checks are kept 7 days; UptimeDaily keeps the
+// long history (uptime %, latency) forever at one row per monitor per UTC day. An incident is
+// opened after failThreshold consecutive failures and closed by the first success after it.
+model UptimeMonitor {
+  id               String    @id @default(cuid())
+  siteId           String    @unique
+  enabled          Boolean   @default(true)
+  url              String                        // absolute https URL; default = site root
+  intervalMin      Int       @default(5)         // one of UPTIME_INTERVALS
+  timeoutMs        Int       @default(15000)
+  acceptStatus     String    @default("200-399") // ranges/codes, comma-separated: "200-399,401"
+  keyword          String    @default("")        // must appear in the body when non-empty
+  slowMs           Int       @default(5000)      // above this → degraded (still "up" for alerts)
+  failThreshold    Int       @default(2)
+  alerts           Boolean   @default(true)
+  status           String    @default("unknown") // UptimeStatus
+  statusSince      DateTime?
+  consecutiveFails Int       @default(0)
+  lastCheckedAt    DateTime?
+  lastLatencyMs    Int?
+  lastHttpStatus   Int?
+  lastError        String?                       // UptimeCause code + short detail, ≤ 300 chars
+  nextCheckAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  site      Site             @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  checks    UptimeCheck[]
+  daily     UptimeDaily[]
+  incidents UptimeIncident[]
+
+  @@index([enabled, nextCheckAt])
+}
+
+model UptimeCheck {
+  id         String   @id @default(cuid())
+  monitorId  String
+  checkedAt  DateTime @default(now())
+  ok         Boolean
+  httpStatus Int?
+  latencyMs  Int?
+  cause      String?  // UptimeCause when !ok
+  detail     String?  // ≤ 300 chars
+
+  monitor UptimeMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId, checkedAt])
+  @@index([checkedAt])
+}
+
+model UptimeDaily {
+  monitorId  String
+  day        String   // "YYYY-MM-DD", UTC
+  checks     Int      @default(0)
+  fails      Int      @default(0)
+  latencySum Int      @default(0) // over successful checks only
+  latencyMax Int      @default(0)
+  downMs     Int      @default(0) // incident time falling inside this day
+
+  monitor UptimeMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@id([monitorId, day])
+}
+
+model UptimeIncident {
+  id          String    @id @default(cuid())
+  monitorId   String
+  startedAt   DateTime  // time of the FIRST failed check of the streak, not of confirmation
+  endedAt     DateTime?
+  cause       String    // UptimeCause of the confirming check
+  detail      String?
+  httpStatus  Int?
+  alertedDown Boolean   @default(false)
+  alertedUp   Boolean   @default(false)
+  lastReminderAt DateTime?
+
+  monitor UptimeMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId, startedAt])
+  @@index([endedAt])
+}
+
+// ─── URL Inspection quota ledger (T4) ─────────────────────────────────────────
+// Google's URL Inspection quota is 2000/day and 600/min PER PROPERTY, reset at midnight
+// America/Los_Angeles. Every inspection from any path (manual button, MCP inspect_url, the
+// auto queue) increments the same row, so the auto queue never starves the manual button.
+model InspectionQuota {
+  property String   // Site.siteId, e.g. "sc-domain:example.com"
+  day      String   // "YYYY-MM-DD" in America/Los_Angeles
+  used     Int      @default(0)
+  auto     Int      @default(0) // part of `used` spent by the auto queue
+  errors   Int      @default(0)
+  exhaustedAt DateTime?        // set on a quota error from Google; the queue stops for this day
+
+  @@id([property, day])
+}
+
+// One row per site per UTC day, written once a day by the T4 scheduler from SitemapUrl.
+model IndexCoverageDaily {
+  siteId     String
+  day        String   // "YYYY-MM-DD", UTC
+  total      Int      @default(0) // active sitemap URLs
+  indexed    Int      @default(0)
+  notIndexed Int      @default(0)
+  unknown    Int      @default(0) // never inspected
+  reasons    String?  // JSON: Record<coverageState, count> for notIndexed
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([siteId, day])
+}
+
+// ─── Brand mentions (T6) ─────────────────────────────────────────────────────
+model BrandMention {
+  id          String    @id @default(cuid())
+  siteId      String
+  source      String    // MentionSource
+  kind        String    @default("mention") // MentionKind
+  term        String    // the watched term that matched
+  url         String
+  urlKey      String    // normalizeMentionUrl(url) — dedupe key, ≤ 191 chars (sha1 hex when longer)
+  title       String    @default("")
+  snippet     String    @default("")
+  publisher   String    @default("")
+  lang        String    @default("")
+  publishedAt DateTime?
+  firstSeenAt DateTime  @default(now())
+  linkStatus  String    @default("unchecked") // MentionLinkStatus
+  linkCheckedAt DateTime?
+  reviewed    Boolean   @default(false)
+  dismissed   Boolean   @default(false)
+  notifiedAt  DateTime?
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, source, urlKey])
+  @@index([siteId, firstSeenAt])
+  @@index([siteId, dismissed, reviewed])
+}
+
+// ─── wave-nov: all models below are added verbatim from docs/tasks/wave-nov/CONTRACT.md §1.2 ──
+
+// ─── Local SEO (N4) ──────────────────────────────────────────────────────────
+model LocalProfile {
+  id            String   @id @default(cuid())
+  siteId        String   @unique
+  name          String
+  businessType  String   @default("LocalBusiness") // schema.org type: TaxiService, DaySpa, Restaurant…
+  street        String   @default("")
+  locality      String   @default("")
+  region        String   @default("")
+  postalCode    String   @default("")
+  country       String   @default("")   // ISO-3166 alpha-2
+  phone         String   @default("")   // E.164
+  email         String   @default("")
+  lat           Float?
+  lng           Float?
+  hours         String?                 // JSON: { day: "Mo".."Su", opens: "09:00", closes: "21:00" }[]
+  priceRange    String   @default("")
+  sameAs        String   @default("")   // newline-separated profile URLs
+  serviceAreas  String   @default("")   // newline-separated cities/areas
+  gbpAccount    String?                 // "accounts/123"
+  gbpLocation   String?                 // "locations/456"
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+}
+
+model LocalCitation {
+  id         String    @id @default(cuid())
+  siteId     String
+  url        String
+  directory  String    @default("")          // human label, e.g. "Yelp", "Xo.gr"
+  status     String    @default("unchecked") // unchecked|consistent|mismatch|missing|unreachable
+  found      String?                         // JSON: { name?, phone?, address? } as seen on the page
+  diffs      String?                         // JSON: NapDiff[]
+  checkedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  @@unique([siteId, url])
+}
+
+model GbpPost {
+  id           String    @id @default(cuid())
+  siteId       String
+  summary      String
+  ctaType      String?                        // BOOK | ORDER | LEARN_MORE | CALL | SIGN_UP
+  ctaUrl       String?
+  mediaUrl     String?                        // public https image URL
+  scheduledAt  DateTime
+  status       String    @default("scheduled") // draft|scheduled|published|failed
+  gbpName      String?                        // resource name returned by the API
+  error        String?
+  createdAt    DateTime  @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  @@index([status, scheduledAt])
+}
+
+model GbpReview {
+  id         String    @id @default(cuid())
+  siteId     String
+  reviewId   String
+  author     String    @default("")
+  rating     Int                              // 1..5
+  comment    String    @default("")
+  createTime DateTime
+  replyText  String?
+  replyTime  DateTime?
+  fetchedAt  DateTime  @default(now())
+  notifiedAt DateTime?
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  @@unique([siteId, reviewId])
+  @@index([siteId, createTime])
+}
+
+// ─── Trend radar (N5) ────────────────────────────────────────────────────────
+model TrendSeed {
+  id        String   @id @default(cuid())
+  siteId    String
+  seed      String
+  lang      String   @default("")
+  country   String   @default("")
+  createdAt DateTime @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  @@unique([siteId, seed])
+}
+
+model TrendItem {
+  id              String   @id @default(cuid())
+  siteId          String
+  source          String   // gsc_rising | gsc_new | suggest
+  query           String
+  score           Float    // source-specific, higher = hotter; see src/lib/trends
+  impressions     Int?
+  prevImpressions Int?
+  seed            String?
+  firstSeenAt     DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  dismissed       Boolean  @default(false)
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  @@unique([siteId, source, query])
+  @@index([siteId, lastSeenAt])
+}
+
+// ─── Plagiarism (N6) ─────────────────────────────────────────────────────────
+model PlagiarismCheck {
+  id         String    @id @default(cuid())
+  userId     String
+  historyId  String?                  // SeoHistory id when checking a generated text
+  textHash   String                   // sha1 of the normalised text
+  provider   String                   // serper | dataforseo | aparser | …
+  status     String    @default("running") // running | done | failed
+  queries    Int       @default(0)
+  costUsd    Float?
+  result     String?                  // JSON: PlagiarismResult
+  error      String?
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([userId, textHash])
+}
+
+// ─── Client reports (N8) ─────────────────────────────────────────────────────
+model ClientReport {
+  id          String    @id @default(cuid())
+  userId      String
+  siteId      String
+  title       String
+  template    String    @default("executive") // executive | detailed | technical | local
+  sections    String                           // JSON: ReportSectionId[]
+  periodDays  Int       @default(30)
+  schedule    String    @default("off")        // off | weekly | monthly
+  sendDay     Int       @default(1)            // weekday 1..7 or day of month 1..28
+  recipients  String    @default("")           // comma-separated e-mails
+  notes       String    @default("")           // operator's "what we did" text, markdown
+  shareToken  String?   @unique                  // client link /share/report/<token> (N8); null = link off
+  lastSentAt  DateTime?
+  nextSendAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  site Site             @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  runs ClientReportRun[]
+  @@index([userId])
+  @@index([nextSendAt])
+}
+
+model ClientReportRun {
+  id         String    @id @default(cuid())
+  reportId   String
+  periodFrom DateTime
+  periodTo   DateTime
+  html       String                // frozen rendered snapshot — never re-rendered
+  pdfPath    String?               // under data/reports/, when a PDF was produced
+  sentTo     String?
+  error      String?
+  createdAt  DateTime  @default(now())
+
+  report ClientReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  @@index([reportId, createdAt])
+}
+
+// ─── Site context (Project Memory) ────────────────────────────────────────────
+// The shared AI context per site: what the business is, the current goal, positioning,
+// writing preferences, the curated competitor list, key pages and a research log. The
+// point of the store is that an agent's FIRST call for a site is this context — not a
+// re-interview of the user — and that the operator can inspect and correct everything
+// the AI believes (updatedBy provenance on every row).
+//
+// Competitors deliberately have no table here: Site.aeoCompetitors (AiCompetitor[]) is
+// already the site's competitor list, shared with AI share of voice — one list, edited
+// from two surfaces (the Context card and the AEO tracker), never two lists drifting.
+//
+// Access degrades the same way the rest of the post-initial-schema models do: before
+// `prisma db push` every read returns the empty context and every write is skipped.
+
+model SiteContextSection {
+  id         String    @id @default(cuid())
+  siteId     String
+  // business_overview | current_goal | positioning | writing_preferences — the typed
+  // vocabulary shared with the skills' "required sections" — or custom:<slug> for anything
+  // that does not fit yet (the pressure valve that tells us which key to promote next).
+  key        String
+  title      String    @default("")     // custom sections only; typed keys carry their own label
+  content    String    @default("")     // markdown, capped (see the store)
+  updatedBy  String    @default("user") // user | mcp — who last wrote it, shown in the UI
+  updatedAt  DateTime  @updatedAt
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, key])
+}
+
+model SiteKeyPage {
+  id         String    @id @default(cuid())
+  siteId     String
+  url        String    // normalized (see the store); a curated shortlist, NOT a sitemap inventory
+  role       String    @default("other") // money | hub | spoke | other
+  topic      String    @default("")      // the topic/keyword this page is meant to win
+  notes      String    @default("")
+  updatedBy  String    @default("user")
+  updatedAt  DateTime  @updatedAt
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@unique([siteId, url])
+  @@index([siteId])
+}
+
+model SiteResearchLog {
+  id         String    @id @default(cuid())
+  siteId     String
+  entryDate  String    // YYYY-MM-DD, stamped by the server on append
+  summary    String    // "<what>: <inputs>. Verdict: <conclusion>" — enough to decide NOT to re-buy it
+  createdBy  String    @default("user") // user | mcp
+  createdAt  DateTime  @default(now())
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, createdAt])
+}
+
+// ─── Leads from the embeddable audit widget (N9) ─────────────────────────────
+model Lead {
+  id        String   @id @default(cuid())
+  userId    String                        // workspace owner the widget belongs to
+  domain    String
+  email     String
+  name      String   @default("")
+  message   String   @default("")
+  score     Int                           // 0..100, the lite audit's score
+  findings  String                        // JSON: LeadFinding[]
+  source    String   @default("widget")   // widget | manual
+  status    String   @default("new")      // new | contacted | won | lost | client
+  ipHash    String                        // salted sha256 — never the raw IP
+  origin    String   @default("")         // page the widget was embedded on
+  proposal  String?                       // markdown, generated by N9
+  // The Orbitra tracker bridge: campaign created from this lead (null = not sent yet).
+  // The alias survives even when the tracker's answer carried no id.
+  orbitraCampaignId Int?
+  orbitraAlias      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+}
+
+// ─── Web push (N10) ──────────────────────────────────────────────────────────
+model PushSubscription {
+  id        String    @id @default(cuid())
+  userId    String
+  endpoint  String    @unique
+  p256dh    String
+  auth      String
+  userAgent String    @default("")
+  events    String    @default("")   // comma-separated NotifyEvent; "" = all
+  failures  Int       @default(0)
+  lastOkAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// Instance-wide key/value for generated secrets that must survive restarts (VAPID keys, N10).
+model InstanceSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// ─── Geo-grid local rank scans (wave G) ───────────────────────────────────────
+// One keyword checked at N×N lat/lng points around the business (Local Falcon style).
+// Points live as a JSON array inside the row — a scan's points are always read together,
+// same pattern as AeoCheck.citations. The rank-check runner already accepts location as
+// "lat,lng" and extracts the local pack, so a scan is an orchestrated batch of those.
+model GridScan {
+  id        String   @id @default(cuid())
+  siteId    String
+  keyword   String
+  centerLat Float
+  centerLng Float
+  gridSize  Int      // 3 | 5 | 7 (odd, so there is a true centre point)
+  radiusKm  Float    // centre → outer edge
+  provider  String   // from RANK_PROVIDERS (src/lib/rank.ts)
+  depth     Int
+  status    String   @default("queued") // queued | running | done | error
+  error     String   @default("")
+  points    String   // JSON: [{ row, col, lat, lng, position, localPack, businessName }]
+  // R+: which preset fired this scan (null = one-off manual run) and which answer
+  // language the SERP actually ran with. hl is stored per scan because it changes the
+  // SERP as much as geography does — tourists search "thessaloniki airport transfer"
+  // in EN/RU/DE while the profile country stays GR.
+  presetId  String?
+  hl        String   @default("") // "" = defaultLanguageFor(profile country) at run time
+  createdAt DateTime @default(now())
+
+  site   Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  preset GridPreset? @relation(fields: [presetId], references: [id], onDelete: SetNull)
+
+  @@index([siteId, createdAt])
+  @@index([presetId, createdAt])
+}
+
+// R+: a saved "point + radius + grid" with an optional cron schedule, so a scan is a
+// repeatable measurement (dynamics across scans chained by presetId), not a one-off.
+// Schedule is a plain 5-field cron string — the in-house matcher (src/lib/cron.ts)
+// reads it; the UI compiles human choices ("weekly at 09:00") into it and never
+// offers free-text cron. lastFireAt is the scheduler's high-water mark: a missed tick
+// is skipped, never back-filled (a grid run costs gridSize² queries).
+model GridPreset {
+  id         String    @id @default(cuid())
+  siteId     String
+  name       String
+  keyword    String
+  centerLat  Float
+  centerLng  Float
+  gridSize   Int       // 3 | 5 | 7
+  radiusKm   Float
+  hl         String    @default("") // "" = language of the profile country; EN/RU/DE for tourist queries
+  schedule   String    @default("") // 5-field cron; "" = manual only (Run now)
+  lastFireAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  site  Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  scans GridScan[]
+
+  @@index([siteId])
+}
+
+// ─── Multi-platform publishing (wave P) ───────────────────────────────────────
+// A connection is one publishable destination: the site's own WordPress (money site)
+// or a satellite blog platform. Credentials follow the same at-rest convention as the
+// seoSettings keys — behind auth, encryption is a separate future workstream.
+model BlogConnection {
+  id             String    @id @default(cuid())
+  siteId         String
+  platform       String    // "wordpress" (later: devto, hashnode, blogger…)
+  // R+: what this destination IS in the network. The respin gate reads exactly this:
+  // adaptation is allowed ONLY for external_platform — respinning one canonical post
+  // onto own satellites hands Google a ready-made footprint (one facture, one link
+  // target, one publication moment), which is the thing the type system exists to prevent.
+  connectionType String    @default("own_satellite") // own_satellite | money_site | external_platform
+  label          String    // human-readable, e.g. "Money site SKG"
+  siteIdentifier String    // platform's notion of the target: site URL, blog id…
+  credentials    String    // JSON: { appPassword } | { apiKey } — per platform
+  status         String    @default("unverified") // unverified | ok | error
+  lastError      String    @default("")
+  lastVerifiedAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  site  Site            @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  posts PublishedPost[]
+
+  @@index([siteId, createdAt])
+}
+
+// The published sibling of SeoHistory: what actually went out (the respin, when one ran),
+// where it lives, and whether it succeeded. A successful publish feeds the loop — a
+// SiteBacklink row with source "self" so the existing link checker and donor indexer
+// treat our own satellite post like any other donor page.
+model PublishedPost {
+  id           String    @id @default(cuid())
+  siteId       String
+  connectionId String
+  historyId    String?   // SeoHistory.id the post was generated from; null = pasted manually
+  title        String
+  markdown     String    // what was actually sent (respin output when respin was used)
+  respinUsed   Boolean   @default(false)
+  remoteId     String    @default("")
+  remoteUrl    String    @default("")
+  status       String    @default("draft") // draft | scheduled | publishing | published | failed | blocked
+  error        String    @default("")
+  // R+: publish later, inside a random jitter window — satellites must not go out as
+  // one detectable batch. The offset is fixed at planning time (visible, editable);
+  // a scheduler pass sends due posts through the same per-post path as retry.
+  scheduledAt  DateTime?
+  // R+: 1 − max textSimilarity against every published post in the instance at send
+  // time (see the publish gate). Null = not yet measured.
+  uniquenessScore Float?
+  publishedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  site       Site           @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  connection BlogConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, createdAt])
 }

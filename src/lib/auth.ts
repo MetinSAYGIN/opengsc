@@ -1,13 +1,45 @@
 import { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import CredentialsProvider from "next-auth/providers/credentials";
+import bcrypt from "bcryptjs";
+import { cookies } from "next/headers";
+import { decode } from "next-auth/jwt";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { prisma } from "./prisma";
+import { prisma, dbAny } from "./prisma";
+import { ownerAuthState } from "./team/owner";
+import { decideGoogleSignIn, envFlag, parseEmailList } from "./googleSignIn";
+import { clientIpFromHeaders, loginAttempts } from "./auth/loginRateLimit";
+import { defaultPasswordLookup, enforcePasswordRevision } from "./auth/sessionRevocation";
 
 const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? false;
 
+
+/**
+ * True when the request carries a valid session cookie belonging to the owner.
+ *
+ * NextAuth v4 does not hand the request to `signIn`, so the cookie is read from the App Router
+ * context and decoded with the same secret. A decode failure is treated as "not the owner": the
+ * consequence is a refused account link, which is recoverable, while the opposite default would
+ * leave the hole open.
+ */
+async function ownerSessionPresent(ownerId: string): Promise<boolean> {
+  try {
+    const store = await cookies();
+    const raw = store.get(useSecureCookies ? "__Secure-next-auth.session-token" : "next-auth.session-token")?.value
+      ?? store.get("next-auth.session-token")?.value;
+    if (!raw) return false;
+    const token = await decode({ token: raw, secret: process.env.NEXTAUTH_SECRET ?? "" });
+    return token?.sub === ownerId;
+  } catch (error) {
+    console.warn("[auth] could not read the current session while linking a Google account:", error);
+    return false;
+  }
+}
+
+
+
 export const authOptions: NextAuthOptions = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adapter: PrismaAdapter(prisma as any),
+  adapter: PrismaAdapter(dbAny),
   session: {
     strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
@@ -22,6 +54,59 @@ export const authOptions: NextAuthOptions = {
     signIn: "/login",
   },
   providers: [
+    // Team members sign in with an email and a password, never with Google.
+    //
+    // The reason is not technical. An agency employee's Google account carries their own Search
+    // Console properties — personal sites, old projects — and signing them in through Google would
+    // pull those into the agency's workspace. Work and personal data must not mix in either
+    // direction, so a member account is a login, not an identity that owns anything.
+    CredentialsProvider({
+      id: "credentials",
+      name: "Password",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials, req) {
+        const email = String(credentials?.email ?? "").trim().toLowerCase();
+        const password = String(credentials?.password ?? "");
+        if (!email || !password) return null;
+
+        // Reserve the attempt before bcrypt. A locked source returns the same null as a wrong
+        // password, so the login form does not grow a separate "this account exists" signal.
+        const ip = clientIpFromHeaders(req?.headers);
+        const attempt = loginAttempts.begin(ip, email);
+        if (!attempt.allowed) {
+          console.warn(`[auth] credentials sign-in rate-limited (${attempt.scope})`);
+          return null;
+        }
+
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: { id: true, email: true, name: true, image: true, passwordHash: true, isOwner: true },
+        }).catch(() => null);
+
+        // Always spend a comparison, even with no user and no hash. Returning early on an unknown
+        // address makes the response measurably faster and turns the login form into an account
+        // enumerator.
+        const hash = user?.passwordHash ?? "$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv";
+        const valid = await bcrypt.compare(password, hash).catch(() => false);
+        if (!user || !user.passwordHash || !valid) return null;
+
+        // A password account is worthless without a live membership: revoking access is a single
+        // status change, and it takes effect on the very next request.
+        if (!user.isOwner) {
+          const membership = await dbAny.membership.findFirst({
+            where: { email, status: "active" },
+            select: { id: true },
+          }).catch(() => null);
+          if (!membership) return null;
+        }
+
+        if (attempt.stamp !== null) loginAttempts.succeed(ip, email, attempt.stamp);
+        return { id: user.id, email: user.email, name: user.name, image: user.image };
+      },
+    }),
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
@@ -38,32 +123,58 @@ export const authOptions: NextAuthOptions = {
   ],
 
   callbacks: {
-    async signIn({ user, account }) {
+    async signIn({ user, account, profile }) {
+      // A credentials sign-in has already been validated in `authorize`, and it must never reach
+      // the Google linking logic below, which rewrites the session onto the owner's identity.
+      if (account?.provider === "credentials") return true;
       if (account?.provider !== "google") return false;
 
-      // ── Find the owner (first user ever created) ──────────────────────────
-      const owner = await prisma.user.findFirst({ orderBy: { id: "asc" } });
+      // The owner is the account marked `isOwner` — the same one every other part of the app uses.
+      // This used to be "the first user by id", which stopped being true after an ownership
+      // transfer: the previous owner kept signing in as the owner through Google, and the new owner
+      // could not connect a single Google account because their session never matched.
+      const owner = await ownerAuthState();
+      if (owner === undefined) return "/login?error=unavailable";
 
-      if (!owner) {
-        // No users yet → first login, PrismaAdapter creates the user automatically.
-        return true;
-      }
-
-      // ── Check if this Google account is already linked ────────────────────
-      const existing = await prisma.account.findUnique({
+      const existing = owner ? await prisma.account.findUnique({
         where: {
           provider_providerAccountId: {
             provider: "google",
             providerAccountId: account.providerAccountId,
           },
         },
+      }) : null;
+
+      const decision = decideGoogleSignIn({
+        owner: owner ? { email: owner.email, hasPassword: owner.hasPassword } : null,
+        ownerSession: owner ? await ownerSessionPresent(owner.id) : false,
+        accountLinked: !!existing && existing.userId === owner?.id,
+        email: user.email ?? null,
+        emailVerified: (profile as { email_verified?: boolean } | undefined)?.email_verified,
+        bootstrapEmails: parseEmailList(process.env.OPENGSC_OWNER_EMAIL),
+        googleLoginForced: envFlag(process.env.OPENGSC_ALLOW_GOOGLE_LOGIN),
       });
 
+      // Every refusal is decided here, on the server, before a session exists. Hiding the button on
+      // /login is only courtesy: /api/auth/signin/google stays reachable, because connecting data
+      // sources needs it, and this callback is what makes it lead nowhere for anyone else.
+      if (decision.kind === "deny") {
+        console.warn(`[auth] refused a Google sign-in (${decision.reason}):`, account.providerAccountId);
+        return `/login?error=${decision.reason}`;
+      }
+
+      // No users yet → PrismaAdapter creates this one, and it becomes the owner.
+      if (decision.kind === "bootstrap" || !owner) return true;
+
+      // ── Store fresh tokens, or attach the account (link only) ─────────────
       if (existing) {
-        // Refresh tokens
         await prisma.account.update({
           where: { id: existing.id },
           data: {
+            // A link re-homes the account onto the current owner. After an ownership transfer the
+            // row can still belong to the previous owner, and refreshing its tokens in place would
+            // leave the new owner's data sources reading through someone else's account.
+            ...(decision.kind === "link" && existing.userId !== owner.id ? { userId: owner.id } : {}),
             access_token:  account.access_token,
             refresh_token: account.refresh_token ?? existing.refresh_token,
             expires_at:    account.expires_at,
@@ -72,7 +183,9 @@ export const authOptions: NextAuthOptions = {
           },
         });
       } else {
-        // New Google account → link to owner as additional GSC account
+        // Reached only as `link`: `decideGoogleSignIn` never lets an unconnected account through a
+        // login. Before that rule, anyone who found the login page could sign in with Google and
+        // have their properties and OAuth tokens attached to someone else's instance.
         await prisma.account.create({
           data: {
             userId:            owner.id,
@@ -89,13 +202,13 @@ export const authOptions: NextAuthOptions = {
         });
       }
 
-      // If the OAuth email is different from the owner's email, redirect to settings 
-      // instead of returning true. This prevents NextAuth from trying to create a new User 
-      // and a new Account (which would crash due to the unique constraint).
-      if (account.providerAccountId !== owner.email && user.email !== owner.email) {
-        return "/settings";
-      }
+      // Connecting an account from Settings: the owner's session is already the right one. Returning
+      // a URL ends the OAuth round-trip without issuing a new session, which also keeps NextAuth
+      // from trying to create a second User for a Google address that is not the owner's.
+      if (decision.kind === "link") return "/settings";
 
+      // `login`: the owner's own connected account, with Google login open (no password yet, or
+      // the operator forced it). The session is issued for the owner's row, not the adapter's.
       user.id    = owner.id;
       user.email = owner.email!;
       user.name  = owner.name;
@@ -104,15 +217,26 @@ export const authOptions: NextAuthOptions = {
     },
 
     async session({ session, token }) {
-      if (session?.user && token?.sub) {
-        // @ts-ignore
+      // An empty token is what `jwt` returns after a password change. The object NextAuth built
+      // before this callback still carries the old name and email, so it has to be replaced,
+      // not amended — otherwise getServerSession would keep handing out a user id.
+      if (!token?.sub) return { expires: new Date(0).toISOString() } as typeof session;
+      if (session?.user) {
         session.user.id = token.sub;
       }
       return session;
     },
 
     async jwt({ token, user }) {
-      if (user) token.sub = user.id;
+      if (user?.id) token.sub = user.id;
+      const verdict = await enforcePasswordRevision(token, {
+        signingIn: !!user,
+        lookup: defaultPasswordLookup,
+      });
+      // Drop the claims instead of throwing. The session route re-encodes whatever this returns
+      // and sets it as the cookie; an empty token replaces a stolen one. Throwing is logged as
+      // JWT_SESSION_ERROR on every poll until the browser gives up.
+      if (verdict === "revoked") return {} as typeof token;
       return token;
     },
   },

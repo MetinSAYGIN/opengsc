@@ -1,8 +1,10 @@
+import { dbAny } from "@/lib/prisma";
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
+import { safeFetch } from '@/lib/security/safeFetch';
+import { quotaToday, recordInspections } from '@/lib/indexing/quota';
 
 function makeOAuth2(account: {
   id: string;
@@ -24,8 +26,7 @@ function makeOAuth2(account: {
 
 // ─── GET ?siteId= → return cached inspections ─────────────────────────────────
 export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
@@ -34,7 +35,7 @@ export async function GET(req: Request) {
   const site = await prisma.site.findFirst({ where: { id: siteId, userId } });
   if (!site) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const pi = (prisma as any).pageInspection;
+  const pi = dbAny.pageInspection;
   const inspections = await pi.findMany({
     where: { siteId },
     orderBy: { lastInspect: 'desc' },
@@ -58,8 +59,9 @@ async function getSitemapUrlsFallback(siteId: string, siteUrl: string, customSit
 
     // 2. Try fetching sitemap.xml directly
     const targetSitemap = customSitemapUrl || `${siteUrl.replace(/\/$/, '')}/sitemap.xml`;
-    const res = await fetch(targetSitemap, {
-      signal: AbortSignal.timeout(10000),
+    const res = await safeFetch(targetSitemap, {
+      timeoutMs: 10_000,
+      maxBytes: 10 * 1024 * 1024,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; OpenGSCCrawler/1.0)' },
     });
     if (res.ok) {
@@ -94,8 +96,7 @@ async function getSitemapUrlsFallback(siteId: string, siteUrl: string, customSit
 
 // ─── POST { siteId, urls?, forceRefresh? } → inspect & cache ─────────────────
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("act");
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
@@ -140,26 +141,46 @@ export async function POST(req: Request) {
   }
 
   // ── Decide which URLs actually need a fresh API call (24h TTL) ───────────────
-  const pi  = (prisma as any).pageInspection;
-  const pih = (prisma as any).pageInspectionHistory;
+  const pi  = dbAny.pageInspection;
+  const pih = dbAny.pageInspectionHistory;
 
   const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const cached = await pi.findMany({
     where: { siteId, url: { in: urlsToProcess } },
   });
-  const cachedMap = new Map(cached.map((e: any) => [e.url, e]));
+  // dbAny is the untyped client, so the row shape the route reads is restated here.
+  interface InspectionRow { url: string; lastInspect: Date | string; status: string }
+  const cachedMap = new Map<string, InspectionRow>(cached.map((e: InspectionRow): [string, InspectionRow] => [e.url, e]));
 
   const needsInspection = forceRefresh
     ? urlsToProcess
     : urlsToProcess.filter(url => {
-        const e = cachedMap.get(url) as any;
+        const e = cachedMap.get(url);
         return !e || new Date(e.lastInspect) < staleThreshold;
       });
 
-  // ── Call URL Inspection API for stale/missing URLs ────────────────────────────
-  const freshResults: any[] = [];
+  // ── Quota ledger (wave-oct): this route draws on the same 2,000/day-per-property URL
+  // Inspection pool as the Indexing button, the auto queue and MCP inspect_url. Fail fast
+  // when the Pacific day is already spent instead of collecting guaranteed 429s. Ledger
+  // problems (table missing before db push) must not break the route — proceed uncounted.
+  if (needsInspection.length) {
+    try {
+      const quota = await quotaToday(site.siteId);
+      if (quota.exhausted) {
+        return NextResponse.json({
+          error: 'quota_exhausted',
+          detail: `Google URL Inspection quota exhausted for this property (${quota.used}/2000 today) — resets at midnight Pacific time.`,
+        }, { status: 429 });
+      }
+    } catch { /* ledger unavailable */ }
+  }
 
+  // ── Call URL Inspection API for stale/missing URLs ────────────────────────────
+  const freshResults: InspectionRow[] = [];
+
+  let quotaDead = false; // a 429 from Google ends the run: every later call would 429 too
   for (const url of needsInspection) {
+    if (quotaDead) break;
     let inspected = false;
     for (const account of accounts) {
       try {
@@ -170,6 +191,8 @@ export async function POST(req: Request) {
           requestBody: { inspectionUrl: url, siteUrl: site.siteId },
         });
 
+        await recordInspections(site.siteId, 1, { auto: false }).catch(() => {});
+
         const idx = res.data.inspectionResult?.indexStatusResult;
         const rich = res.data.inspectionResult?.richResultsResult;
 
@@ -177,7 +200,7 @@ export async function POST(req: Request) {
         const lastCrawl = idx?.lastCrawlTime ? new Date(idx.lastCrawlTime as string) : null;
 
         const richTypes = (rich?.detectedItems ?? [])
-          .map((d: any) => d.richResultType)
+          .map(d => d.richResultType)
           .filter(Boolean);
         const richResults = richTypes.length > 0 ? JSON.stringify(richTypes) : null;
 
@@ -201,12 +224,21 @@ export async function POST(req: Request) {
         inspected = true;
         break;
       } catch (_e) {
+        const msg = String((_e as { message?: unknown })?.message ?? _e ?? '');
+        if (/quota|429/i.test(msg)) {
+          await recordInspections(site.siteId, 0, { auto: false, errors: 1, exhausted: true }).catch(() => {});
+          quotaDead = true;
+          break;
+        }
+        // The attempt happened — Google likely counts it even on a 5xx; at least the error
+        // side of the ledger should (the `used` side stays conservative until an answer).
+        await recordInspections(site.siteId, 0, { auto: false, errors: 1 }).catch(() => {});
         continue;
       }
     }
     // If all accounts failed, keep existing cached row if any
     if (!inspected && cachedMap.has(url)) {
-      freshResults.push(cachedMap.get(url));
+      freshResults.push(cachedMap.get(url)!);
     }
   }
 

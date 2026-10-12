@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
+import { loggedFetch } from '@/lib/providerLog/log';
 
 // POST { service: "neural" | "xmlriver" | "2index", ...fields }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("manageSecrets");
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
@@ -17,7 +16,9 @@ export async function POST(req: Request) {
     if (!token) return NextResponse.json({ ok: false, error: 'Token is required' });
 
     try {
-      const res = await fetch(
+      // NeuralIndexer bills for checks, not for being asked how much is left, so a row per
+      // key validation would file spending against a request that spends nothing.
+      const res = await fetch( // providerLog-exempt: balance read, not a billed action
         `https://inderixingbot.com/api/balance.php?api_key=${encodeURIComponent(token)}`,
         { signal: AbortSignal.timeout(8000) },
       );
@@ -32,8 +33,8 @@ export async function POST(req: Request) {
       const balance = data?.balance ?? data?.balance_usd ?? null;
       if (data?.error) return NextResponse.json({ ok: false, error: data.error });
       return NextResponse.json({ ok: true, balance });
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 
@@ -47,12 +48,19 @@ export async function POST(req: Request) {
     try {
       const testUrl = 'https://www.google.com/';
       const url = `https://xmlriver.com/search_console/json/?user=${encodeURIComponent(uid)}&key=${encodeURIComponent(key)}&url=${encodeURIComponent(testUrl)}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      // Unlike its two neighbours this is not a balance read: it runs a real index query against
+      // google.com to see whether the credentials work, and an account that is charged per query
+      // is charged for this one. Logged for that reason.
+      const { res, call } = await loggedFetch(url, { signal: AbortSignal.timeout(8000) }, { provider: 'xmlriver' });
       const data = await res.json();
-      if (data?.error) return NextResponse.json({ ok: false, error: data.error });
+      if (data?.error) {
+        call.finish({ error: String(data.error).slice(0, 300), responseBody: data });
+        return NextResponse.json({ ok: false, error: data.error });
+      }
+      call.finish({ responseBody: data });
       return NextResponse.json({ ok: true });
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 
@@ -61,7 +69,9 @@ export async function POST(req: Request) {
     const token = body.token?.trim();
     if (!token) return NextResponse.json({ ok: false, error: 'Bearer token is required' });
     try {
-      const res = await fetch('https://2index.ninja/api/v1/balance', {
+      // A balance read, like the NeuralIndexer branch above. The submit action this token pays
+      // for is logged; asking what is left is not an action.
+      const res = await fetch('https://2index.ninja/api/v1/balance', { // providerLog-exempt: balance read
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(8000),
       });
@@ -71,8 +81,8 @@ export async function POST(req: Request) {
       if (!res.ok) return NextResponse.json({ ok: false, error: `HTTP ${res.status}` });
       const data = await res.json().catch(() => ({}));
       return NextResponse.json({ ok: true, balance: data?.balance ?? null });
-    } catch (e: any) {
-      return NextResponse.json({ ok: false, error: e?.message ?? 'Request failed' });
+    } catch (e) {
+      return NextResponse.json({ ok: false, error: (e as Error)?.message ?? 'Request failed' });
     }
   }
 

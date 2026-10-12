@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 
 // GET /api/audit/[id]?issue=broken_links — one audit with its pages (optionally filtered
 // to pages carrying a given issue code). DELETE removes the audit and its pages.
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId();
   const { id } = await ctx.params;
 
   // Owner session — or a valid share token belonging to the audited site (guest view).
@@ -32,6 +30,9 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   return NextResponse.json({
     audit: {
       id: audit.id, status: audit.status, startedAt: audit.startedAt, finishedAt: audit.finishedAt,
+      stage: audit.stage, progress: audit.progress, attempt: audit.attempt, heartbeatAt: audit.heartbeatAt,
+      baselineAuditId: audit.baselineAuditId,
+      verification: audit.verification ? JSON.parse(audit.verification) : null,
       pagesCrawled: audit.pagesCrawled, maxPages: audit.maxPages, error: audit.error,
       summary: audit.summary ? JSON.parse(audit.summary) : null, siteUrl: audit.site.url,
     },
@@ -41,14 +42,15 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       noindex: p.noindex, internalLinks: p.internalLinks, externalLinks: p.externalLinks,
       imagesNoAlt: p.imagesNoAlt, wordCount: p.wordCount, loadMs: p.loadMs, depth: p.depth,
       issues: p.issues ? JSON.parse(p.issues) : [],
+      // Older audits have no evidence column value; the export falls back to deriving what it can.
+      evidence: p.evidence ? JSON.parse(p.evidence) : null,
       brokenLinks: p.brokenLinks ? JSON.parse(p.brokenLinks) : [],
     })),
   });
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await ctx.params;
   const audit = await prisma.siteAudit.findFirst({ where: { id, site: { userId } } });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { workspaceUserId } from "@/lib/team/workspace";
+import { rawQuery, rawExec } from "@/lib/db/raw";
+import { loggedFetch } from "@/lib/providerLog/log";
 
 // POST /api/linkwatch/run { ahrefsKey, months?, minDr?, limit? }
 // For every watched brand, pull fresh quality backlinks via Ahrefs API v3 and store them.
@@ -11,7 +11,25 @@ import { prisma } from "@/lib/prisma";
 const rid = () => "lm" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 const domainOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
 
-async function fetchBrandLinks(ahrefsKey: string, brand: string, sinceIso: string, minDr: number, limit: number): Promise<{ rows?: any[]; error?: string }> {
+// The host is a variable, not a literal, for one reason: the Ahrefs API v3 protocol is spoken by
+// gateways other than api.ahrefs.com, and a user with such a key had to keep a second, official
+// key just for this one feature. The path and the filter syntax are identical either way, which
+// also makes this the cheapest place to verify that a gateway really is wire-compatible — it
+// exercises `select`, `where` and pagination on code that already works against the real API.
+const AHREFS_DEFAULT_BASE = "https://api.ahrefs.com";
+
+// One row of Ahrefs v3 all-backlinks output, trimmed to the fields the INSERT below reads.
+interface AhrefsBacklinkRow {
+  url_from?: unknown;
+  title?: unknown;
+  anchor?: unknown;
+  domain_rating_source?: unknown;
+  first_seen_link?: unknown;
+  url_to?: unknown;
+  is_dofollow?: unknown;
+}
+
+async function fetchBrandLinks(ahrefsKey: string, baseUrl: string, brand: string, sinceIso: string, minDr: number, limit: number): Promise<{ rows?: AhrefsBacklinkRow[]; error?: string }> {
   const params = new URLSearchParams({
     target: brand,
     mode: "subdomains",
@@ -32,32 +50,42 @@ async function fetchBrandLinks(ahrefsKey: string, brand: string, sinceIso: strin
     }),
   });
   try {
-    const res = await fetch(`https://api.ahrefs.com/v3/site-explorer/all-backlinks?${params}`, {
+    const base = (baseUrl || AHREFS_DEFAULT_BASE).replace(/\/+$/, "");
+    // Same paid endpoint `backlinksApi.ts` pages through, reached by a second client that lives
+    // here — one call per watched brand, up to 200 brands, at roughly 13 units a row. It is
+    // logged for exactly that reason: a whole second Ahrefs spender invisible to the log is the
+    // gap this feature exists to close.
+    const { res, call } = await loggedFetch(`${base}/v3/site-explorer/all-backlinks?${params}`, {
       headers: { Authorization: `Bearer ${ahrefsKey}`, Accept: "application/json" },
       signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return { error: `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}` };
+    }, { provider: "ahrefs" });
+    if (!res.ok) {
+      const error = `ahrefs ${res.status}: ${(await res.text()).slice(0, 300)}`;
+      call.finish({ error });
+      return { error };
+    }
     const d = await res.json();
+    call.finish();
     return { rows: Array.isArray(d?.backlinks) ? d.backlinks : [] };
-  } catch (e: any) {
-    return { error: String(e?.message ?? e) };
+  } catch (e) {
+    return { error: String((e as Error)?.message ?? e) };
   }
 }
 
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const b = await req.json().catch(() => ({}));
   const ahrefsKey = String(b.ahrefsKey ?? "").trim();
+  const baseUrl = String(b.baseUrl ?? "").trim();
   if (!ahrefsKey) return NextResponse.json({ error: "no_ahrefs_key" }, { status: 400 });
   const months = Math.max(1, Math.min(12, Number(b.months ?? 3)));
   const minDr = Math.max(0, Math.min(90, Number(b.minDr ?? 50)));
   const limit = Math.max(10, Math.min(100, Number(b.limit ?? 50)));
   const since = new Date(Date.now() - months * 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-  let brands: any[] = [];
-  try { brands = await prisma.$queryRawUnsafe(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId); }
+  let brands: { domain: string }[] = [];
+  try { brands = await rawQuery(`SELECT domain FROM "LinkWatchBrand" WHERE userId = ?`, userId); }
   catch { return NextResponse.json({ error: "not_migrated" }, { status: 500 }); }
   if (!brands.length) return NextResponse.json({ error: "no_brands" }, { status: 400 });
 
@@ -65,14 +93,14 @@ export async function POST(req: Request) {
   let saved = 0;
   // Sequential: Ahrefs rate limits are per-minute; this endpoint runs as a user action.
   for (const { domain: brand } of brands.slice(0, 200)) {
-    const r = await fetchBrandLinks(ahrefsKey, brand, since, minDr, limit);
+    const r = await fetchBrandLinks(ahrefsKey, baseUrl, brand, since, minDr, limit);
     if (r.error) { errors[brand] = r.error; continue; }
     try {
-      await prisma.$executeRawUnsafe(`DELETE FROM "LinkMention" WHERE userId = ? AND brand = ?`, userId, brand);
+      await rawExec(`DELETE FROM "LinkMention" WHERE userId = ? AND brand = ?`, userId, brand);
       for (const row of r.rows || []) {
         const urlFrom = String(row.url_from ?? "");
         if (!urlFrom) continue;
-        await prisma.$executeRawUnsafe(
+        await rawExec(
           `INSERT INTO "LinkMention" (id, userId, brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, urlTo, dofollow, fetchedAt)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           rid(), userId, brand, urlFrom, domainOf(urlFrom),
@@ -81,7 +109,7 @@ export async function POST(req: Request) {
           row.is_dofollow === false ? 0 : 1, new Date().toISOString());
         saved++;
       }
-    } catch (e: any) { errors[brand] = String(e?.message ?? e); }
+    } catch (e) { errors[brand] = String((e as Error)?.message ?? e); }
   }
   return NextResponse.json({ ok: true, saved, brandsChecked: brands.length, errors });
 }

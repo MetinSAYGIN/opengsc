@@ -6,10 +6,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Boxes, Loader2, AlertTriangle } from "lucide-react";
+import { Boxes, AlertTriangle } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
-import { getSerpCreds, getDataForSeoKey } from "@/lib/seo/keys";
-import { COUNTRIES, LANGUAGES } from "@/lib/seo/regions";
+import { getSerpCreds, serpPayload, getKeywordSource } from "@/lib/seo/keys";
+import { COUNTRIES, LANGUAGES, defaultLanguageFor } from "@/lib/seo/regions";
 import { startJob, importJob } from "@/lib/seo/jobs";
 import SeoJobProgress from "@/components/SeoJobProgress";
 
@@ -23,11 +23,13 @@ export default function ClusterPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
   const serpCreds = mounted ? getSerpCreds() : { provider: "", apiKey: "" };
-  const dfsKey = mounted ? getDataForSeoKey() : "";
+  const kwSrc = mounted ? getKeywordSource() : { source: "off" as const, apiKey: "", baseUrl: undefined };
 
   const [raw, setRaw] = useState("");
   const [country, setCountry] = useState("us");
   const [language, setLanguage] = useState("en");
+  // Language follows the country's market default until the user picks one explicitly.
+  const [langTouched, setLangTouched] = useState(false);
   const [threshold, setThreshold] = useState(3);
   const [useVolumes, setUseVolumes] = useState(true);
   const [err, setErr] = useState("");
@@ -43,8 +45,11 @@ export default function ClusterPage() {
     const kw = `${keywords[0]} +${keywords.length - 1}`;
     const { jobId: jid, error } = await startJob("cluster", {
       keywords, gl: country, hl: language, threshold,
-      serpProvider: serpCreds.provider, serpKey: serpCreds.apiKey,
-      dfsKey: useVolumes && dfsKey ? dfsKey : undefined,
+      ...serpPayload(),
+      // Volumes now come from whichever source is configured, not from DataForSEO alone.
+      ...(useVolumes && kwSrc.apiKey
+        ? { kwSource: kwSrc.source, kwKey: kwSrc.apiKey, kwBaseUrl: kwSrc.baseUrl }
+        : {}),
     }, {}, );
     if (error || !jid) { setErr(error || t("seoErrGen")); return; }
     setJobKeyword(kw); setJobId(jid);
@@ -81,13 +86,13 @@ export default function ClusterPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px", marginTop: "12px" }}>
             <div>
               <span className="tool-field-label">{t("seoCountry")}</span>
-              <select className={inputStyle} value={country} onChange={e => setCountry(e.target.value)}>
+              <select className={inputStyle} value={country} onChange={e => { const gl = e.target.value; setCountry(gl); if (!langTouched) setLanguage(defaultLanguageFor(gl)); }}>
                 {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
               </select>
             </div>
             <div>
               <span className="tool-field-label">{t("seoLanguage")}</span>
-              <select className={inputStyle} value={language} onChange={e => setLanguage(e.target.value)}>
+              <select className={inputStyle} value={language} onChange={e => { setLangTouched(true); setLanguage(e.target.value); }}>
                 {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
               </select>
             </div>
@@ -105,8 +110,8 @@ export default function ClusterPage() {
             💡 {t("seoClusterThHint")}
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", marginTop: "12px" }}>
-            <input type="checkbox" checked={useVolumes} onChange={e => setUseVolumes(e.target.checked)} disabled={!dfsKey} />
-            {t("seoClusterVolumes")} {!dfsKey && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>({t("seoClusterNeedDfs")})</span>}
+            <input type="checkbox" checked={useVolumes} onChange={e => setUseVolumes(e.target.checked)} disabled={!kwSrc.apiKey} />
+            {t("seoClusterVolumes")} {!kwSrc.apiKey && <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>({t("seoClusterNeedKwSource")})</span>}
           </label>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px" }}>
             <button onClick={run} disabled={keywords.length < 2} style={{ ...btnPurple, opacity: keywords.length < 2 ? 0.6 : 1 }}>

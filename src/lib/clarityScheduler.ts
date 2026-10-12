@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { runClarityFetch } from '@/lib/clarityFetch';
+import { resolveCaptureBodies } from '@/lib/providerLog/bodies';
+import { withCallContext } from '@/lib/providerLog/context';
 
 // Background auto-collect for Microsoft Clarity. Runs inside the Next server
 // process (started from instrumentation). No system cron / extra process needed.
@@ -20,25 +22,32 @@ async function tick() {
   running = true;
   try {
     const sites = await prisma.site.findMany({
-      where: { clarityInterval: 'daily', clarityToken: { not: null } },
-      select: { id: true, url: true },
+      // Archived properties are skipped — the Clarity project for a replaced domain
+      // stops receiving traffic, so daily collection just logs failures.
+      where: { archivedAt: null, clarityInterval: 'daily', clarityToken: { not: null } },
+      // `userId` is read only so the provider log can say whose call this is. Nothing else here
+      // needs it, and a context cannot name an owner the query never selected.
+      select: { id: true, url: true, userId: true },
     });
     for (const site of sites) {
-      try {
-        const last = await prisma.claritySnapshot.findFirst({
-          where: { siteId: site.id },
-          orderBy: { fetchedAt: 'desc' },
-          select: { fetchedAt: true },
-        });
-        const age = last ? Date.now() - new Date(last.fetchedAt).getTime() : Infinity;
-        if (age < STALE_MS) continue;
+      const captureBodies = await resolveCaptureBodies(site.userId);
+      await withCallContext({ userId: site.userId, feature: "clarity-cron", captureBodies }, async () => {
+        try {
+          const last = await prisma.claritySnapshot.findFirst({
+            where: { siteId: site.id },
+            orderBy: { fetchedAt: 'desc' },
+            select: { fetchedAt: true },
+          });
+          const age = last ? Date.now() - new Date(last.fetchedAt).getTime() : Infinity;
+          if (age < STALE_MS) return;
 
-        const res = await runClarityFetch(site.id, 1);
-        if (res.ok) console.log(`[clarity-cron] fetched ${site.url}`);
-        else console.warn(`[clarity-cron] ${site.url}: ${res.error}`);
-      } catch (e) {
-        console.warn(`[clarity-cron] site ${site.id} failed:`, e);
-      }
+          const res = await runClarityFetch(site.id, 1);
+          if (res.ok) console.log(`[clarity-cron] fetched ${site.url}`);
+          else console.warn(`[clarity-cron] ${site.url}: ${res.error}`);
+        } catch (e) {
+          console.warn(`[clarity-cron] site ${site.id} failed:`, e);
+        }
+      });
     }
   } catch (e) {
     console.warn('[clarity-cron] tick failed:', e);

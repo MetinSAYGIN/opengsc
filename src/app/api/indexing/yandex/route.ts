@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { verifyAuthOrShare } from "@/lib/authShare";
 import { getOwnerEngineKey } from "@/lib/engineKeysServer";
 
@@ -32,6 +31,13 @@ async function yFetch(path: string, token: string, init?: RequestInit) {
 
 // Resolve user_id + the host_id matching the site's domain. Yandex host ids look like
 // "https:example.com:443" — match by hostname, prefer verified hosts and https.
+interface YandexHostRow {
+  ascii_host_url?: string;
+  unicode_host_url?: string;
+  verified?: boolean;
+  host_id?: string;
+}
+
 async function resolveHost(token: string, siteUrl: string): Promise<{ userId?: number; hostId?: string; error?: string }> {
   const user = await yFetch("/user/", token);
   if (!user.ok) return { error: user.status === 401 ? "invalid_token" : `yandex ${user.status}: ${JSON.stringify(user.body).slice(0, 200)}` };
@@ -40,7 +46,7 @@ async function resolveHost(token: string, siteUrl: string): Promise<{ userId?: n
   const hosts = await yFetch(`/user/${userId}/hosts/`, token);
   if (!hosts.ok) return { error: `yandex hosts ${hosts.status}` };
   const wanted = siteUrl.replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/^www\./, "").replace(/\/.*$/, "").toLowerCase();
-  const list: any[] = hosts.body.hosts ?? [];
+  const list: YandexHostRow[] = hosts.body.hosts ?? [];
   const matches = list.filter(h => {
     const hn = String(h.ascii_host_url ?? h.unicode_host_url ?? "").replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/[:/].*$/, "").toLowerCase();
     return hn === wanted;
@@ -62,8 +68,7 @@ export async function GET(req: Request) {
     const shareToken = searchParams.get("shareToken") || "";
 
     // Authenticate as the logged-in owner OR via a valid share link for this site.
-    const session = await getServerSession(authOptions);
-    let ownerId = (session?.user as any)?.id as string | undefined;
+        let ownerId = await workspaceUserId();
     if (!ownerId && shareToken && siteId) {
       const auth = await verifyAuthOrShare(req, siteId);
       if (auth) ownerId = auth.userId;
@@ -116,10 +121,10 @@ export async function GET(req: Request) {
     // Diagnostics: surface only problems that are actually PRESENT, sorted by severity.
     let problems: { code: string; severity: string }[] = [];
     if (diagnostics.ok) {
-      const probs = diagnostics.body.problems ?? {};
+      const probs: Record<string, { state?: string; severity?: string }> = diagnostics.body.problems ?? {};
       problems = Object.entries(probs)
-        .filter(([, v]: [string, any]) => v?.state === "PRESENT")
-        .map(([code, v]: [string, any]) => ({ code, severity: v.severity ?? "POSSIBLE_PROBLEM" }))
+        .filter(([, v]) => v?.state === "PRESENT")
+        .map(([code, v]) => ({ code, severity: v.severity ?? "POSSIBLE_PROBLEM" }))
         .sort((a, b) => (a.severity === "FATAL" ? -1 : a.severity === "CRITICAL" ? 0 : 1) - (b.severity === "FATAL" ? -1 : b.severity === "CRITICAL" ? 0 : 1));
     }
 
@@ -131,16 +136,16 @@ export async function GET(req: Request) {
       series,
       problems,
     });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[yandex GET]", e);
-    return NextResponse.json({ error: e?.message ?? "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: (e as Error)?.message ?? "Internal server error" }, { status: 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!(session?.user as any)?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const workspaceId = await workspaceUserId("act");
+    if (!workspaceId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const b = await req.json().catch(() => ({}));
     const action = String(b.action ?? "");
@@ -173,8 +178,8 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ error: "unknown_action" }, { status: 400 });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[yandex POST]", e);
-    return NextResponse.json({ error: e?.message ?? "Internal server error" }, { status: 500 });
+    return NextResponse.json({ error: (e as Error)?.message ?? "Internal server error" }, { status: 500 });
   }
 }

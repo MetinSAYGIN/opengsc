@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { GapReport } from "@/components/SeoRenderers";
+import type { LucideIcon } from "lucide-react";
+import type { PieLabelRenderProps } from "recharts";
 
 const GREEN = "var(--color-accent-green)";
 const ORANGE = "var(--color-accent-orange)";
@@ -30,7 +32,45 @@ const REC_COLOR: Record<string, string> = { add: GREEN, skip: "var(--color-text-
 
 type Tab = "dashboard" | "guideline" | "gaps" | "constructor";
 
-export default function SeoContentAnalysis({ report }: { report: any }) {
+/** The t() function from useLanguage and the dictionary key it accepts. */
+type T = ReturnType<typeof useLanguage>["t"];
+type TKey = Parameters<T>[0];
+
+/**
+ * Shape of the comprehensive-analysis job result, as defined by the JSON schema in
+ * buildAnalysisPrompt (src/lib/seo/prompts.ts). Old history items may instead carry the legacy
+ * gap-report shape (rendered by GapReport), so the collections here are optional and the legacy
+ * `keyword` alias is kept alongside `main_keyword`.
+ */
+type ReportEntity = {
+  id?: string; name?: string; kind?: string; coverage?: string; importance?: string;
+  mentions?: number; triplets_current?: number; triplets_competitor_median?: number;
+  similarity?: number; required_triplets?: number;
+};
+type RecommendationEntity = { name?: string; role?: string; required_triplets?: string[]; how_to_cover?: string };
+type Recommendation = {
+  id: string; title?: string; type: string; priority?: number; relevance?: number;
+  section?: string; placement?: string; words_from?: number; words_to?: number;
+  copywriter_notes?: string; keywords?: string[]; entities?: RecommendationEntity[];
+};
+type GapEntity = { id?: string; name?: string; triplets?: string[] };
+type CompetitorGap = {
+  id: string; title?: string; recommendation: string; reason?: string;
+  found_in_competitors?: string[]; potential_entities?: GapEntity[];
+};
+type ExcludedItem = { name?: string; kind?: string; reason?: string };
+type AnalysisSummary = {
+  total_entities?: number; entities_found?: number; entities_missing?: number;
+  coverage_percent?: number; coverage_label?: string; content_gaps?: number;
+  recommendations?: number; sub_intents?: number;
+};
+type AnalysisReport = {
+  main_keyword?: string; keyword?: string; summary?: AnalysisSummary;
+  entities?: ReportEntity[]; recommendations?: Recommendation[];
+  competitor_gaps?: CompetitorGap[]; excluded?: ExcludedItem[];
+};
+
+export default function SeoContentAnalysis({ report }: { report: AnalysisReport }) {
   const { t } = useLanguage();
   const [tab, setTab] = useState<Tab>("dashboard");
 
@@ -40,7 +80,7 @@ export default function SeoContentAnalysis({ report }: { report: any }) {
 
   const keyword = report.main_keyword || report.keyword || "—";
 
-  const TABS: { key: Tab; label: string; icon: any }[] = [
+  const TABS: { key: Tab; label: string; icon: LucideIcon }[] = [
     { key: "dashboard", label: t("seoCaTabDashboard"), icon: LayoutDashboard },
     { key: "guideline", label: t("seoCaTabGuideline"), icon: ListChecks },
     { key: "gaps", label: t("seoCaTabGaps"), icon: GitCompareArrows },
@@ -79,10 +119,10 @@ export default function SeoContentAnalysis({ report }: { report: any }) {
 }
 
 /* ─────────────────────────── DASHBOARD ─────────────────────────── */
-function Dashboard({ report, t }: { report: any; t: any }) {
-  const entities: any[] = report.entities || [];
-  const recs: any[] = report.recommendations || [];
-  const s = report.summary || {};
+function Dashboard({ report, t }: { report: AnalysisReport; t: T }) {
+  const entities: ReportEntity[] = report.entities || [];
+  const recs: Recommendation[] = report.recommendations || [];
+  const s: AnalysisSummary = report.summary || {};
 
   const well = entities.filter(e => e.coverage === "well");
   const under = entities.filter(e => e.coverage === "underdeveloped");
@@ -115,7 +155,7 @@ function Dashboard({ report, t }: { report: any; t: any }) {
 
   // priority buckets
   const bucket = (p: number) => p >= 0.9 ? "top" : p >= 0.8 ? "high" : p >= 0.6 ? "medium" : "low";
-  const buckets: Record<string, any[]> = { top: [], high: [], medium: [], low: [] };
+  const buckets: Record<string, Recommendation[]> = { top: [], high: [], medium: [], low: [] };
   sorted.forEach(r => buckets[bucket(r.priority || 0)].push(r));
 
   const wordData = sorted.slice(0, 10).map((r, i) => ({ i: i + 1, w: Math.max(0, Number(r.words_to || 0)) }));
@@ -219,13 +259,13 @@ function Dashboard({ report, t }: { report: any; t: any }) {
           <RoadmapStat label={t("seoCaLowPriority")} n={buckets.low.length} color={BLUE} />
         </div>
         {(["top", "high", "medium", "low"] as const).map(b => buckets[b].length > 0 && (
-          <RoadmapBucket key={b} title={`${t(`seoCa${b[0].toUpperCase()}${b.slice(1)}Priority` as any)} (${buckets[b].length})`} items={buckets[b]} t={t} />
+          <RoadmapBucket key={b} title={`${t(`seoCa${b[0].toUpperCase()}${b.slice(1)}Priority` as TKey)} (${buckets[b].length})`} items={buckets[b]} t={t} />
         ))}
         {Array.isArray(report.excluded) && report.excluded.length > 0 && (
           <div style={{ marginTop: "14px" }}>
             <div style={{ fontSize: "14px", fontWeight: 700, color: INK, marginBottom: "10px" }}>{t("seoCaExcluded")} ({report.excluded.length})</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}>
-              {report.excluded.map((x: any, i: number) => (
+              {report.excluded.map((x, i) => (
                 <div key={i} style={{ padding: "12px 14px", border: "1px solid var(--color-border)", borderRadius: "10px" }}>
                   <div style={{ fontSize: "13px", fontWeight: 700, color: INK }}>{x.name}</div>
                   <div style={{ marginTop: "6px", display: "flex", flexDirection: "column", gap: "3px" }}>
@@ -301,7 +341,7 @@ function Dashboard({ report, t }: { report: any; t: any }) {
   );
 }
 
-function CoverageGroup({ title, color, entities, t, kind }: { title: string; color: string; entities: any[]; t: any; kind: "well" | "under" | "missing" }) {
+function CoverageGroup({ title, color, entities, t, kind }: { title: string; color: string; entities: ReportEntity[]; t: T; kind: "well" | "under" | "missing" }) {
   if (entities.length === 0) return null;
   return (
     <div style={{ marginBottom: "14px" }}>
@@ -337,7 +377,7 @@ function Row2({ a, b, color }: { a: [string, string]; b: [string, string]; color
   );
 }
 
-function RoadmapBucket({ title, items, t }: { title: string; items: any[]; t: any }) {
+function RoadmapBucket({ title, items, t }: { title: string; items: Recommendation[]; t: T }) {
   return (
     <div style={{ marginBottom: "12px" }}>
       <div style={{ fontSize: "13px", fontWeight: 700, color: INK, marginBottom: "8px", display: "flex", alignItems: "center", gap: "7px" }}><Flag size={14} /> {title}</div>
@@ -352,7 +392,7 @@ function RoadmapBucket({ title, items, t }: { title: string; items: any[]; t: an
             <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginTop: "6px" }}>{Math.max(0, Number(r.words_to || 0))} {t("seoCaWords")} · {t("seoCaPriority")}: {((r.priority || 0) * 10).toFixed(1)}</div>
             {Array.isArray(r.entities) && r.entities.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "8px" }}>
-                {r.entities.map((e: any, j: number) => <span key={j} className="pill">{e.name}</span>)}
+                {r.entities.map((e, j) => <span key={j} className="pill">{e.name}</span>)}
               </div>
             )}
           </div>
@@ -363,8 +403,8 @@ function RoadmapBucket({ title, items, t }: { title: string; items: any[]; t: an
 }
 
 /* ─────────────────────────── GUIDELINE ─────────────────────────── */
-function Guideline({ report, keyword, t }: { report: any; keyword: string; t: any }) {
-  const recs: any[] = [...(report.recommendations || [])].sort((a, b) => (b.priority || 0) - (a.priority || 0));
+function Guideline({ report, keyword, t }: { report: AnalysisReport; keyword: string; t: T }) {
+  const recs: Recommendation[] = [...(report.recommendations || [])].sort((a, b) => (b.priority || 0) - (a.priority || 0));
   const spec = useMemo(() => guidelineText(report, keyword, recs, t), [report, keyword, recs, t]);
 
   return (
@@ -412,7 +452,7 @@ function Guideline({ report, keyword, t }: { report: any; keyword: string; t: an
               <div>
                 <div style={{ fontSize: "13px", fontWeight: 700, color: INK, marginBottom: "10px" }}>🎯 {t("seoCaEntitiesLbl")} ({r.entities.length})</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                  {r.entities.map((e: any, j: number) => (
+                  {r.entities.map((e, j) => (
                     <div key={j} style={{ paddingLeft: "12px", borderLeft: `3px solid ${e.role === "primary" ? PURPLE : "var(--color-border)"}` }}>
                       <div style={{ fontSize: "13px", fontWeight: 700, color: INK }}>{e.name} <span style={{ fontWeight: 500, color: "var(--color-text-secondary)" }}>— {e.role === "primary" ? t("seoCaPrimary") : t("seoCaSupporting")}</span></div>
                       {Array.isArray(e.required_triplets) && e.required_triplets.length > 0 && (
@@ -437,8 +477,8 @@ function Guideline({ report, keyword, t }: { report: any; keyword: string; t: an
 }
 
 /* ─────────────────────────── COMPETITOR GAPS ─────────────────────────── */
-function Gaps({ report, keyword, t }: { report: any; keyword: string; t: any }) {
-  const gaps: any[] = report.competitor_gaps || [];
+function Gaps({ report, keyword, t }: { report: AnalysisReport; keyword: string; t: T }) {
+  const gaps: CompetitorGap[] = report.competitor_gaps || [];
   const addN = gaps.filter(g => g.recommendation === "add").length;
   const expandN = gaps.filter(g => g.recommendation === "expand").length;
   const spec = useMemo(() => gapsText(report, keyword, gaps, t), [report, keyword, gaps, t]);
@@ -491,7 +531,7 @@ function Gaps({ report, keyword, t }: { report: any; keyword: string; t: any }) 
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 700, color: INK, marginBottom: "8px" }}>{t("seoCaPotentialEntities")}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {g.potential_entities.map((e: any, j: number) => (
+                    {g.potential_entities.map((e, j) => (
                       <div key={j} style={{ paddingLeft: "12px", borderLeft: "3px solid var(--color-border)" }}>
                         <div style={{ fontSize: "13px", fontWeight: 700, color: INK }}>{e.name} {e.id && <span style={{ fontWeight: 500, fontSize: "11px", color: "var(--color-text-tertiary)" }}>· {e.id}</span>} {Array.isArray(e.triplets) && <span style={{ fontWeight: 500, fontSize: "11px", color: "var(--color-text-tertiary)" }}>· {e.triplets.length} {t("seoCaTripletsCount")}</span>}</div>
                         {Array.isArray(e.triplets) && e.triplets.map((tr: string, k: number) => <div key={k} style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>• {tr}</div>)}
@@ -509,9 +549,9 @@ function Gaps({ report, keyword, t }: { report: any; keyword: string; t: any }) 
 }
 
 /* ─────────────────────────── TASK CONSTRUCTOR ─────────────────────────── */
-function Constructor({ report, t }: { report: any; t: any }) {
-  const recs: any[] = report.recommendations || [];
-  const gaps: any[] = report.competitor_gaps || [];
+function Constructor({ report, t }: { report: AnalysisReport; t: T }) {
+  const recs: Recommendation[] = report.recommendations || [];
+  const gaps: CompetitorGap[] = report.competitor_gaps || [];
   const [selSi, setSelSi] = useState<Record<string, boolean>>({});
   const [selGap, setSelGap] = useState<Record<string, boolean>>({});
 
@@ -588,7 +628,7 @@ const td: React.CSSProperties = { padding: "11px 8px" };
 const tooltipStyle: React.CSSProperties = { background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "8px", fontSize: "12px", color: "var(--color-text-primary)" };
 const selCard: React.CSSProperties = { display: "flex", gap: "10px", alignItems: "flex-start", padding: "13px 14px", borderRadius: "11px", border: "1px solid var(--color-border)", cursor: "pointer" };
 
-function Kpi({ label, value, sub, icon }: { label: string; value: any; sub?: string; icon?: React.ReactNode }) {
+function Kpi({ label, value, sub, icon }: { label: string; value: string | number; sub?: string; icon?: React.ReactNode }) {
   return (
     <div className="panel" style={{ padding: "16px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -609,7 +649,7 @@ function Donut({ title, data }: { title: string; data: { name: string; value: nu
         <ResponsiveContainer width="100%" height={260}>
           <PieChart>
             <Pie data={data} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90} paddingAngle={2}
-              label={(p: any) => `${p.name}: ${p.value}`} labelLine={{ stroke: "var(--color-border)" }} style={{ fontSize: 12 }}>
+              label={(p: PieLabelRenderProps) => `${p.name}: ${p.value}`} labelLine={{ stroke: "var(--color-border)" }} style={{ fontSize: 12 }}>
               {data.map((d, i) => <Cell key={i} fill={d.color} />)}
             </Pie>
             <Tooltip contentStyle={tooltipStyle} />
@@ -653,7 +693,7 @@ function Meta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CopyBtn({ text, t, label }: { text: string; t: any; label?: string }) {
+function CopyBtn({ text, t, label }: { text: string; t: T; label?: string }) {
   const [done, setDone] = useState(false);
   return (
     <button onClick={() => navigator.clipboard.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500); })}
@@ -664,7 +704,7 @@ function CopyBtn({ text, t, label }: { text: string; t: any; label?: string }) {
 }
 
 /* ─────────────────────────── copy text builders ─────────────────────────── */
-function guidelineText(report: any, keyword: string, recs: any[], t: any): string {
+function guidelineText(report: AnalysisReport, keyword: string, recs: Recommendation[], t: T): string {
   const lines: string[] = [];
   lines.push(t("seoCaGuidelineTitle"));
   lines.push(`${t("seoCaMainKeyword")}: ${keyword}`);
@@ -679,7 +719,7 @@ function guidelineText(report: any, keyword: string, recs: any[], t: any): strin
     lines.push(`${t("seoCaPlacement")}: ${r.placement || "—"}`);
     if (r.copywriter_notes) lines.push(`${t("seoCaCopyNotes")}: ${r.copywriter_notes}`);
     if (r.keywords?.length) lines.push(`${t("seoCaKeywordsLbl")}: ${r.keywords.join(", ")}`);
-    (r.entities || []).forEach((e: any) => {
+    (r.entities || []).forEach((e) => {
       lines.push(`  - ${e.name} (${e.role})`);
       (e.required_triplets || []).forEach((tr: string) => lines.push(`    • ${tr}`));
       if (e.how_to_cover) lines.push(`    ${t("seoCaHowToCover")}: ${e.how_to_cover}`);
@@ -688,7 +728,7 @@ function guidelineText(report: any, keyword: string, recs: any[], t: any): strin
   return lines.join("\n");
 }
 
-function gapsText(report: any, keyword: string, gaps: any[], t: any): string {
+function gapsText(report: AnalysisReport, keyword: string, gaps: CompetitorGap[], t: T): string {
   const lines: string[] = [];
   lines.push(t("seoCaGapTitle"));
   lines.push(`${t("seoCaMainKeyword")}: ${keyword}`);
@@ -698,7 +738,7 @@ function gapsText(report: any, keyword: string, gaps: any[], t: any): string {
     lines.push(`${g.title} [${String(g.recommendation).toUpperCase()}]`);
     if (g.reason) lines.push(`${t("seoCaReason")}: ${g.reason}`);
     if (g.found_in_competitors?.length) { lines.push(`${t("seoCaFoundIn")}:`); g.found_in_competitors.forEach((u: string) => lines.push(`  ${u}`)); }
-    (g.potential_entities || []).forEach((e: any) => {
+    (g.potential_entities || []).forEach((e) => {
       lines.push(`  ${e.name}${e.id ? ` (${e.id})` : ""}`);
       (e.triplets || []).forEach((tr: string) => lines.push(`    • ${tr}`));
     });

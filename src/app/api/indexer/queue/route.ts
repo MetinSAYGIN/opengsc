@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
+import { safeFetch } from "@/lib/security/safeFetch";
 
 export async function GET(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as any)?.id as string | undefined;
+    const userId = await workspaceUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     // Server-side pagination — the queue can hold thousands of URLs, so never ship them all.
@@ -28,17 +27,20 @@ export async function GET(req: Request) {
     ]);
 
     return NextResponse.json({ items, total, crawled, page, pageSize });
-  } catch (e: any) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
 // ── Helper: fetch and parse sitemap.xml, returning all <loc> URLs ──
-async function parseSitemapUrls(sitemapUrl: string): Promise<string[]> {
+async function parseSitemapUrls(sitemapUrl: string, depth = 0, seen = new Set<string>()): Promise<string[]> {
+  if (depth > 3 || seen.has(sitemapUrl) || seen.size >= 200) return [];
+  seen.add(sitemapUrl);
   try {
-    const res = await fetch(sitemapUrl, {
+    const res = await safeFetch(sitemapUrl, {
       headers: { "User-Agent": "OpenGSC-Indexer/1.0" },
-      signal: AbortSignal.timeout(15000),
+      timeoutMs: 15_000,
+      maxBytes: 10 * 1024 * 1024,
     });
     if (!res.ok) return [];
     const xml = await res.text();
@@ -51,13 +53,14 @@ async function parseSitemapUrls(sitemapUrl: string): Promise<string[]> {
       if (!loc) continue;
       // If it's a nested sitemap (sitemap index), recursively parse it
       if (loc.endsWith(".xml") || loc.includes("sitemap")) {
-        const nested = await parseSitemapUrls(loc);
+        const nested = await parseSitemapUrls(loc, depth + 1, seen);
         urls.push(...nested);
+        if (urls.length >= 20_000) break;
       } else {
         urls.push(loc);
       }
     }
-    return urls;
+    return urls.slice(0, 20_000);
   } catch {
     return [];
   }
@@ -109,8 +112,8 @@ async function submitToIndexNow(
         } else {
           errors.push(`${host}: HTTP ${res.status}`);
         }
-      } catch (e: any) {
-        errors.push(`${host}: ${e?.message ?? "request failed"}`);
+      } catch (e) {
+        errors.push(`${host}: ${(e as Error)?.message ?? "request failed"}`);
       }
     }
   }
@@ -120,8 +123,7 @@ async function submitToIndexNow(
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as any)?.id as string | undefined;
+    const userId = await workspaceUserId("spend");
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
@@ -155,7 +157,7 @@ export async function POST(req: Request) {
     }
 
     // Parse input URLs
-    let rawUrlList = Array.isArray(urls) 
+    const rawUrlList = Array.isArray(urls) 
       ? urls 
       : urls.split("\n").map((u: string) => u.trim()).filter((u: string) => u.length > 0);
 
@@ -217,15 +219,14 @@ export async function POST(req: Request) {
       domainsUsed: targetDomains.length,
       indexNow,
     });
-  } catch (e: any) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
 export async function DELETE(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = (session?.user as any)?.id as string | undefined;
+    const userId = await workspaceUserId("write");
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     // Clear the queue for the user's domains.
@@ -247,7 +248,7 @@ export async function DELETE(req: Request) {
     });
 
     return NextResponse.json({ success: true, deleted: result.count });
-  } catch (e: any) {
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

@@ -56,6 +56,39 @@
   --shadow-card:    none;
   --shadow-product: 0 3px 40px 6px rgba(0, 0, 0, 0.60);
   --shadow-frosted: 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* Page layout — driven by the Layout toggle (LayoutContext sets these on :root).
+     Defaults here = "wide" so the first paint (before the provider's effect runs) matches the
+     default app state and there is no flash of the narrower layout. */
+  --page-max-width: 100%;
+  --page-padding:   32px;
+}
+
+/* Privacy blur — off by default (no data-privacy attribute, or "off"). PrivacyContext flips
+   data-privacy to "on" on <html>, and only then does the rule below fire. Putting the class on a
+   container (table / wrapper div) and targeting the value-bearing leaves (td, a, .metric-value)
+   keeps the table structure, borders, zebra striping and action buttons sharp while obscuring just
+   the sensitive values — the same look the hand-written blurStyle sites use, but driven entirely
+   from CSS with no per-component React subscription. New tool = add .privacy-sensitive to its
+   table; the toggle handles the rest. */
+:root[data-privacy="on"] .privacy-sensitive td,
+:root[data-privacy="on"] .privacy-sensitive a,
+:root[data-privacy="on"] .privacy-sensitive .metric-value,
+:root[data-privacy="on"] .privacy-sensitive .metric-chip {
+  filter: blur(5px);
+  user-select: none;
+  transition: filter 0.25s ease;
+}
+
+/* For grid-div "tables" (cannibalization, striking, decay) there are no <td> elements — values
+   live in plain <div>s, so the leaf-targeting rule above wouldn't reach them. Marking the whole
+   rows-wrapper with .privacy-blur-all blurs the entire block. The structure softens slightly
+   alongside the values, which is an acceptable trade for these dense lists vs. tagging every
+   numeric div with a class by hand. */
+:root[data-privacy="on"] .privacy-blur-all {
+  filter: blur(5px);
+  user-select: none;
+  transition: filter 0.25s ease;
 }
 
 /* ── Light theme — Apple Design Language ───────────────────────────────────── */
@@ -154,11 +187,12 @@ button {
 
 /* Layout Utilities */
 .main-content {
-  padding: 28px 32px;
+  /* Vertical padding is fixed (28px top/bottom); horizontal follows the Layout toggle. */
+  padding: 28px var(--page-padding);
   display: flex;
   flex-direction: column;
   gap: 24px;
-  max-width: 1600px;
+  max-width: var(--page-max-width);
   margin: 0 auto;
   width: 100%;
 }
@@ -294,6 +328,19 @@ button {
   animation: spin 0.8s linear infinite;
 }
 
+@keyframes drPulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* Site-card DR chip while the dashboard-wide backfill hasn't reached this domain yet — see
+   app/page.tsx. Distinguishes "still checking" from "checked, nothing found" (which shows
+   no chip at all), so cards popping in over the first minute or two after enabling a new
+   Ahrefs key don't read as some sites being broken. */
+.dr-pulse {
+  animation: drPulse 1.4s ease-in-out infinite;
+}
+
 /* ── SEO Tools shared primitives ───────────────────────────────────────────────
  * Same look as the SectionCard pattern used across the app (settings, etc.):
  * hairline border, 12px radius, no shadow. Centralised here so theme/geometry
@@ -397,4 +444,353 @@ input:-webkit-autofill {
 [data-theme="light"] input:-webkit-autofill {
   box-shadow: 0 0 0 30px #ffffff inset !important;
   -webkit-text-fill-color: #1d1d1f !important;
+}
+
+/* The custom-period date inputs (dashboard + site page): the native picker must follow the
+   app's theme, not the OS preference, or a dark UI gets a white calendar popup. */
+[data-theme="dark"] input[type="date"] { color-scheme: dark; }
+[data-theme="light"] input[type="date"] { color-scheme: light; }
+
+/* ── Metrics primitives (Ahrefs/Semrush layer) ─────────────────────────────────
+ * Three shapes repeat across every metrics surface — the weights toolbar, the
+ * backlink profile, the competitor gap, the Indexer domain chip. They live here
+ * rather than as inline styles in each component so a theme or geometry change
+ * reaches all of them, which is the whole reason .panel and .tool-input exist. */
+
+/* .tool-input sizes to 100% by design (stacked forms). Toolbars need the natural
+   width of their content instead, so this is a width-only modifier — everything
+   else about the control stays identical to the form version. */
+.tool-input.inline {
+  width: auto;
+}
+
+/* Compact numeric badge: DR 72, RD 1.5k, units, source. Same hairline vocabulary
+   as .pill but tighter, for use inside table cells and next to headings. */
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  background-color: var(--color-border-soft);
+  color: var(--color-text-secondary);
+}
+
+/* The one action in each metrics surface that spends money. Deliberately distinct
+   from .pill (a filter) and from the app's dark primary button (a safe action):
+   an amber outline reads as "this costs something" before it is pressed. */
+.metric-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-accent-orange);
+  background: transparent;
+  color: var(--color-accent-orange);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+.metric-action:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-accent-orange) 12%, transparent);
+}
+.metric-action:disabled {
+  border-color: var(--color-border);
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+
+/* Cost estimate shown next to .metric-action. Tertiary on purpose — it must be
+   readable before the click and must not compete with the button itself. */
+.metric-cost {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+/* Archive — properties Search Console no longer returns.
+ *
+ * Deliberately not rendered as .card like a live site: these are rows, not dashboards.
+ * A dead domain has no sparkline worth drawing, and giving it the same visual weight as
+ * a working site is what made replaced domains feel like they were "still there".
+ * Muted by default, full contrast on hover, so the group reads as inert until touched. */
+.archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.archive-toggle:hover {
+  border-color: var(--color-border-soft);
+  color: var(--color-text-primary);
+}
+
+/* Pill badge for the count — sits at the right edge so the number is impossible
+   to miss even when the section is collapsed and the rows are hidden. */
+.archive-count {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 2px 8px;
+  border-radius: var(--color-pill, var(--radius-pill));
+  background: color-mix(in srgb, var(--color-text-tertiary) 24%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.archive-caret {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+.archive-caret.open { transform: rotate(90deg); }
+
+.archive-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  opacity: 0.75;
+}
+
+.archive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.archive-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-secondary);
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.archive-row:hover { border-color: var(--color-border-soft); }
+.archive-row.busy { opacity: 0.5; pointer-events: none; }
+
+.archive-domain {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.archive-date {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+.archive-btn {
+  padding: 5px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.archive-btn:hover:not(:disabled) {
+  border-color: var(--color-accent-blue);
+  background-color: color-mix(in srgb, var(--color-accent-blue) 10%, transparent);
+}
+.archive-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+
+/* Destructive and irreversible — cascades to metrics, audits, keywords, backlinks.
+   Red only on hover so the row does not read as an error at rest. */
+.archive-btn.danger { color: var(--color-danger); }
+.archive-btn.danger:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+
+
+/* ── Two-column tool layouts (SEO Tools → Content Operations, Source Audit) ───
+   A narrow list next to a wide detail pane, collapsing to one column on tablets.
+   Same 14px gutter and breakpoint as the rest of the tool pages. */
+.content-ops-grid,
+.source-audit-grid {
+  display: grid;
+  gap: 14px;
+  align-items: start;
+}
+.content-ops-grid { grid-template-columns: minmax(270px, 0.8fr) minmax(420px, 1.6fr); }
+.source-audit-grid { grid-template-columns: minmax(250px, 0.72fr) minmax(420px, 1.8fr); }
+
+@media (max-width: 900px) {
+  .content-ops-grid,
+  .source-audit-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Competitor scanner (/crawler) ────────────────────────────────────────────
+   History beside the report, same gutter and breakpoint as the other tool pages. */
+.crawler-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.6fr) minmax(420px, 2fr);
+  gap: 14px;
+  align-items: start;
+}
+/* Two per row, not four. Each card is a label/value table, and at a quarter of the width the
+   values wrap after every second word — "WordPre ss" — which reads as broken rather than dense. */
+.crawler-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .crawler-cards { grid-template-columns: 1fr; }
+}
+@media (max-width: 900px) {
+  .crawler-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Шапка: горизонтальный бар на десктопе, бургер на телефоне ────────────────
+   Свап делают медиазапросы, а не замер ширины в React: обе версии всегда в DOM.
+   Замер через window.innerWidth дал бы разный HTML на сервере и на клиенте —
+   hydration mismatch и прыгающую шапку при загрузке. Порог тот же 900px, что у
+   сеток выше, чтобы у приложения была одна точка перелома, а не три. */
+.nav-desktop {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 20px;
+  flex: 1;
+  min-width: 0;
+  /* One row. The 14 destinations are folded into 6 top-level entries (four of them dropdowns,
+     see NAV_GROUPS in DashboardShell), which fit with full labels down to the 900px burger
+     breakpoint. No overflow here: it would clip the absolutely positioned dropdowns. */
+  flex-wrap: nowrap;
+}
+.nav-burger { display: none; }
+
+.nav-group { position: relative; }
+.nav-chevron { opacity: 0.6; transition: transform 0.15s; }
+.nav-chevron[data-open="true"] { transform: rotate(180deg); }
+/* Inside the header's stacking context (z 40), so it covers the page but stays under the
+   avatar menu (50). Items reuse .nav-sheet-item. */
+.nav-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  z-index: 45;
+}
+.nav-dropdown .nav-sheet-item { font-size: 13px; padding: 9px 16px; }
+
+@media (max-width: 900px) {
+  .nav-desktop { display: none; }
+  .nav-burger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+    margin-right: 10px;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--color-border);
+    border-radius: 9px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+  }
+  .nav-burger[aria-expanded="true"] {
+    color: var(--color-accent-blue);
+    background: rgba(59, 130, 246, 0.12);
+  }
+  .topbar { padding: 0 12px; }
+}
+
+/* Выпадающая панель под шапкой. z-index 45: шапка 40, меню аватара 50 — панель
+   должна перекрывать контент, но не меню пользователя. */
+.nav-sheet {
+  position: absolute;
+  top: 48px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+  background: var(--color-card);
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  z-index: 45;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.nav-sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.nav-sheet-item:hover { background: var(--color-card-hover); }
+.nav-sheet-heading {
+  padding: 12px 18px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+  opacity: 0.8;
+}
+.nav-sheet-item[data-active="true"] {
+  font-weight: 700;
+  color: var(--color-accent-blue);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+/* Периодный дропдаун дашборда: две колонки на десктопе (сравнение слева,
+   пресеты периодов справа), на узких экранах — одна колонка. Разделитель
+   колонки тоже переезжает с вертикали на горизонталь. */
+.period-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+.period-col-compare { border-right: 1px solid var(--color-border); }
+@media (max-width: 680px) {
+  .period-grid { grid-template-columns: 1fr; }
+  .period-col-compare { border-right: none; border-bottom: 1px solid var(--color-border); }
 }

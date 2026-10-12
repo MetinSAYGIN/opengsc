@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { ExternalLink } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { withShare } from "@/lib/shareParam";
+import { usePersistedState, isReportDays } from "@/lib/usePersistedState";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface CtrQuery {
@@ -100,7 +101,8 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
   const { t } = useLanguage();
   const [search,  setSearch]  = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("diff");
-  const [days,    setDays]    = useState(90);
+  // Same stored window as the other report panels, so it follows the user between tabs.
+  const [days,    setDays]    = usePersistedState<number>("gsc_report_days", 90, isReportDays);
   const [data,    setData]    = useState<CtrQuery[]>([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);
@@ -114,8 +116,8 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
       if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
       setData(json.keywords ?? []);
-    } catch (e: any) {
-      setError(e.message ?? 'Error');
+    } catch (e) {
+      setError((e as Error).message ?? 'Error');
     } finally {
       setLoading(false);
     }
@@ -137,18 +139,6 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
       });
   }, [data, search, sortKey]);
 
-  const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
-    <button
-      onClick={() => setSortKey(k)}
-      style={{
-        padding: "4px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
-        border: `1px solid ${sortKey === k ? "#3B82F6" : "var(--color-border)"}`,
-        background: sortKey === k ? "rgba(59,130,246,0.1)" : "transparent",
-        color: sortKey === k ? "#3B82F6" : "var(--color-text-secondary)",
-        cursor: "pointer", transition: "all 0.15s",
-      }}
-    >{label}</button>
-  );
 
   return (
     <div style={{ padding: "20px 28px" }}>
@@ -189,9 +179,9 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
         {/* Sort */}
         <div style={{ display: "flex", alignItems: "center", gap: "6px", marginLeft: "auto" }}>
           <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("kcSortBy")}</span>
-          <SortBtn k="diff"        label={t("ctrSortWorst")} />
-          <SortBtn k="impressions" label={t("impressions")} />
-          <SortBtn k="position"    label={t("position")} />
+          <SortBtn label={t("ctrSortWorst")} active={sortKey === "diff"} onSelect={() => setSortKey("diff")} />
+          <SortBtn label={t("impressions")} active={sortKey === "impressions"} onSelect={() => setSortKey("impressions")} />
+          <SortBtn label={t("position")} active={sortKey === "position"} onSelect={() => setSortKey("position")} />
         </div>
       </div>
 
@@ -295,6 +285,19 @@ function CtrTable({ siteDbId }: { siteDbId: string }) {
 }
 
 // ─── Main export ───────────────────────────────────────────────────────────────
+const SortBtn = ({ label, active, onSelect }: { label: string; active: boolean; onSelect: () => void }) => (
+  <button
+    onClick={onSelect}
+    style={{
+      padding: "4px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
+      border: `1px solid ${active ? "#3B82F6" : "var(--color-border)"}`,
+      background: active ? "rgba(59,130,246,0.1)" : "transparent",
+      color: active ? "#3B82F6" : "var(--color-text-secondary)",
+      cursor: "pointer", transition: "all 0.15s",
+    }}
+  >{label}</button>
+);
+
 export default function CtrBenchmark({ siteDbId }: { siteDbId: string }) {
   return (
     <div style={{ border: "1px solid var(--color-border)", borderRadius: "12px", overflow: "hidden", marginTop: "20px", background: "var(--color-card)" }}>

@@ -1,4 +1,5 @@
-// Optional Bing/Yandex section for the portfolio digest. Runs ONLY if the user has an
+
+import { rawQuery } from "@/lib/db/raw";// Optional Bing/Yandex section for the portfolio digest. Runs ONLY if the user has an
 // engine key stored server-side (User.seoSettings — the same snapshot SeoKeysSync backs up).
 //
 // Everything here is best-effort and strictly bounded so it can never slow down or break the
@@ -6,9 +7,6 @@
 //   • capped at CAP sites per engine, concurrency-limited, per-request timeouts;
 //   • the whole thing is wrapped in try/catch by the caller and returns [] on any failure.
 // Bing costs 1 request/site; Yandex shares one /user + /hosts lookup then 1 request/site.
-
-import { prisma } from "@/lib/prisma";
-
 type Site = { id: string; url: string };
 export type EngineRow = { name: string; clicks: number; impr: number };
 
@@ -29,7 +27,9 @@ async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Prom
 
 async function readEngineKeys(userId: string): Promise<{ bing: string; yandex: string }> {
   try {
-    const rows: any[] = await prisma.$queryRawUnsafe(`SELECT seoSettings FROM "User" WHERE id = ?`, userId);
+    const rows = await rawQuery<{ seoSettings: string | null }[]>(
+      `SELECT seoSettings FROM "User" WHERE id = ?`, userId,
+    );
     const s = rows?.[0]?.seoSettings ? JSON.parse(rows[0].seoSettings) : {};
     const acc = (k: string) => { try { return JSON.parse(s[k] || "[]"); } catch { return []; } };
     const bing = (acc("seoKey_bing_accounts_list")[0]?.key || s["seoKey_bing"] || "").trim();
@@ -45,7 +45,8 @@ async function bingTotals(key: string, sites: Site[], days: number, cap: number)
     const url = `https://ssl.bing.com/webmaster/api.svc/json/GetRankAndTrafficStats?siteUrl=${encodeURIComponent(`https://${dom}/`)}&apikey=${encodeURIComponent(key)}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!r.ok) return undefined;
-    const rows: any[] = (await r.json())?.d ?? [];
+    // Bing's /Date(...)/ JSON: each row carries a date plus the two counters.
+    const rows: { Date?: string | null; Clicks?: unknown; Impressions?: unknown }[] = (await r.json())?.d ?? [];
     let clicks = 0, impr = 0;
     for (const row of rows) {
       const m = String(row.Date ?? "").match(/\/Date\((\d+)/);
@@ -70,7 +71,8 @@ async function yandexTotals(token: string, sites: Site[], days: number, cap: num
   if (!user?.user_id) return [];
   const uid = user.user_id;
   const hostsBody = await yGet(`/user/${uid}/hosts/`);
-  const list: any[] = hostsBody?.hosts ?? [];
+  // One row per verified host in the user's Yandex Webmaster account.
+  const list: { ascii_host_url?: string | null; unicode_host_url?: string | null; verified?: boolean | null; host_id?: string | null }[] = hostsBody?.hosts ?? [];
   if (!list.length) return [];
 
   const from = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
@@ -85,7 +87,7 @@ async function yandexTotals(token: string, sites: Site[], days: number, cap: num
     const path = `/user/${uid}/hosts/${encodeURIComponent(best.host_id)}/search-queries/all/history/?query_indicator=TOTAL_SHOWS&query_indicator=TOTAL_CLICKS&date_from=${from}&date_to=${today}`;
     const h = await yGet(path);
     const ind = h?.indicators ?? {};
-    const sum = (arr: any[]) => (arr ?? []).reduce((s: number, p: any) => s + (Number(p.value) || 0), 0);
+    const sum = (arr: { value?: unknown }[]) => (arr ?? []).reduce((s: number, p: { value?: unknown }) => s + (Number(p.value) || 0), 0);
     return { name: clean(site.url), clicks: Math.round(sum(ind.TOTAL_CLICKS)), impr: Math.round(sum(ind.TOTAL_SHOWS)) };
   });
   return res.filter((x): x is EngineRow => !!x && (x.clicks > 0 || x.impr > 0));

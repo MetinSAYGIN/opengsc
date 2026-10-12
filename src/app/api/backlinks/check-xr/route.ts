@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from '@/lib/prisma';
+import { Prisma } from "@/generated/prisma";
+import { loggedFetch } from '@/lib/providerLog/log';
 
 // POST { siteDbId, ids?: string[] }  — checks XML River index status for backlinks
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
   if (!user?.xmlRiverUserId || !user?.xmlRiverApiKey)
     return NextResponse.json({ error: 'XML River not configured' }, { status: 400 });
 
-  const where: any = { siteId: siteDbId };
+  const where: Prisma.BacklinkWhereInput = { siteId: siteDbId };
   if (ids.length > 0) where.id = { in: ids };
 
   const links = await prisma.backlink.findMany({ where, take: 200, select: { id: true, url: true } });
@@ -34,8 +34,9 @@ export async function POST(req: Request) {
   for (const link of links) {
     try {
       const apiUrl = `https://xmlriver.com/search_console/json/?user=${encodeURIComponent(user.xmlRiverUserId)}&key=${encodeURIComponent(user.xmlRiverApiKey)}&url=${encodeURIComponent(link.url)}`;
-      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+      const { res, call } = await loggedFetch(apiUrl, { signal: AbortSignal.timeout(8000) }, { provider: 'xmlriver' });
       const data = await res.json().catch(() => ({}));
+      call.finish(data?.error ? { error: String(data.error).slice(0, 300), responseBody: data } : { responseBody: data });
       const xrStatus = data?.error ? 'error' : data?.indexed ? 'indexed' : 'not_indexed';
       await prisma.backlink.update({
         where: { id: link.id },

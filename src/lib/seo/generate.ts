@@ -1,38 +1,268 @@
 // Core SEO generation logic, factored out of the API routes so it can be reused by both
 // the synchronous routes and the background-job runner. No HTTP / auth here — pure work.
 
-import { fetchLLM, fetchLLMDetailed } from "@/lib/llm";
-import { runSerp, heuristicIntent, heuristicSiteType, DFS_LOC } from "@/lib/seo/serp";
-import { scrapeMany } from "@/lib/seo/scrape";
+import { fetchLLM, fetchLLMDetailed, contentTokens, isLengthCut, CONTENT_TOKENS_RETRY_MAX } from "@/lib/llm";
+import { stripModelScratch } from "@/lib/seo/textMetrics";
+import { judgeArticle, judgeOutline } from "@/lib/seo/judge";
+import { runSerp, heuristicIntent, heuristicSiteType } from "@/lib/seo/serp";
+import { enrichKeywords, type KwSource } from "@/lib/seo/keywordSource";
+import { scrapeMany, type ScrapedPage } from "@/lib/seo/scrape";
+import type { EditorialPolicy } from "@/lib/seo/policy";
+import {
+  checkMechanics, repairableIssues, summarizeMechanics,
+  placeholdersFromInstruction, linksFromInstruction, brandsFromDomains,
+  type MechanicsIssue,
+} from "@/lib/seo/mechanics";
 import {
   buildOutlinePrompt, buildTextPrompt, buildAnalysisPrompt, buildFactScrubPrompt, buildSourceExtractPrompt,
   buildAutoFactCleanPrompt, buildWireframePrompt, buildSectionEnrichPrompt, buildStructureExpandPrompt,
   buildHeadingLocalizePrompt, buildTextExpandPrompt, buildTextTrimPrompt, buildSectionTextPrompt,
-  enforceLinkPolicy, redactBannedWords, extractJson, CompetitorInput,
+  buildFaqBackfillPrompt, buildFaqSectionPrompt, buildMechanicsRepairPrompt,
+  enforceLinkPolicy, redactBannedWords, extractJson, extractJsonDetailed, CompetitorInput,
 } from "@/lib/seo/prompts";
 import { findRagFacts } from "@/lib/seo/rag";
 import { decodeHtmlEntities } from "@/lib/seo/outlineFormat";
+import { scrubMarks } from "@/lib/seo/marksScrub";
+import { META_LIMITS, metaLength, type MetaFitItem, type MetaFitResult } from "@/lib/seo/metaLimits";
+import { fitMeta, readMetaBlock, writeMetaBlock } from "@/lib/seo/metaFit";
+import { guardOutlineFootprint } from "@/lib/footprint/guard";
 
 // Language-agnostic "this heading is a FAQ section" test — templates carry "H2: FAQ" and the
 // localization pass renames it («FAQ : Tout savoir…», «Часто задаваемые вопросы»…).
 const FAQ_LIKE_RE = /(^|[\s:—-])faq\b|questions?\s+fr[ée]quentes|frequently\s+asked|часто\s+задаваем|поширені\s+питання|вопросы\s+и\s+ответы/i;
 
+// ─── Local shapes for the untyped JSON these pipelines handle ─────────────────────
+// The outline is model-emitted JSON: the fields the code reads and writes are named below,
+// everything else the model produced is carried untouched through the index signatures.
+
+/** A section of a parsed outline (heading + EAV detail + its own/total word budgets). */
+interface OutlineSection {
+  h_level: string;
+  heading: string;
+  word_count_total?: unknown; // [lo, hi] | number | "130-160" — toWcRange() accepts all three
+  word_count_self?: unknown;
+  entities_to_cover?: unknown[];
+  keywords?: string[];
+  summary?: string;
+  copywriter_notes?: string;
+  entity_connections?: unknown[];
+  visual_elements?: unknown[];
+  needs_real_experience?: boolean;
+  [key: string]: unknown;
+}
+
+/** FAQ entry of an outline — the FAQ block is rendered exclusively from this array. */
+interface OutlineFaqItem {
+  question: string;
+  answer_guideline?: string;
+  [key: string]: unknown;
+}
+
+/** Sub-intent the model planned before writing the sections (used to rebuild a cut-off tail). */
+interface OutlineSubIntent {
+  section?: string;
+  intent?: string;
+}
+
+/** One entry of the consolidated facts bank the text step and the auto fact-clean verify against. */
+interface FactsBankEntry {
+  source: string;
+  domain: string;
+  official: boolean;
+  facts: string;
+}
+
+/** Meta block of an outline: region/voice stamps, meta options, carried sources and facts. */
+interface OutlineMeta {
+  country?: string;
+  language?: string;
+  keyword?: string;
+  narration?: string;
+  h1?: string;
+  title_options?: string[];
+  description_options?: string[];
+  slug?: string;
+  slug_options?: string[];
+  target_word_count?: number;
+  structureRules?: string;
+  authorInstruction?: string;
+  truncated?: boolean;
+  fallback_provider?: string;
+  sources?: { title: string; url: string; domain: string; snippet: string }[];
+  facts_bank?: FactsBankEntry[];
+  use_rag?: boolean;
+  [key: string]: unknown;
+}
+
+/** A parsed outline as emitted by the outline step and consumed by the text step. */
+interface Outline {
+  sections?: OutlineSection[];
+  faq?: OutlineFaqItem[];
+  sub_intents?: OutlineSubIntent[];
+  entities?: (string | { name?: string })[];
+  meta?: OutlineMeta;
+  price_table_template?: unknown;
+  [key: string]: unknown;
+}
+
+/** Per-section spec the chunked writer derives from the outline (own word budget only). */
+interface SectionSpec {
+  h_level: string;
+  heading: string;
+  word_count?: [number, number];
+  entities_to_cover?: unknown[];
+  keywords?: string[];
+  summary?: string;
+  copywriter_notes?: string;
+  entity_connections?: unknown[];
+  visual_elements?: unknown[];
+  needs_real_experience?: boolean;
+  subtopics?: { topic?: string; summary?: string; keywords?: string[] }[];
+  [key: string]: unknown;
+}
+
+/** Section proposed by the structure-expansion pass, grafted in deterministically. */
+interface ExpansionSection {
+  h_level?: string;
+  heading?: string;
+  summary?: string;
+  word_count_total?: unknown;
+}
+
+/** One insertion point returned by the structure-expansion call. */
+interface ExpansionInsertion {
+  after_heading?: string;
+  sections?: ExpansionSection[];
+}
+
+/** Fields the enrichment pass may merge back into an existing section. */
+interface EnrichedSection {
+  heading?: string;
+  entities_to_cover?: unknown[];
+  keywords?: string[];
+  summary?: string;
+  copywriter_notes?: string;
+  entity_connections?: unknown[];
+  visual_elements?: unknown[];
+}
+
+/** Heading renames proposed by the localization pass, applied deterministically. */
+interface HeadingLocalizeResponse {
+  h1?: string;
+  title_options?: unknown[];
+  description_options?: unknown[];
+  renames?: { from?: string; to?: string }[];
+}
+
+/** A secondary provider/key the outline step may fall back to when the primary fails. */
+interface AiFallback {
+  aiProvider?: string;
+  aiApiKey?: string;
+  model?: string;
+  aiBaseUrl?: string;
+}
+
+/** One SERP-overlap cluster: the seed keyword plus every member that joined it. */
+interface KeywordCluster {
+  name: string;
+  intent: string;
+  volume: number;
+  keywords: { keyword: string; volume: number; overlap: number }[];
+  top_domains: string[];
+}
+
+/** The job payload every gen* entry point accepts — the shape the /seo-tools UI and the jobs API post. */
+interface GenBody {
+  keyword?: string;
+  aiProvider?: string;
+  aiApiKey?: string;
+  aiBaseUrl?: string;
+  aiFallbacks?: AiFallback[];
+  model?: string;
+  competitors?: CompetitorInput[];
+  paa?: string[];
+  related?: string[];
+  serpKey?: string;
+  serpProvider?: string;
+  serpBaseUrl?: string;
+  firecrawlKey?: string;
+  scrapeCount?: number;
+  gl?: string;
+  hl?: string;
+  language?: string;
+  country?: string;
+  tone?: string;
+  persona?: string;
+  custom?: string;
+  policy?: EditorialPolicy;
+  bannedWords?: string[];
+  forbiddenBrands?: string[];
+  targetWordCount?: number;
+  outlineMaxTokens?: number;
+  temperature?: number;
+  narration?: string;
+  pageGoal?: string;
+  structureRules?: string;
+  customTemplate?: string;
+  additionalKeywords?: string;
+  lsiKeywords?: string;
+  manualTexts?: { name: string; text: string }[];
+  keywordsData?: { keyword: string; volume: number; globalVolume?: number | null; intent?: string }[];
+  keywordsSource?: string;
+  useRag?: boolean;
+  mapExtract?: boolean;
+  factScrub?: boolean;
+  expand?: boolean;
+  localizeHeadings?: boolean;
+  faqBackfill?: boolean;
+  enrich?: boolean;
+  outline?: Outline;
+  sourceMode?: string;
+  includeToc?: boolean;
+  chunkedText?: boolean;
+  chunkSections?: number;
+  promptType?: string;
+  hardRedact?: boolean;
+  autoFactCheck?: boolean;
+  expandText?: boolean;
+  marksScrub?: boolean;
+  mechanics?: boolean;
+  mechanicsRepair?: boolean;
+  judge?: boolean;
+  judgeProvider?: string;
+  judgeApiKey?: string;
+  judgeModel?: string;
+  judgeBaseUrl?: string;
+  generate?: string;
+  structureMode?: "serp" | "my_1to1" | "hybrid" | "seo_block";
+  myStructure?: { level: string; text: string; words: number }[];
+  targetPage?: unknown;
+  keywords?: unknown[];
+  threshold?: number;
+  kwSource?: string;
+  kwKey?: string;
+  dfsKey?: string;
+  kwBaseUrl?: string;
+  _autoFetched?: boolean;
+  __onProgress?: (pct: number, stage?: string) => void;
+}
+
 // Apply fn to every string value IN PLACE (existing references like `meta` stay valid).
-function deepMapStringsInPlace(obj: any, fn: (s: string) => string): void {
+function deepMapStringsInPlace(obj: unknown, fn: (s: string) => string): void {
   if (Array.isArray(obj)) {
     obj.forEach((v, i) => { if (typeof v === "string") obj[i] = fn(v); else deepMapStringsInPlace(v, fn); });
     return;
   }
   if (obj && typeof obj === "object") {
     for (const k of Object.keys(obj)) {
-      const v = obj[k];
-      if (typeof v === "string") obj[k] = fn(v);
+      const v = (obj as Record<string, unknown>)[k];
+      if (typeof v === "string") (obj as Record<string, unknown>)[k] = fn(v);
       else deepMapStringsInPlace(v, fn);
     }
   }
 }
 
-export type GenResult = { ok: true; data: any } | { ok: false; error: string };
+export type GenResult = { ok: true; data: unknown } | { ok: false; error: string };
 
 // Run async tasks with bounded concurrency (avoid hammering the provider with 20 parallel calls).
 async function runPool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -44,7 +274,7 @@ async function runPool<T>(items: T[], limit: number, fn: (item: T) => Promise<vo
 }
 
 // Render a compact per-source facts object (from the map stage) into a short text block.
-function renderExtract(j: any): string {
+function renderExtract(j: Record<string, unknown>): string {
   const lines: string[] = [];
   if (j?.specs && typeof j.specs === "object" && !Array.isArray(j.specs)) {
     const s = Object.entries(j.specs).map(([k, v]) => `${k}=${v}`).join("; ");
@@ -73,17 +303,17 @@ async function mapExtractFacts(competitors: CompetitorInput[], keyword: string, 
 
 // Apply find→replace corrections over an object's STRING VALUES only (keys/structure untouched).
 // Safe against JSON corruption because we never touch keys and rebuild the object in place.
-function applyCorrections(obj: any, corrections: { find: string; replace: string }[]): any {
+function applyCorrections<T>(obj: T, corrections: { find?: string; replace?: string }[]): T {
   if (typeof obj === "string") {
-    let s = obj;
+    let s: string = obj;
     for (const c of corrections) if (c.find) s = s.split(c.find).join(c.replace);
-    return s;
+    return s as unknown as T;
   }
-  if (Array.isArray(obj)) return obj.map((x) => applyCorrections(x, corrections));
+  if (Array.isArray(obj)) return obj.map((x) => applyCorrections(x, corrections)) as unknown as T;
   if (obj && typeof obj === "object") {
-    const o: any = {};
-    for (const k of Object.keys(obj)) o[k] = applyCorrections(obj[k], corrections);
-    return o;
+    const o: Record<string, unknown> = {};
+    for (const k of Object.keys(obj as Record<string, unknown>)) o[k] = applyCorrections((obj as Record<string, unknown>)[k], corrections);
+    return o as unknown as T;
   }
   return obj;
 }
@@ -93,7 +323,7 @@ function applyCorrections(obj: any, corrections: { find: string; replace: string
 // so a 2500-word plan silently becomes ~1000 words of budgets — and the text step then
 // honors those small budgets. Deterministic fix: if the sum of section budgets is far
 // off the target, scale every section's word_count proportionally.
-function toWcRange(v: any): [number, number] | null {
+function toWcRange(v: unknown): [number, number] | null {
   if (Array.isArray(v) && v.length >= 2 && isFinite(+v[0]) && isFinite(+v[1]) && +v[1] > 0) return [+v[0], +v[1]];
   if (typeof v === "number" && isFinite(v) && v > 0) return [v, v];
   if (typeof v === "string") {
@@ -104,10 +334,10 @@ function toWcRange(v: any): [number, number] | null {
 }
 // Each section's OWN contribution to the article: childless section → total; parent →
 // self (its intro paragraphs) since a parent's total conventionally includes subsections.
-function ownRanges(secs: any[]): ([number, number] | null)[] {
-  const depth = (s: any) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
+function ownRanges(secs: OutlineSection[]): ([number, number] | null)[] {
+  const depth = (s: OutlineSection) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
   const hasKids = (i: number) => i + 1 < secs.length && depth(secs[i + 1]) > depth(secs[i]);
-  return secs.map((s: any, i: number) => {
+  return secs.map((s, i) => {
     const total = toWcRange(s?.word_count_total);
     const self = toWcRange(s?.word_count_self);
     return hasKids(i) ? (self || (total ? [Math.round(total[0] * 0.3), Math.round(total[1] * 0.3)] as [number, number] : null)) : (total || self);
@@ -115,16 +345,16 @@ function ownRanges(secs: any[]): ([number, number] | null)[] {
 }
 
 // Sum of the outline's own per-section budgets — the volume the outline would really produce.
-export function ownBudgetSum(outline: any): number {
-  const secs: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+export function ownBudgetSum(outline: Outline): number {
+  const secs: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   if (!secs.length) return 0;
   return Math.round(ownRanges(secs).reduce((acc, r) => acc + (r ? (r[0] + r[1]) / 2 : 0), 0));
 }
 
-export function normalizeWordBudgets(outline: any, target: number): boolean {
+export function normalizeWordBudgets(outline: Outline, target: number): boolean {
   if (!target || !Array.isArray(outline?.sections) || !outline.sections.length) return false;
-  const secs: any[] = outline.sections;
-  const depth = (s: any) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
+  const secs: OutlineSection[] = outline.sections;
+  const depth = (s: OutlineSection) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
   const hasKids = (i: number) => i + 1 < secs.length && depth(secs[i + 1]) > depth(secs[i]);
   const own = ownRanges(secs);
   const sum = own.reduce((acc: number, r: [number, number] | null) => acc + (r ? (r[0] + r[1]) / 2 : 0), 0);
@@ -154,20 +384,60 @@ export function normalizeWordBudgets(outline: any, target: number): boolean {
   return true;
 }
 
-// ─── Structure-expansion pass: deterministically graft model-proposed H3s under thin H2s ──
-// Runs when the outline is flat (H2s with <2 child H3s) — typical with user templates, where
-// models are too conservative to add their own subsections despite instructions.
-async function expandOutlineStructure(outline: any, ctx: {
+// How many sections a word target calls for (~100 words each): more than that and every section
+// becomes a 70-word stub, fewer and each one swells into walls of text the copywriter can only
+// answer with 400-word blocks. Shared by the expansion pass and genOutline's completeness check
+// so the two cannot disagree about what "enough structure" means.
+export function targetSectionCount(targetWc?: number): number {
+  return targetWc && targetWc >= 500
+    ? Math.max(10, Math.min(34, Math.round(targetWc / 100)))
+    : 26;
+}
+
+// Sub-intent labels ("H2 Τιμές Καθαρισμού…", "H3 Guarantees") that no heading in the outline
+// covers. The model plans its sub-intents BEFORE it writes the sections, so when the response is
+// cut short this list is the record of what the outline was supposed to contain — the cheapest
+// possible brief for rebuilding the missing part.
+function uncoveredSubIntents(outline: Outline, sections: OutlineSection[]): string[] {
+  const subs: OutlineSubIntent[] = Array.isArray(outline?.sub_intents) ? outline.sub_intents : [];
+  if (!subs.length) return [];
+  const norm = (s?: string) => String(s || "").replace(/^\s*H[1-4]\s*[:.\-—]?\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const have = sections.map((s) => norm(s?.heading));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const si of subs) {
+    const label = norm(si?.section) || norm(si?.intent);
+    if (!label || seen.has(label)) continue;
+    // "Covered" is deliberately loose — the heading rarely matches the sub-intent label word for
+    // word, so a containment test either way is what tells a rephrasing apart from an absence.
+    if (have.some(h => h && (h.includes(label) || label.includes(h)))) continue;
+    seen.add(label);
+    out.push(String(si?.section || si?.intent).replace(/^\s*H[1-4]\s*[:.\-—]?\s*/i, "").trim());
+  }
+  return out;
+}
+
+// ─── Structure-expansion pass: deterministically graft model-proposed sections into the outline ──
+// Two defects land here, and they need different repairs:
+//   • FLAT   — enough sections, but H2s carry <2 child H3s. Typical with user templates, where
+//              models are too conservative to add their own subsections despite instructions.
+//   • DEFICIT — too few sections for the word target, whatever their depth. This is what a
+//              response cut off mid-`sections` leaves behind, and the flatness test alone MISSES
+//              it: the H2s that made it into the response can be perfectly deep, so the pass
+//              declared the outline healthy and returned without adding anything, while the word
+//              guard spread 2500 words across the 7 surviving sections.
+// Deficit mode may append whole H2 blocks; flat mode stays H3-only, so template skeletons keep
+// their exact shape.
+async function expandOutlineStructure(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; pageGoal?: "informational" | "commercial" | "mixed"; paa?: string[];
   targetWc?: number;
+  // This pass invents headings; without these it could re-add the very section the user's rules
+  // told the outline step to leave out. See buildStructureExpandPrompt.
+  structureRules?: string; policy?: EditorialPolicy; tone?: string;
 }): Promise<boolean> {
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
-  // Section count is BOUND to the word target (~100 words/section): more sections than the
-  // budget supports = every section becomes a 70-word stub and the article overshoots.
-  const maxSections = ctx.targetWc && ctx.targetWc >= 500
-    ? Math.max(10, Math.min(34, Math.round(ctx.targetWc / 100)))
-    : 26;
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const maxSections = targetSectionCount(ctx.targetWc);
   if (!sections.length || sections.length >= maxSections) return false;
   // Count H3 children per H2; skip expansion when the outline is already deep.
   let thinH2 = 0, h2Count = 0;
@@ -178,56 +448,108 @@ async function expandOutlineStructure(outline: any, ctx: {
     for (let j = i + 1; j < sections.length && sections[j]?.h_level !== "H2"; j++) kids++;
     if (kids < 2) thinH2++;
   }
-  if (!h2Count || thinH2 < Math.ceil(h2Count / 2)) return false;
+  if (!h2Count) return false;
+  const isFlat = thinH2 >= Math.ceil(h2Count / 2);
+  const isShort = sections.length < Math.round(maxSections * 0.7);
+  if (!isFlat && !isShort) return false;
 
+  const missingTopics = isShort ? uncoveredSubIntents(outline, sections) : [];
   const prompt = buildStructureExpandPrompt({
     keyword: ctx.keyword, language: ctx.language, country: ctx.country,
     pageGoal: ctx.pageGoal, paa: ctx.paa,
     maxAdd: maxSections - sections.length,
-    sections: sections.map((s: any) => ({ h_level: s.h_level, heading: s.heading })),
+    sections: sections.map((s) => ({ h_level: s.h_level, heading: s.heading })),
+    allowNewH2: isShort,
+    missingTopics,
+    targetSections: maxSections,
+    structureRules: ctx.structureRules, policy: ctx.policy, tone: ctx.tone,
   });
-  const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 4000, ctx.model, ctx.baseUrl);
-  const parsed: any = extractJson(raw);
-  const insertions: any[] = Array.isArray(parsed?.insertions) ? parsed.insertions : [];
+  const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 6000, ctx.model, ctx.baseUrl);
+  const parsed = extractJson<{ insertions?: ExpansionInsertion[] }>(raw);
+  const insertions: ExpansionInsertion[] = Array.isArray(parsed?.insertions) ? parsed.insertions : [];
   if (!insertions.length) return false;
 
-  const have = new Set(sections.map((s: any) => String(s.heading || "").trim().toLowerCase()));
+  const have = new Set(sections.map((s) => String(s.heading || "").trim().toLowerCase()));
+  const blank = (n: ExpansionSection, level: "H2" | "H3") => {
+    const wc = toWcRange(n.word_count_total) || (level === "H2" ? [40, 80] : [80, 160]);
+    return {
+      h_level: level, heading: String(n.heading).trim(),
+      word_count_total: wc, word_count_self: wc,
+      entities_to_cover: [], keywords: [], summary: String(n.summary || ""),
+      visual_elements: [], copywriter_notes: "", entity_connections: [],
+      needs_real_experience: false,
+    };
+  };
   let added = 0;
   for (const ins of insertions) {
-    const anchor = String(ins?.after_heading || "").trim().toLowerCase();
-    const idx = sections.findIndex((s: any) => String(s.heading || "").trim().toLowerCase() === anchor && s.h_level === "H2");
-    if (idx === -1) continue;
-    // Insert AFTER the anchor H2's existing H3 block (i.e. right before the next H2).
-    let at = idx + 1;
-    while (at < sections.length && sections[at]?.h_level !== "H2") at++;
+    const anchorRaw = String(ins?.after_heading || "").trim();
+    const anchor = anchorRaw.toLowerCase();
+    // "END" appends a whole new block after everything else — the only way to restore an H2 the
+    // truncated response never got to, since there is no surviving heading to hang it under.
+    const atEnd = isShort && (anchor === "end" || anchor === "«end»" || anchor === '"end"');
+    let at: number;
+    if (atEnd) {
+      at = sections.length;
+    } else {
+      const idx = sections.findIndex((s) => String(s.heading || "").trim().toLowerCase() === anchor && s.h_level === "H2");
+      if (idx === -1) continue;
+      // Insert AFTER the anchor H2's existing H3 block (i.e. right before the next H2).
+      at = idx + 1;
+      while (at < sections.length && sections[at]?.h_level !== "H2") at++;
+    }
     const newbies = (Array.isArray(ins.sections) ? ins.sections : [])
-      .filter((n: any) => n?.heading && !have.has(String(n.heading).trim().toLowerCase()))
-      .slice(0, 4)
-      .map((n: any) => ({
-        h_level: "H3", heading: String(n.heading).trim(),
-        word_count_total: toWcRange(n.word_count_total) || [80, 160],
-        word_count_self: toWcRange(n.word_count_total) || [80, 160],
-        entities_to_cover: [], keywords: [], summary: String(n.summary || ""),
-        visual_elements: [], copywriter_notes: "", entity_connections: [],
-        needs_real_experience: false,
-      }));
-    newbies.forEach((n: any) => have.add(n.heading.trim().toLowerCase()));
-    sections.splice(at, 0, ...newbies.slice(0, Math.max(0, maxSections - sections.length)));
-    added += newbies.length;
+      .filter((n) => n?.heading && !have.has(String(n.heading).trim().toLowerCase()))
+      .slice(0, 6)
+      // An H2 is only honoured in deficit mode; otherwise everything grafts in as H3 exactly as
+      // before, so a template skeleton can never sprout a top-level heading it did not ask for.
+      .map((n) => blank(n, isShort && String(n?.h_level || "").toUpperCase() === "H2" ? "H2" : "H3"));
+    newbies.forEach((n) => have.add(n.heading.trim().toLowerCase()));
+    const room = Math.max(0, maxSections - sections.length);
+    sections.splice(at, 0, ...newbies.slice(0, room));
+    added += Math.min(newbies.length, room);
     if (sections.length >= maxSections) break;
   }
   return added > 0;
+}
+
+// ─── FAQ backfill: regenerate the FAQ block when the outline arrived without one ────
+// Cheap, and it repairs two things at once: the article gets its question block back, and the
+// word-budget guard downstream once again has something to reserve words FOR — without a `faq`
+// array it reserves nothing and pushes the entire article target into the body sections.
+async function backfillOutlineFaq(outline: Outline, ctx: {
+  keyword: string; language: string; country: string; provider: string; apiKey: string;
+  model?: string; baseUrl?: string; pageGoal?: "informational" | "commercial" | "mixed"; paa?: string[];
+}): Promise<boolean> {
+  if (Array.isArray(outline?.faq) && outline.faq.length >= 3) return false;
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const prompt = buildFaqBackfillPrompt({
+    keyword: ctx.keyword, language: ctx.language, country: ctx.country, pageGoal: ctx.pageGoal,
+    count: 8,
+    headings: sections.map((s) => String(s?.heading || "")).filter(Boolean),
+    subIntents: (Array.isArray(outline?.sub_intents) ? outline.sub_intents : [])
+      .map((si) => String(si?.intent || "")).filter(Boolean),
+    paa: ctx.paa,
+  });
+  const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 4000, ctx.model, ctx.baseUrl);
+  const parsed = extractJson<{ faq?: OutlineFaqItem[] }>(raw);
+  const faq = (Array.isArray(parsed?.faq) ? parsed.faq : [])
+    .filter((f) => f && String(f.question || "").trim())
+    .slice(0, 10)
+    .map((f) => ({ question: String(f.question).trim(), answer_guideline: String(f.answer_guideline || "").trim() }));
+  if (faq.length < 3) return false;
+  outline.faq = faq;
+  return true;
 }
 
 // ─── Heading localization pass: apply model-proposed renames deterministically ─────
 // Template headings arrive in English and models keep them verbatim; this pass translates
 // them into the article language and applies the narration voice, without touching order,
 // structure or budgets. Renames are matched exactly and deduplicated before applying.
-async function localizeOutlineHeadings(outline: any, ctx: {
+async function localizeOutlineHeadings(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; pageGoal?: "informational" | "commercial" | "mixed";
 }): Promise<boolean> {
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   if (!sections.length) return false;
   const prompt = buildHeadingLocalizePrompt({
     keyword: ctx.keyword, language: ctx.language, country: ctx.country,
@@ -235,21 +557,21 @@ async function localizeOutlineHeadings(outline: any, ctx: {
     pageGoal: ctx.pageGoal, h1: outline?.meta?.h1,
     titleOptions: Array.isArray(outline?.meta?.title_options) ? outline.meta.title_options : undefined,
     descriptionOptions: Array.isArray(outline?.meta?.description_options) ? outline.meta.description_options : undefined,
-    headings: sections.map((s: any) => ({ h_level: s.h_level, heading: s.heading })),
+    headings: sections.map((s) => ({ h_level: s.h_level, heading: s.heading })),
   });
   const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 3000, ctx.model, ctx.baseUrl);
-  const parsed: any = extractJson(raw);
+  const parsed = extractJson<HeadingLocalizeResponse>(raw);
   if (!parsed) return false;
 
   let changed = false;
-  const have = new Set(sections.map((s: any) => String(s.heading || "").trim().toLowerCase()));
-  const renames: any[] = Array.isArray(parsed.renames) ? parsed.renames : [];
+  const have = new Set(sections.map((s) => String(s.heading || "").trim().toLowerCase()));
+  const renames = Array.isArray(parsed.renames) ? parsed.renames : [];
   for (const r of renames) {
     const from = String(r?.from || "").trim();
     const to = String(r?.to || "").trim();
     if (!from || !to || from === to) continue;
     if (have.has(to.toLowerCase())) continue; // never create duplicate headings
-    const sec = sections.find((s: any) => String(s.heading || "").trim() === from);
+    const sec = sections.find((s) => String(s.heading || "").trim() === from);
     if (!sec) continue;
     have.delete(from.toLowerCase());
     have.add(to.toLowerCase());
@@ -262,9 +584,9 @@ async function localizeOutlineHeadings(outline: any, ctx: {
     changed = true;
   }
   // Localized meta tags (Title/Description) — applied only when the model returned non-empty ones.
-  const titles = (Array.isArray(parsed.title_options) ? parsed.title_options : []).map((x: any) => String(x || "").trim()).filter(Boolean);
+  const titles = (Array.isArray(parsed.title_options) ? parsed.title_options : []).map((x) => String(x || "").trim()).filter(Boolean);
   if (titles.length) { (outline.meta ||= {}).title_options = titles; changed = true; }
-  const descs = (Array.isArray(parsed.description_options) ? parsed.description_options : []).map((x: any) => String(x || "").trim()).filter(Boolean);
+  const descs = (Array.isArray(parsed.description_options) ? parsed.description_options : []).map((x) => String(x || "").trim()).filter(Boolean);
   if (descs.length) { (outline.meta ||= {}).description_options = descs; changed = true; }
   return changed;
 }
@@ -274,17 +596,20 @@ async function localizeOutlineHeadings(outline: any, ctx: {
 // budget), yielding one-entity sections and one-line summaries/notes. This pass re-runs
 // sections through the model in batches of 5 (3 parallel workers), merging back the
 // enriched fields — total outline size is no longer capped by one response.
-async function enrichOutlineSections(outline: any, ctx: {
+async function enrichOutlineSections(outline: Outline, ctx: {
   keyword: string; language: string; country: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; tone?: string; persona?: string; ragFacts?: string;
   pageGoal?: "informational" | "commercial" | "mixed";
+  // copywriter_notes written here are the writer's entire brief for a section. See
+  // buildSectionEnrichPrompt for why enriching them blind to the policy undoes the policy.
+  policy?: EditorialPolicy; structureRules?: string; custom?: string; bannedWords?: string[];
 }): Promise<boolean> {
-  const sections: any[] = Array.isArray(outline?.sections) ? outline.sections : [];
+  const sections: OutlineSection[] = Array.isArray(outline?.sections) ? outline.sections : [];
   if (!sections.length) return false;
   const globalEntities = (Array.isArray(outline?.entities) ? outline.entities : [])
-    .map((e: any) => (typeof e === "string" ? e : e?.name)).filter(Boolean);
+    .map((e) => (typeof e === "string" ? e : e?.name)).filter(Boolean) as string[];
   const BATCH = 5;
-  const batches: { start: number; items: any[] }[] = [];
+  const batches: { start: number; items: OutlineSection[] }[] = [];
   for (let i = 0; i < sections.length; i += BATCH) batches.push({ start: i, items: sections.slice(i, i + BATCH) });
 
   let enrichedAny = false;
@@ -295,11 +620,12 @@ async function enrichOutlineSections(outline: any, ctx: {
         tone: ctx.tone, persona: ctx.persona, pageGoal: ctx.pageGoal,
         narration: outline?.meta?.narration === "first" ? "first" : outline?.meta?.narration === "third" ? "third" : undefined,
         h1: outline?.meta?.h1, globalEntities, ragFacts: ctx.ragFacts, sections: batch.items,
+        policy: ctx.policy, structureRules: ctx.structureRules, custom: ctx.custom, bannedWords: ctx.bannedWords,
       });
       const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 8000, ctx.model, ctx.baseUrl);
-      const parsed: any = extractJson(raw);
-      const out: any[] = Array.isArray(parsed?.sections) ? parsed.sections : [];
-      out.forEach((es: any, j: number) => {
+      const parsed = extractJson<{ sections?: EnrichedSection[] }>(raw);
+      const out: EnrichedSection[] = Array.isArray(parsed?.sections) ? parsed.sections : [];
+      out.forEach((es, j: number) => {
         const target = sections[batch.start + j];
         if (!target || !es) return;
         // Heading sanity: merge only when it's clearly the same section (or model kept it).
@@ -318,21 +644,66 @@ async function enrichOutlineSections(outline: any, ctx: {
   return enrichedAny;
 }
 
+// ─── Meta-band enforcement for outline options (wave-oct T1) ──────────────────────
+// The model cannot count characters, `pick()` takes the FIRST non-empty option, and the audit
+// flags everything outside 50–65 / 150–165 — the production export had titles of 66–80. So the
+// band is enforced here by code: options already inside the target band are reordered to the
+// front (pick() and outlineFormat then select one automatically — no foreign files touched),
+// and when NOTHING fits, one fitMeta repair pass (the outline call is already paid, the
+// provider is known) puts a fitted variant first. Returns the MetaFitResults of the repair
+// pass for diagnostics; an empty array means everything was solvable by reordering alone.
+async function fitOutlineMetaOptions(outline: Record<string, unknown>, ctx: {
+  keyword: string; language: string; provider: string; apiKey: string; model?: string; baseUrl?: string;
+}): Promise<MetaFitResult[]> {
+  const meta = (outline.meta as Record<string, unknown> | undefined) ?? (outline.meta = {});
+  const diag: MetaFitResult[] = [];
+  for (const field of ["title", "description"] as const) {
+    const key = `${field}_options`;
+    const existing = meta[key];
+    const raw: string[] = Array.isArray(existing) ? existing.map((x) => String(x ?? "")) : [];
+    const opts = raw.filter((s) => s.trim());
+    if (!opts.length) continue;
+    const { targetMin, targetMax } = META_LIMITS[field];
+    const inBand = (s: string) => { const n = metaLength(s); return n >= targetMin && n <= targetMax; };
+    if (opts.some(inBand)) {
+      meta[key] = [...opts.filter(inBand), ...opts.filter((s) => !inBand(s))];
+      continue;
+    }
+    const item: MetaFitItem = field === "title"
+      ? { keyword: ctx.keyword, language: ctx.language, title: opts[0], titleOptions: opts }
+      : { keyword: ctx.keyword, language: ctx.language, description: opts[0], descriptionOptions: opts };
+    const res = await fitMeta(item, { allow: true, provider: ctx.provider, apiKey: ctx.apiKey, model: ctx.model, baseUrl: ctx.baseUrl });
+    const r = res[field];
+    if (!r) continue;
+    if (r.method === "forced_cut" || r.method === "unfixable" || r.method === "llm") diag.push(r);
+    if (r.after && r.after !== opts[0]) meta[key] = [r.after, ...opts];
+  }
+  return diag;
+}
+
 // ─── Outline (structure) ─────────────────────────────────────────────────────────
-export async function genOutline(b: any): Promise<GenResult> {
+export async function genOutline(b: GenBody): Promise<GenResult> {
   const keyword = String(b.keyword ?? "").trim();
   if (!keyword) return { ok: false, error: "no_keyword" };
-  const provider = String(b.aiProvider ?? "anthropic");
-  const apiKey = String(b.aiApiKey ?? "");
+  // Mutable, because the head call may fall back to another provider (see below) and every
+  // later pass — scrub, expand, localize, enrich — must follow it rather than keep hammering
+  // the one that just failed.
+  let provider = String(b.aiProvider ?? "anthropic");
+  let apiKey = String(b.aiApiKey ?? "");
   if (!apiKey) return { ok: false, error: "no_ai_key" };
 
   const competitors: CompetitorInput[] = Array.isArray(b.competitors) ? b.competitors : [];
-  const model = b.model ? String(b.model) : undefined;
-  const baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
+  if (!competitors.length && b.serpKey && b._autoFetched !== true) {
+    return genOutlineAuto({ ...b, _autoFetched: true });
+  }
+  let model = b.model ? String(b.model) : undefined;
+  let baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
 
   // MAP stage: extract compact facts per source (parallel) before assembling the outline.
   if (b.mapExtract !== false && competitors.length) {
+    b.__onProgress?.(10, "map");
     try { await mapExtractFacts(competitors, keyword, String(b.country ?? "us"), provider, apiKey, model, baseUrl); } catch { /* fall back to raw text grounding */ }
+    b.__onProgress?.(22, "outline");
   }
 
   // Casino RAG: pull verified entity facts (slots/casinos/providers) from the knowledge base.
@@ -353,50 +724,169 @@ export async function genOutline(b: any): Promise<GenResult> {
     targetWordCount: b.targetWordCount ? Number(b.targetWordCount) : undefined,
     manualTexts: Array.isArray(b.manualTexts) ? b.manualTexts : undefined,
     keywordsData: Array.isArray(b.keywordsData) ? b.keywordsData : undefined,
+    keywordsSource: b.keywordsSource ? String(b.keywordsSource) : undefined,
     pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
     narration: b.narration === "first" || b.narration === "third" ? b.narration : undefined,
     customTemplate: b.customTemplate ? String(b.customTemplate) : undefined,
     structureRules: b.structureRules ? String(b.structureRules) : undefined,
+    custom: b.custom ? String(b.custom) : undefined,
     ragFacts: rag?.rendered,
+    bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
     // Enrichment (default on) deepens every section afterwards — keep the skeleton lean so
     // one call fits the token budget and finishes well within the LLM timeout.
     lightSections: b.enrich !== false,
   });
 
-  let raw = await fetchLLM(prompt, provider, apiKey, 16000, model, baseUrl);
-  let outline = extractJson(raw);
+  // The outline call must return parseable JSON, and sampling randomness is exactly what breaks
+  // that — so the temperature the user picked for prose is capped here rather than passed through
+  // raw. The retry below already covers the occasional malformed response; this keeps it rare.
+  const outlineTemp = b.temperature === undefined || b.temperature === null
+    ? undefined : Math.min(0.8, Math.max(0, Number(b.temperature)));
+
+  // fetchLLMDetailed rather than fetchLLM: when the provider fails, its own reason is the only
+  // thing that makes the failure actionable, and fetchLLM throws that reason away. A bare
+  // "parse_failed" here cost real debugging time — it named the JSON parser for problems that
+  // were actually an empty completion, a safety block or a refusal upstream.
+  // Output budget for the outline call. 16000 was one flat number covering both the answer AND
+  // whatever hidden reasoning the model does, and a 20-30 section EAV structure does not fit
+  // underneath it once a reasoning model has taken its cut. What made that expensive rather than
+  // merely annoying is that nothing NOTICED: the cut-off response was salvaged into valid JSON,
+  // shipped as a finished outline missing the tail of its own section list plus `faq` and
+  // `entity_analysis`, and the word guard then spread the whole article target across whatever
+  // sections had survived. So: a larger first ask, and one retry at a larger ceiling still when
+  // the answer comes back cut off.
+  //
+  // Overridable via `outlineMaxTokens` because the ceiling is also a DIAGNOSTIC. A gateway that
+  // fails to report usage on long generations but serves short ones fine cannot be told apart
+  // from a broken model without varying exactly this number, and recompiling to change a constant
+  // makes that a deploy per experiment.
+  const OUTLINE_TOKENS = Math.max(4000, Math.min(64000, Number(b.outlineMaxTokens) || 24000));
+  const OUTLINE_TOKENS_RETRY = Math.min(64000, Math.round(OUTLINE_TOKENS * 1.35));
+  const wantSections = targetSectionCount(Number(b.targetWordCount) || 0);
+  const sectionCount = (o: Outline | null) => (Array.isArray(o?.sections) ? o.sections.length : 0);
+  // Two signals, both definitive, neither previously visible: the provider saying it stopped at
+  // the ceiling, and our own JSON salvage admitting it had to re-close open containers. A merely
+  // THIN outline is not counted here — the expansion and FAQ passes below repair that far more
+  // cheaply than paying for the whole call again.
+  const cutOff = (repaired: boolean, finish?: string) => {
+    const f = String(finish || "").toLowerCase();
+    return repaired || f === "length" || f === "max_tokens" || f === "max_output_tokens";
+  };
+
+  let res = await fetchLLMDetailed(prompt, provider, apiKey, OUTLINE_TOKENS, model, baseUrl, outlineTemp);
+  let raw = res.text;
+  let parsed0 = extractJsonDetailed<Outline>(raw);
+  let outline = parsed0.data;
+  let wasCutOff = !!outline && cutOff(parsed0.repaired, res.finishReason);
   if (!outline) {
-    raw = await fetchLLM(prompt + (raw ? "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON, без текста и без markdown-обёрток." : ""), provider, apiKey, 16000, model, baseUrl);
-    outline = extractJson(raw);
+    // Retry deterministically: if sampling is what mangled the JSON, repeating at the same
+    // temperature just rolls the same dice again.
+    res = await fetchLLMDetailed(prompt + (raw ? "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON, без текста и без markdown-обёрток." : ""), provider, apiKey, OUTLINE_TOKENS, model, baseUrl, outlineTemp === undefined ? undefined : 0);
+    raw = res.text;
+    parsed0 = extractJsonDetailed<Outline>(raw);
+    outline = parsed0.data;
+    wasCutOff = !!outline && cutOff(parsed0.repaired, res.finishReason);
+  } else if (wasCutOff) {
+    // Repeating the request at the SAME ceiling would reproduce the same truncation — the point
+    // of this retry is the higher ceiling, not the reroll. Whichever attempt is more complete
+    // wins, so a second truncation can only ever gain sections, never lose them.
+    console.error(`[outline] response cut off (finish_reason: ${res.finishReason ?? "n/a"}, sections: ${sectionCount(outline)}/${wantSections}) — retrying with a larger token budget`);
+    try {
+      const res2 = await fetchLLMDetailed(prompt, provider, apiKey, OUTLINE_TOKENS_RETRY, model, baseUrl, outlineTemp);
+      const parsed2 = extractJsonDetailed<Outline>(res2.text);
+      if (parsed2.data) {
+        const cut2 = cutOff(parsed2.repaired, res2.finishReason);
+        if (!cut2 || sectionCount(parsed2.data) > sectionCount(outline)) {
+          res = res2; raw = res2.text; outline = parsed2.data; wasCutOff = cut2;
+        }
+      }
+    } catch { /* keep the first attempt; the repair passes below still run */ }
   }
-  // Distinguish provider failure/timeout (raw null) from an actual JSON parse problem.
-  if (!outline) return { ok: false, error: raw == null ? "generation_failed" : "parse_failed" };
+  // PROVIDER FALLBACK: the outline is the one step whose failure wastes everything before it —
+  // the SERP call, the scrape and the per-source fact extraction are all already paid for by the
+  // time it runs. When the configured provider cannot produce it for a reason that is about the
+  // PROVIDER rather than the content (a gateway that discards a finished generation because it
+  // could not read usage for billing; an upstream that is simply down), another configured
+  // provider usually can, and the alternative to trying one is throwing the whole job away.
+  //
+  // Deliberately not attempted for content-policy refusals: every provider will refuse the same
+  // prompt, so retrying elsewhere just bills the user twice for the same "no".
+  let fellBackTo: string | undefined;
+  const fallbacks: AiFallback[] = Array.isArray(b.aiFallbacks) ? b.aiFallbacks : [];
+  const contentRefusal = /content|policy|safety|unsafe|sensitive|moderation/i.test(res.error ?? "");
+  if (!outline && fallbacks.length && !contentRefusal) {
+    for (const fb of fallbacks) {
+      const fbProvider = String(fb?.aiProvider ?? "").trim();
+      const fbKey = String(fb?.aiApiKey ?? "").trim();
+      if (!fbProvider || !fbKey || fbProvider === provider) continue;
+      console.error(`[outline] ${provider} failed (${res.error ?? "no parseable output"}) — retrying on ${fbProvider}`);
+      try {
+        const rf = await fetchLLMDetailed(prompt, fbProvider, fbKey, OUTLINE_TOKENS, fb.model ? String(fb.model) : undefined, fb.aiBaseUrl ? String(fb.aiBaseUrl) : undefined, outlineTemp);
+        const pf = extractJsonDetailed<Outline>(rf.text);
+        if (!pf.data) continue;
+        // Everything downstream now runs on whichever provider actually answered.
+        res = rf; raw = rf.text; outline = pf.data;
+        wasCutOff = cutOff(pf.repaired, rf.finishReason);
+        provider = fbProvider; apiKey = fbKey;
+        model = fb.model ? String(fb.model) : undefined;
+        baseUrl = fb.aiBaseUrl ? String(fb.aiBaseUrl) : undefined;
+        fellBackTo = fbProvider;
+        break;
+      } catch { /* try the next one */ }
+    }
+  }
+
+  // Three genuinely different failures, three different messages. They used to collapse into
+  // "generation_failed" / "parse_failed", which said nothing about which one had happened.
+  if (!outline) {
+    if (raw == null) return { ok: false, error: res.error ?? "generation_failed" };
+    // Reaching here means the model DID return text that is not JSON — quote the head of it,
+    // because that is the one piece of evidence needed to tell a wrapped//chatty answer apart
+    // from a truncated one, and it is otherwise never persisted anywhere.
+    const head = raw.trim().replace(/\s+/g, " ").slice(0, 300);
+    return { ok: false, error: `parse_failed — the model returned text that is not valid JSON. First 300 chars: ${head}` };
+  }
 
   // Knowledge-based fact scrub: actively correct wrong/fabricated specifics baked into the outline
   // (e.g. "8-inch" → "7.9-inch", invented colors → generalized) BEFORE the text inherits them.
+  b.__onProgress?.(45, "scrub");
   if (b.factScrub !== false) {
     try {
       const scrubPrompt = buildFactScrubPrompt({ outline, keyword, country: String(b.country ?? "us") });
       const scrubRaw = await fetchLLM(scrubPrompt, provider, apiKey, 4000, model, baseUrl);
-      const parsed: any = extractJson(scrubRaw);
+      const parsed = extractJson<{ corrections?: { find?: string; replace?: string }[] }>(scrubRaw);
       const corrections = Array.isArray(parsed?.corrections)
         ? parsed.corrections
-            .filter((c: any) => c && typeof c.find === "string" && c.find.trim() && typeof c.replace === "string" && c.find !== c.replace)
+            .filter((c) => c && typeof c.find === "string" && c.find.trim() && typeof c.replace === "string" && c.find !== c.replace)
             .slice(0, 40)
         : [];
       if (corrections.length) {
         outline = applyCorrections(outline, corrections);
-        (outline as any)._scrub = { applied: corrections.length };
+        outline._scrub = { applied: corrections.length };
       }
     } catch { /* scrub is best-effort; never block outline on it */ }
   }
 
   // Deterministically stamp region/voice into meta so the text step inherits them reliably.
-  const meta = ((outline as any).meta ||= {});
+  const meta = (outline.meta ||= {});
   meta.country = String(b.country ?? "us");
   meta.language = String(b.language ?? "en");
+  // Self-describing outline: genText and every later consumer fall back to this when no
+  // keyword was passed alongside (the UI posts keyword + outline as separate fields).
+  meta.keyword = keyword;
   if (b.narration === "first" || b.narration === "third") meta.narration = b.narration;
   if (b.structureRules && String(b.structureRules).trim()) meta.structureRules = String(b.structureRules).trim();
+  // Carried on the outline so the text step inherits the same author instruction the structure was
+  // planned under, instead of depending on the caller remembering to repeat it verbatim two jobs
+  // later. An explicit `custom` on the text job still wins — see genText.
+  if (b.custom && String(b.custom).trim()) meta.authorInstruction = String(b.custom).trim();
+  // Recorded rather than thrown away: the repair passes below usually make a truncated response
+  // whole again, but "this outline was rebuilt from a cut-off answer" is exactly the context
+  // needed when someone later asks why a generation looks thin, and it costs one boolean.
+  if (wasCutOff) { outline._truncated = true; meta.truncated = true; }
+  // Which provider actually wrote this, when it was not the configured one. Without it a
+  // successful job hides the fact that the primary provider is broken, and nobody fixes it.
+  if (fellBackTo) { outline._fallback_provider = fellBackTo; meta.fallback_provider = fellBackTo; }
   // EXPAND pass (default on): if the outline is flat (most H2s have <2 child H3s — typical
   // with user templates), graft model-proposed H3 subsections deterministically. Runs BEFORE
   // the volume guard so budgets are redistributed across the new sections too. Off with expand:false.
@@ -408,8 +898,10 @@ export async function genOutline(b: any): Promise<GenResult> {
         pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
         paa: Array.isArray(b.paa) ? b.paa : undefined,
         targetWc: Number(b.targetWordCount) || Number(meta.target_word_count) || 0,
+        structureRules: b.structureRules ? String(b.structureRules) : undefined,
+        policy: b.policy, tone: b.tone ? String(b.tone) : undefined,
       });
-      if (grown) (outline as any)._expanded = true;
+      if (grown) outline._expanded = true;
     } catch { /* expansion is best-effort */ }
   }
 
@@ -423,8 +915,26 @@ export async function genOutline(b: any): Promise<GenResult> {
         provider, apiKey, model, baseUrl,
         pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
       });
-      if (renamed) (outline as any)._localized = true;
+      if (renamed) outline._localized = true;
     } catch { /* localization is best-effort */ }
+  }
+
+  // FAQ BACKFILL (default on): `faq` sits at the tail of the outline schema, so it is the first
+  // casualty of any short response — and its absence is not a cosmetic one. The article loses the
+  // block that earns People-Also-Ask and AI-answer citations, and the volume guard immediately
+  // below reserves words only for questions that exist, so an empty `faq` pushes the entire word
+  // target into the body and inflates every section. Runs BEFORE that guard for exactly that
+  // reason. Off with faqBackfill:false.
+  if (b.faqBackfill !== false) {
+    try {
+      const built = await backfillOutlineFaq(outline, {
+        keyword, language: String(b.language ?? "en"), country: String(b.country ?? "us"),
+        provider, apiKey, model, baseUrl,
+        pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
+        paa: Array.isArray(b.paa) ? b.paa : undefined,
+      });
+      if (built) outline._faq_backfilled = true;
+    } catch { /* backfill is best-effort; an outline without FAQ is still usable */ }
   }
 
   // Volume guard: stamp the requested target and rescale section budgets if the model
@@ -441,13 +951,14 @@ export async function genOutline(b: any): Promise<GenResult> {
     meta.target_word_count = targetWc;
     // FAQ answers are written ON TOP of the sections — reserve their words (~50/question)
     // out of the section budgets, reference-tool style ("Available for Content").
-    const faqReserve = Math.min(Math.round(targetWc * 0.25), (Array.isArray((outline as any).faq) ? (outline as any).faq.length : 0) * 50);
-    if (normalizeWordBudgets(outline, Math.max(300, targetWc - faqReserve))) (outline as any)._wc_rescaled = true;
+    const faqReserve = Math.min(Math.round(targetWc * 0.25), (Array.isArray(outline.faq) ? outline.faq.length : 0) * 50);
+    if (normalizeWordBudgets(outline, Math.max(300, targetWc - faqReserve))) outline._wc_rescaled = true;
   }
 
   // ENRICH pass (default on): deepen every section's EAV detail in parallel batches —
   // role-annotated entities, 4-6 sentence summaries, rich copywriter notes with a
   // ready opening line, weighted triplets. Off with enrich:false.
+  b.__onProgress?.(70, "enrich");
   if (b.enrich !== false) {
     try {
       const ok = await enrichOutlineSections(outline, {
@@ -457,8 +968,12 @@ export async function genOutline(b: any): Promise<GenResult> {
         persona: b.persona ? String(b.persona) : undefined,
         ragFacts: rag?.rendered,
         pageGoal: b.pageGoal === "commercial" || b.pageGoal === "informational" ? b.pageGoal : "mixed",
+        policy: b.policy,
+        structureRules: b.structureRules ? String(b.structureRules) : undefined,
+        custom: b.custom ? String(b.custom) : undefined,
+        bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
       });
-      if (ok) (outline as any)._enriched = true;
+      if (ok) outline._enriched = true;
     } catch { /* enrichment is best-effort */ }
   }
   // Persist the real competitor facts that grounded the outline, so the TEXT step is built on the
@@ -473,7 +988,7 @@ export async function genOutline(b: any): Promise<GenResult> {
       domain: (c.url.match(/^https?:\/\/([^/]+)/)?.[1] || "").replace(/^www\./, ""),
       snippet: String(c.text_sample).replace(/\s+/g, " ").trim().slice(0, c.site_type === "official_store" ? 3500 : 2500),
     }));
-  if (carriedSources.length) (meta as any).sources = carriedSources;
+  if (carriedSources.length) meta.sources = carriedSources;
   // Consolidated FACTS BANK from the map stage — the article is written from it AND the auto
   // fact-clean later verifies against it (so fact-check confirms instead of re-searching).
   const factsBank = competitors
@@ -500,19 +1015,38 @@ export async function genOutline(b: any): Promise<GenResult> {
         .replace(/\b202[0-5]\b/g, String(NOW_YEAR))
         .replace(/§KEEP(202[0-5])§/g, "$1")
     : s;
-  for (const sec of (Array.isArray((outline as any).sections) ? (outline as any).sections : [])) {
+  for (const sec of (Array.isArray(outline.sections) ? outline.sections : [])) {
     sec.heading = fixYear(sec.heading);
     if (Array.isArray(sec.keywords)) sec.keywords = sec.keywords.map(fixYear);
   }
   if (meta.h1) meta.h1 = fixYear(meta.h1);
   if (Array.isArray(meta.title_options)) meta.title_options = meta.title_options.map(fixYear);
   if (Array.isArray(meta.description_options)) meta.description_options = meta.description_options.map(fixYear);
-  for (const q of (Array.isArray((outline as any).faq) ? (outline as any).faq : [])) {
+  // META FIT (wave-oct T1), after the year fix and the localization pass — both rewrite the
+  // options, so the band is enforced on the final strings. Best-effort: a fitting failure must
+  // never cost the user the outline.
+  try {
+    const metaFitDiag = await fitOutlineMetaOptions(outline, {
+      keyword, language: String(b.language ?? "en"), provider, apiKey, model, baseUrl,
+    });
+    if (metaFitDiag.length) outline._metaFit = metaFitDiag;
+  } catch { /* best-effort */ }
+  // FOOTPRINT GUARD (wave-nov N1), right after META FIT so it judges the final strings: the
+  // title/description options are skeletonized against the portfolio's occupied constructions
+  // and free variants move to the front. Best-effort by the same rule — an unavailable
+  // portfolio must never cost the user the outline.
+  try {
+    const footprintConcerns = await guardOutlineFootprint(outline, {
+      keyword, language: String(b.language ?? "en"), provider, apiKey, model, baseUrl,
+    });
+    if (footprintConcerns.length) outline._footprint = footprintConcerns;
+  } catch { /* best-effort */ }
+  for (const q of (Array.isArray(outline.faq) ? outline.faq : [])) {
     if (q?.question) q.question = fixYear(q.question);
   }
-  if (Array.isArray((outline as any).sections)) {
-    const secsAll: any[] = (outline as any).sections;
-    const hasFaqArr = Array.isArray((outline as any).faq) && (outline as any).faq.length > 0;
+  if (Array.isArray(outline.sections)) {
+    const secsAll: OutlineSection[] = outline.sections;
+    const hasFaqArr = Array.isArray(outline.faq) && outline.faq.length > 0;
     for (let i = secsAll.length - 1; i >= 0; i--) {
       if (String(secsAll[i]?.h_level || "").toUpperCase() === "H1") {
         if (!meta.h1 && secsAll[i].heading) meta.h1 = secsAll[i].heading;
@@ -527,9 +1061,39 @@ export async function genOutline(b: any): Promise<GenResult> {
 
   // RAG facts join the facts bank FIRST (highest trust) so both the text step and the
   // auto fact-clean verify against the knowledge base, not only scraped competitors.
-  if (rag?.bankEntry) factsBank.unshift(rag.bankEntry as any);
-  if (factsBank.length) (meta as any).facts_bank = factsBank;
-  if (b.useRag) (meta as any).use_rag = true;
+  if (rag?.bankEntry) factsBank.unshift(rag.bankEntry);
+  if (factsBank.length) meta.facts_bank = factsBank;
+  if (b.useRag) meta.use_rag = true;
+
+  // Independent QA judge (per-task "judge" slot; falls back to the writer's own provider).
+  // Runs on the FINAL outline, after expand/localize/FAQ backfill — those passes reshape the
+  // structure, so judging earlier would verdict on a draft nobody ships. A hollow outline
+  // poisons every step downstream (sections, FAQ, the article itself), and JSON that parses
+  // is not JSON that covers the keyword.
+  b.__onProgress?.(85, "judge");
+  if (b.judge !== false) {
+    const verdict = await judgeOutline(
+      outline,
+      {
+        provider: String(b.judgeProvider || provider),
+        apiKey: String(b.judgeApiKey || apiKey),
+        model: b.judgeModel || model || undefined,
+        baseUrl: b.judgeBaseUrl || baseUrl || undefined,
+      },
+      {
+        keyword, language: String(b.language ?? "en"), country: String(b.country ?? "us"),
+        constraints: [
+          b.custom ? String(b.custom) : "",
+          b.structureRules ? String(b.structureRules) : "",
+        ].filter(Boolean).join("\n") || undefined,
+      },
+    );
+    if (verdict.verdict === "reject") {
+      return { ok: false, error: `judge_rejected: ${verdict.blockers?.join("; ") || "the QA reviewer rejected the outline"}` };
+    }
+    if (verdict.concerns?.length) outline._judgeConcerns = verdict.concerns;
+  }
+
   return { ok: true, data: outline };
 }
 
@@ -561,26 +1125,75 @@ export function ensureTocLabel(text: string, language: string): string {
 // ─── Chunked article writer: H2-units → chunks of ~4 sections → parallel small calls ──
 // Returns the assembled article body (H1 + sections + FAQ) or null → caller falls back to
 // the single-shot path. Each chunk sees the full article map so nothing gets duplicated.
-async function writeTextInChunks(outline: any, ctx: {
+// Spread the sampling temperature slightly across chunks when a base temperature is set.
+//
+// Chunked writing gives us a lever a single-shot article doesn't have: each chunk is its own
+// completion, so nudging the temperature per chunk widens the token distribution of the finished
+// article rather than of one call. Statistical detectors score ~300-word windows and average them,
+// so a text assembled from calls that sampled slightly differently is not the same object as a text
+// sampled uniformly. The offsets are deliberately small — this is meant to add variance, not to
+// swing individual chunks into the incoherent range where quality collapses.
+//
+// Indexed rather than random so a rerun of the same outline stays reproducible.
+const CHUNK_TEMP_OFFSETS = [0, 0.1, -0.08, 0.05, -0.05, 0.12];
+function chunkTemp(base: number | undefined, i: number): number | undefined {
+  if (base === undefined) return undefined;
+  return Math.max(0, Math.round((base + CHUNK_TEMP_OFFSETS[i % CHUNK_TEMP_OFFSETS.length]) * 100) / 100);
+}
+
+// What the chunked writer reports back. It is no longer just "the article or nothing": a chunk
+// that fails after retries costs the caller a decision, and the decision needs to know how much
+// of the article actually exists and why the rest does not.
+interface ChunkedTextResult {
+  text: string | null;
+  wroteChunks: number;
+  totalChunks: number;
+  /** Headings whose chunk never came back — what the shipped article is missing. */
+  missingHeadings: string[];
+  /** The provider's own reason for the last failed chunk, for the error the user finally sees. */
+  lastError?: string;
+}
+
+async function writeTextInChunks(outline: Outline, ctx: {
   keyword: string; language: string; tone: string; provider: string; apiKey: string;
   model?: string; baseUrl?: string; ragFacts?: string;
   sources?: { title: string; snippet: string; url: string; domain: string }[];
-  sourceMode?: "off" | "facts" | "cited"; includeToc?: boolean;
-}): Promise<string | null> {
+  sourceMode?: "off" | "facts" | "cited"; includeToc?: boolean; temperature?: number;
+  bannedWords?: string[];
+  // The author-level inputs. Everything the user actually typed used to stop at this function's
+  // door: `policy`, `custom` and the outline's `structureRules` were rendered only by
+  // buildTextPrompt — the single-shot fallback nobody reaches on a healthy run — so on the
+  // default path the instruction was never sent to any model. See buildSectionTextPrompt.
+  policy?: EditorialPolicy;
+  custom?: string;
+  promptType?: "service" | "custom";
+  /**
+   * Max sections per call (2–5, default 5).
+   *
+   * Smaller chunks hold a long instruction better — a constraint decays with distance from the
+   * top of the prompt — but they cost one provider call each, and the providers people run this
+   * on meter by the call as much as by the token. 5 stays the default because the instruction is
+   * now IN each chunk; drop it only when a page keeps losing a rule the prompt demonstrably
+   * carries.
+   */
+  chunkSections?: number;
+  /** Phase-level progress reporter (the background job's __onProgress hook). Optional — the synchronous route runs without one. */
+  onProgress?: (pct: number, stage?: string) => void;
+}): Promise<ChunkedTextResult> {
   // FAQ-like sections[] entries are dropped up front (defensive — outlines saved before the
   // sanitizer existed still carry the template's "H2: FAQ" duplicate): the FAQ is rendered
   // exclusively from the faq[] array by the dedicated call below.
   const hasFaqArr = Array.isArray(outline?.faq) && outline.faq.length > 0;
-  const secs: any[] = (Array.isArray(outline?.sections) ? outline.sections : [])
-    .filter((s: any) => !(hasFaqArr && FAQ_LIKE_RE.test(String(s?.heading || ""))));
-  if (!secs.length) return null;
+  const secs: OutlineSection[] = (Array.isArray(outline?.sections) ? outline.sections : [])
+    .filter((s) => !(hasFaqArr && FAQ_LIKE_RE.test(String(s?.heading || ""))));
+  if (!secs.length) return { text: null, wroteChunks: 0, totalChunks: 0, missingHeadings: [] };
   const meta = outline.meta || {};
 
   // Per-section spec with a SINGLE word_count = the section's OWN contribution (a parent's
   // total includes its children — passing both made models write the intro at full total
   // AND the children at theirs, overshooting the article by ~35-40%).
   const own = ownRanges(secs);
-  const specs: any[] = secs.map((s: any, i: number) => ({
+  const specs: SectionSpec[] = secs.map((s, i) => ({
     h_level: s.h_level, heading: s.heading,
     word_count: own[i] || [60, 100],
     entities_to_cover: s.entities_to_cover, keywords: s.keywords, summary: s.summary,
@@ -621,10 +1234,10 @@ async function writeTextInChunks(outline: any, ctx: {
   // "most tabular" headings and doesn't know to skip FAQ) or from the keyword fallback below
   // (whose regex includes words like "bonus"/"limit"/"retrait" that commonly appear IN an FAQ
   // heading too, e.g. "FAQ — Bonus & Retraits").
-  const isFaqHeading = (h: any) => /\bfaq\b|frequently asked/i.test(String(h || "").trim());
+  const isFaqHeading = (h: unknown) => /\bfaq\b|frequently asked/i.test(String(h || "").trim());
   for (const s of specs) if (isFaqHeading(s.heading)) s.visual_elements = [];
-  const hasTableVe = (s: any) => (Array.isArray(s.visual_elements) ? s.visual_elements : [])
-    .some((v: any) => typeof v === "object" ? /table/i.test(String(v?.type || "")) : /table|таблиц/i.test(String(v)));
+  const hasTableVe = (s: SectionSpec) => (Array.isArray(s.visual_elements) ? s.visual_elements : [])
+    .some((v) => typeof v === "object" ? /table/i.test(String((v as { type?: string } | null)?.type || "")) : /table|таблиц/i.test(String(v)));
   let tablesKept = 0;
   for (const s of specs) {
     if (!hasTableVe(s)) continue;
@@ -639,27 +1252,33 @@ async function writeTextInChunks(outline: any, ctx: {
 
 
   // Units = H2 with its H3 children (never split a unit across chunks).
-  const units: any[][] = [];
+  const units: SectionSpec[][] = [];
   for (const s of specs) {
     if (s.h_level === "H2" || !units.length) units.push([s]);
     else units[units.length - 1].push(s);
   }
-  // Greedy chunks of ~2-3 units / ≤5 sections.
-  const chunks: any[][] = [];
+  // Greedy chunks of ~2-3 units / ≤chunkSections sections.
+  const maxPerChunk = Math.max(2, Math.min(5, Math.round(Number(ctx.chunkSections) || 5)));
+  const chunks: SectionSpec[][] = [];
   for (const u of units) {
     const last = chunks[chunks.length - 1];
-    if (last && last.length + u.length <= 5) last.push(...u);
+    if (last && last.length + u.length <= maxPerChunk) last.push(...u);
     else chunks.push([...u]);
   }
 
-  const allHeadings = specs.map((s: any) => ({ h_level: s.h_level, heading: s.heading }));
+  const allHeadings = specs.map((s) => ({ h_level: s.h_level, heading: s.heading }));
   const faq = Array.isArray(outline.faq) ? outline.faq : [];
   const verdictRe = /verdict|вердикт|итог|conclusion|заключение|avis final|final|raisons|choisir|pourquoi|почему|avantages|преимуществ/i;
 
   const parts: (string | null)[] = new Array(chunks.length).fill(null);
-  await runPool(chunks.map((c, i) => ({ c, i })), 2, async ({ c, i }) => {
-    const lo = c.reduce((a: number, s: any) => a + (s.word_count?.[0] || 0), 0);
-    const hi = c.reduce((a: number, s: any) => a + (s.word_count?.[1] || 0), 0);
+  let lastChunkError: string | undefined;
+  const writeChunk = async ({ c, i }: { c: SectionSpec[]; i: number }) => {
+    const lo = c.reduce((a: number, s) => a + (s.word_count?.[0] || 0), 0);
+    const hi = c.reduce((a: number, s) => a + (s.word_count?.[1] || 0), 0);
+    // The last chunk also carries the FAQ (~55 words/question) — include that in its budget
+    // and allowance so neither the ceiling nor the scoped trim squeezes the sections to
+    // make room for FAQ.
+    const hiEff = hi + (i === chunks.length - 1 ? faq.length * 55 : 0);
     const prompt = buildSectionTextPrompt({
       keyword: ctx.keyword, language: ctx.language, country: meta.country,
       tone: ctx.tone, narration: meta.narration === "first" ? "first" : meta.narration === "third" ? "third" : undefined,
@@ -667,27 +1286,46 @@ async function writeTextInChunks(outline: any, ctx: {
       // FAQ is NEVER written by a chunk — it's rendered by a dedicated call below. Chunks
       // renamed/localized the FAQ heading and melted questions into prose too often.
       ragFacts: ctx.ragFacts, sources: ctx.sources, sourceMode: ctx.sourceMode,
-      isVerdictChunk: c.some((s: any) => verdictRe.test(String(s.heading || ""))),
+      isVerdictChunk: c.some((s) => verdictRe.test(String(s.heading || ""))),
       chunkBudget: hi > 0 ? [lo, hi] : undefined,
+      bannedWords: ctx.bannedWords,
+      policy: ctx.policy, custom: ctx.custom, promptType: ctx.promptType,
+      // structureRules travels ON the outline (that is where the Outline page parks it), so it is
+      // read here rather than threaded through the caller — same source buildTextPrompt reads.
+      structureRules: meta.structureRules ? String(meta.structureRules) : undefined,
     });
-    const raw = await fetchLLM(prompt, ctx.provider, ctx.apiKey, 6000, ctx.model, ctx.baseUrl);
-    if (!raw) return;
+    // Scaled ceiling, not a fixed 6000: Greek and other token-hungry languages ran past the
+    // old cap and the truncated chunk still passed the first-heading sanity check below, so
+    // articles shipped with sections that stopped mid-word. If the provider reports the
+    // answer was cut by the ceiling, one immediate retry at double — cheaper and more
+    // precise than waiting for the round-based retries with the same too-small budget.
+    const chunkBudget = contentTokens(hiEff, 10_000);
+    let attempt = await fetchLLMDetailed(prompt, ctx.provider, ctx.apiKey, chunkBudget, ctx.model, ctx.baseUrl, chunkTemp(ctx.temperature, i));
+    if (attempt.text != null && isLengthCut(attempt.finishReason)) {
+      console.error(`[text] chunk ${i + 1}/${chunks.length} hit the ${chunkBudget}-token ceiling (finish: ${attempt.finishReason}) — retrying wider`);
+      const wider = await fetchLLMDetailed(prompt, ctx.provider, ctx.apiKey, Math.min(CONTENT_TOKENS_RETRY_MAX, chunkBudget * 2), ctx.model, ctx.baseUrl, chunkTemp(ctx.temperature, i));
+      if (wider.text != null) attempt = wider;
+    }
+    const raw = attempt.text;
+    if (!raw) { if (attempt.error) lastChunkError = attempt.error; return; }
     let md = raw.trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+    // The writer sometimes narrates its own volume check into the answer ("Double check
+    // word count: / Section 1: 121 words. / Total: 211 words. (201-225 range met
+    // perfectly)") — observed verbatim inside a completed article. Line-anchored strip;
+    // see stripModelScratch for why it cannot eat real prose.
+    md = stripModelScratch(md);
     // Models sometimes prefix a stray H1 / meta block despite instructions — strip anything
     // before the first H2/H3 (the assembler owns H1, TOC and meta).
     const firstH = md.search(/^#{2,3}\s/m);
     if (firstH > 0) md = md.slice(firstH);
     // Per-chunk volume guard: a small chunk trims reliably (unlike a whole article). If the
     // chunk overshot its summed budget by >25%, one scoped trim pass brings it back.
-    // The last chunk also carries the FAQ (~55 words/question) — include that in its allowance
-    // so the scoped trim doesn't squeeze the sections to make room for FAQ.
-    const hiEff = hi + (i === chunks.length - 1 ? faq.length * 55 : 0);
     const cw = md.split(/\s+/).filter(Boolean).length;
     if (hiEff > 0 && cw > hiEff * 1.15) {
       try {
         const cut = await fetchLLM(
-          buildTextTrimPrompt({ article: md, targetWords: Math.round((lo + hiEff) / 2), currentWords: cw, language: ctx.language }),
-          ctx.provider, ctx.apiKey, 6000, ctx.model, ctx.baseUrl,
+          buildTextTrimPrompt({ article: md, targetWords: Math.round((lo + hiEff) / 2), currentWords: cw, language: ctx.language, custom: ctx.custom, bannedWords: ctx.bannedWords }),
+          ctx.provider, ctx.apiKey, Math.max(chunkBudget, contentTokens(cw, 10_000)), ctx.model, ctx.baseUrl,
         );
         if (cut) {
           const cmd = cut.trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
@@ -700,8 +1338,35 @@ async function writeTextInChunks(outline: any, ctx: {
     // Sanity: the chunk must contain at least its first section heading.
     const first = String(c[0]?.heading || "").trim();
     if (first && md.toLowerCase().includes(first.slice(0, Math.min(30, first.length)).toLowerCase())) parts[i] = md;
-  });
-  if (parts.some(p => p == null)) return null; // a chunk failed even after retries → single-shot fallback
+  };
+  // Success-based, so the bar only ever moves forward: a chunk that failed both its attempts
+  // doesn't count until a retry round lands it.
+  const reportWrite = () => {
+    const done = parts.filter(p => p != null).length;
+    ctx.onProgress?.(10 + Math.round((52 * done) / chunks.length), "write");
+  };
+  await runPool(chunks.map((c, i) => ({ c, i })), 2, async (item) => { await writeChunk(item); reportWrite(); });
+
+  // A failed chunk is retried ON ITS OWN, and this is the whole point of the change. One null
+  // part used to discard every sibling chunk that had already been written AND paid for; the
+  // caller then paid a third time for a single-shot rewrite of the entire article. A quarter of
+  // an hour of work and real credits could be lost to one transient gateway error on one chunk.
+  // The common causes — 429, gateway 5xx — clear on their own, so the missing chunks are simply
+  // re-run, sequentially so the retry cannot re-trip the rate limit that caused the failure.
+  for (let round = 0; round < 2; round++) {
+    const missing = parts.map((p, i) => (p == null ? i : -1)).filter(i => i >= 0);
+    if (!missing.length) break;
+    console.error(`[text] ${missing.length}/${chunks.length} chunks missing — retry round ${round + 1}${lastChunkError ? ` (last: ${lastChunkError})` : ""}`);
+    await new Promise(r => setTimeout(r, 10_000 * (round + 1)));
+    for (const i of missing) { await writeChunk({ c: chunks[i], i }); reportWrite(); }
+  }
+
+  // Frozen BEFORE the FAQ pass, which rewrites `parts` in place and would otherwise turn a
+  // still-missing chunk into an empty string indistinguishable from a written one.
+  const missingIdx = parts.map((p, i) => (p == null ? i : -1)).filter(i => i >= 0);
+  const missingHeadings = missingIdx.flatMap(i => chunks[i].map((s) => String(s.heading || "")).filter(Boolean));
+  const wroteChunks = chunks.length - missingIdx.length;
+  if (!wroteChunks) return { text: null, wroteChunks: 0, totalChunks: chunks.length, missingHeadings, lastError: lastChunkError };
 
   // FAQ: single, deterministic path. (1) Strip ANY FAQ-ish section a chunk may have written
   // anyway — matched by meaning, not by the literal "## FAQ" heading (models localize it:
@@ -719,9 +1384,13 @@ async function writeTextInChunks(outline: any, ctx: {
   const canonFaq = (md: string) => md
     .replace(/^(##\s*FAQ[^\n]*)\n+[\s\S]*?(?=^###\s)/m, "$1\n\n"); // strip prose between H2 and 1st question
   if (faq.length) {
-    for (let i = 0; i < parts.length; i++) parts[i] = stripFaqSection(parts[i] || "");
+    ctx.onProgress?.(66, "faq");
+    for (let i = 0; i < parts.length; i++) if (parts[i] != null) parts[i] = stripFaqSection(parts[i] as string);
     try {
-      const faqPrompt = `Сегодня ${new Date().toISOString().slice(0, 10)} — если уместен год, только текущий (${new Date().getFullYear()}). Ты пишешь FAQ-секцию статьи по теме "${ctx.keyword}" на языке ${ctx.language}. Верни ТОЛЬКО markdown секции строго такой формы: первая строка — ровно «## FAQ», затем СРАЗУ первый вопрос — НИКАКОГО вводного абзаца между ними. Каждый вопрос — «### Вопрос», под ним ответ 40-60 слов по answer_guideline (конкретика, без воды). Все ${faq.length} вопросов, СТРОГО В ЗАДАННОМ ПОРЯДКЕ. Заголовок секции НЕ переименовывай — ровно «## FAQ». Без преамбулы и \`\`\`-обёрток.\nВОПРОСЫ: ${JSON.stringify(faq)}`;
+      const faqPrompt = buildFaqSectionPrompt({
+        keyword: ctx.keyword, language: ctx.language, faq, country: meta.country,
+        policy: ctx.policy, tone: ctx.tone, custom: ctx.custom, bannedWords: ctx.bannedWords,
+      });
       const faqRaw = await fetchLLM(faqPrompt, ctx.provider, ctx.apiKey, 2500, ctx.model, ctx.baseUrl);
       if (faqRaw) {
         let faqMd = faqRaw.trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
@@ -736,15 +1405,19 @@ async function writeTextInChunks(outline: any, ctx: {
   }
 
   // Deterministic assembly: H1 → (optional TOC) → sections → FAQ came with the last chunk.
-  const pick = (v: any) => Array.isArray(v) ? (v.find((x: any) => x && String(x).trim()) || "") : (v || "");
+  const pick = (v: unknown) => Array.isArray(v) ? (v.find((x) => x && String(x).trim()) || "") : (v || "");
   const h1 = pick(meta.h1) || pick(meta.title_options) || ctx.keyword;
   const slug = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, "-");
   const tocLabel = tocLabelFor(ctx.language);
-  const hasFaqH2 = secs.some((s: any) => s.h_level === "H2" && /^faq/i.test(String(s.heading || "").trim()));
+  const hasFaqH2 = secs.some((s) => s.h_level === "H2" && /^faq/i.test(String(s.heading || "").trim()));
   const toc = ctx.includeToc
-    ? `<div class="toc"><strong>${tocLabel}</strong><ul>${secs.filter((s: any) => s.h_level === "H2").map((s: any) => `<li><a href="#${slug(String(s.heading))}">${s.heading}</a></li>`).join("")}${faq.length && !hasFaqH2 ? `<li><a href="#faq">FAQ</a></li>` : ""}</ul></div>\n\n`
+    ? `<div class="toc"><strong>${tocLabel}</strong><ul>${secs.filter((s) => s.h_level === "H2").map((s) => `<li><a href="#${slug(String(s.heading))}">${s.heading}</a></li>`).join("")}${faq.length && !hasFaqH2 ? `<li><a href="#faq">FAQ</a></li>` : ""}</ul></div>\n\n`
     : "";
-  return `# ${h1}\n\n${toc}${parts.join("\n\n")}`;
+  const body = parts.filter((p): p is string => p != null && p.trim().length > 0).join("\n\n");
+  return {
+    text: `# ${h1}\n\n${toc}${body}`,
+    wroteChunks, totalChunks: chunks.length, missingHeadings, lastError: lastChunkError,
+  };
 }
 
 // ─── Volume guard (final word on article length) ──────────────────────────────────
@@ -755,6 +1428,10 @@ async function writeTextInChunks(outline: any, ctx: {
 // expect) → iterative trim passes, looping until within range or the model stops cooperating.
 async function enforceVolumeTarget(text: string, targetWc: number, ctx: {
   language: string; provider: string; apiKey: string; model?: string; baseUrl?: string;
+  // The rules the article was WRITTEN under. Expansion writes new prose — several hundred words
+  // of it — and did so knowing none of them, so it could reintroduce exactly what the chunked
+  // writer had been told to avoid. See postPassConstraints in prompts.ts.
+  custom?: string; bannedWords?: string[];
 }): Promise<string> {
   if (!targetWc || targetWc < 500 || !text) return text;
   // Full-structure invariant: H2 AND H3 counts must survive any volume pass untouched.
@@ -764,8 +1441,8 @@ async function enforceVolumeTarget(text: string, targetWc: number, ctx: {
   if (words < targetWc * 0.85) {
     try {
       let expanded = await fetchLLM(
-        buildTextExpandPrompt({ article: text, targetWords: targetWc, currentWords: words, language: ctx.language }),
-        ctx.provider, ctx.apiKey, 14000, ctx.model, ctx.baseUrl,
+        buildTextExpandPrompt({ article: text, targetWords: targetWc, currentWords: words, language: ctx.language, custom: ctx.custom, bannedWords: ctx.bannedWords }),
+        ctx.provider, ctx.apiKey, contentTokens(targetWc), ctx.model, ctx.baseUrl,
       );
       if (expanded) {
         expanded = expanded.trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
@@ -785,8 +1462,8 @@ async function enforceVolumeTarget(text: string, targetWc: number, ctx: {
       if (cur <= targetWc * 1.15) break;
       try {
         let trimmed = await fetchLLM(
-          buildTextTrimPrompt({ article: text, targetWords: targetWc, currentWords: cur, language: ctx.language }),
-          ctx.provider, ctx.apiKey, 14000, ctx.model, ctx.baseUrl,
+          buildTextTrimPrompt({ article: text, targetWords: targetWc, currentWords: cur, language: ctx.language, custom: ctx.custom, bannedWords: ctx.bannedWords }),
+          ctx.provider, ctx.apiKey, contentTokens(targetWc), ctx.model, ctx.baseUrl,
         );
         if (!trimmed) break;
         trimmed = trimmed.trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
@@ -805,22 +1482,27 @@ async function enforceVolumeTarget(text: string, targetWc: number, ctx: {
 }
 
 // ─── Article text ─────────────────────────────────────────────────────────────────
-export async function genText(b: any): Promise<GenResult> {
+export async function genText(b: GenBody): Promise<GenResult> {
   if (!b.outline) return { ok: false, error: "no_outline" };
   const provider = String(b.aiProvider ?? "anthropic");
   const apiKey = String(b.aiApiKey ?? "");
   if (!apiKey) return { ok: false, error: "no_ai_key" };
 
   const keyword = String(b.keyword ?? b.outline?.meta?.keyword ?? "");
+  // Language falls back to the outline's OWN stamped language (genOutline writes it into meta),
+  // not to a hard-coded one: a Greek outline that reaches genText without an explicit language
+  // must not be instructed to write Russian. Callers that pass a language always win.
+  const language = String(b.language ?? b.outline?.meta?.language ?? "en");
   const sourceMode = (b.sourceMode === "facts" || b.sourceMode === "cited") ? b.sourceMode : "off";
 
   let sources: { title: string; snippet: string; url: string; domain: string }[] = [];
   let effMode: "off" | "facts" | "cited" = sourceMode;
   if (sourceMode !== "off" && b.serpKey && keyword) {
+    b.__onProgress?.(8, "serp");
     try {
-      const serp = await runSerp(String(b.serpProvider || "serper"), String(b.serpKey), keyword, { gl: b.gl, hl: b.hl, num: 10, engine: "google" });
+      const serp = await runSerp(String(b.serpProvider || "serper"), String(b.serpKey), keyword, { gl: b.gl, hl: b.hl, num: 10, engine: "google", baseUrl: b.serpBaseUrl ? String(b.serpBaseUrl) : undefined });
       const top = (serp.results || []).slice(0, Math.max(1, Math.min(10, Number(b.scrapeCount ?? 6))));
-      let scraped: any[] = [];
+      let scraped: ScrapedPage[] = [];
       try { scraped = await scrapeMany(top.map(r => r.url), b.firecrawlKey ? String(b.firecrawlKey) : undefined, 4); } catch {}
       sources = top.map(r => {
         const sc = scraped.find(s => s.url === r.url);
@@ -834,7 +1516,7 @@ export async function genText(b: any): Promise<GenResult> {
   if (!sources.length) {
     const bank = Array.isArray(b.outline?.meta?.facts_bank) ? b.outline.meta.facts_bank : [];
     if (bank.length) {
-      sources = bank.map((x: any) => ({ title: (x.official ? "[ОФИЦИАЛЬНЫЙ] " : "") + (x.domain || x.source), url: x.source, domain: x.domain || "", snippet: x.facts }));
+      sources = bank.map((x) => ({ title: (x.official ? "[ОФИЦИАЛЬНЫЙ] " : "") + (x.domain || x.source), url: x.source, domain: x.domain || "", snippet: x.facts }));
       effMode = "facts";
     } else {
       const carried = Array.isArray(b.outline?.meta?.sources) ? b.outline.meta.sources : [];
@@ -845,8 +1527,8 @@ export async function genText(b: any): Promise<GenResult> {
   // Slim the outline the writer actually needs: keep meta + sections + faq + price table; drop the
   // heavy analysis blocks (entity_analysis/sub_intents/entities/…) and the carried sources from meta
   // (they're already fed via the sources block) so we don't bloat/duplicate the prompt → no timeouts.
-  const full = (b.outline || {}) as any;
-  const { sources: _carried, facts_bank: _bank, ...metaSlim } = (full.meta || {});
+  const full: Outline = b.outline || {};
+  const { sources: _carried, facts_bank: _bank, ...metaSlim } = (full.meta || {}) as OutlineMeta;
   void _carried; void _bank;
   
   // Deep-copy to avoid mutating cached memory
@@ -857,14 +1539,14 @@ export async function genText(b: any): Promise<GenResult> {
     price_table_template: full.price_table_template,
   };
 
-  const secsList: any[] = slimOutline.sections;
-  const depth = (s: any) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
+  const secsList: OutlineSection[] = slimOutline.sections;
+  const depth = (s: OutlineSection) => (s?.h_level === "H4" ? 4 : s?.h_level === "H3" ? 3 : 2);
   const hasKids = (i: number) => i + 1 < secsList.length && depth(secsList[i + 1]) > depth(secsList[i]);
 
   // 1. Convert FAQ list to H3 sections under the H2 FAQ section
   const faqList = Array.isArray(slimOutline.faq) ? slimOutline.faq : [];
   if (faqList.length > 0) {
-    let faqH2Idx = secsList.findIndex((s: any) => s.h_level === "H2" && (/\bfaq\b|frequently asked|questions\s+fréquentes|часто\s+задаваемые/i.test(s.heading)));
+    let faqH2Idx = secsList.findIndex((s) => s.h_level === "H2" && (/\bfaq\b|frequently asked|questions\s+fréquentes|часто\s+задаваемые/i.test(s.heading)));
     if (faqH2Idx === -1) {
       const faqTitle = "FAQ";
       secsList.push({
@@ -878,7 +1560,7 @@ export async function genText(b: any): Promise<GenResult> {
       faqH2Idx = secsList.length - 1;
     }
     
-    const faqSubsections = faqList.map((f: any) => ({
+    const faqSubsections = faqList.map((f) => ({
       h_level: "H3",
       heading: f.question,
       word_count_self: [40, 60],
@@ -907,7 +1589,7 @@ export async function genText(b: any): Promise<GenResult> {
   const textTargetWc = Number(b.targetWordCount) || Number(metaSlim?.target_word_count) || 0;
   const textFaqReserve = Math.min(Math.round(textTargetWc * 0.25), (Array.isArray(slimOutline.faq) ? slimOutline.faq.length : 0) * 50);
   if (textTargetWc >= 500) normalizeWordBudgets(slimOutline, Math.max(300, textTargetWc - textFaqReserve));
-  else if (textTargetWc > 0) (slimOutline.meta as any).target_word_count = ownBudgetSum(slimOutline) || textTargetWc;
+  else if (textTargetWc > 0) slimOutline.meta.target_word_count = ownBudgetSum(slimOutline) || textTargetWc;
 
   // Casino RAG: re-retrieve knowledge-base facts for the text step (fresh + full-length),
   // honoring either the explicit flag or the outline generated with RAG enabled.
@@ -920,42 +1602,103 @@ export async function genText(b: any): Promise<GenResult> {
   const model = b.model ? String(b.model) : undefined;
   const baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
 
+  // The author's instruction, explicit on this job or inherited from the outline it is writing
+  // from. Inheriting matters because the outline was PLANNED under it: without the fallback a
+  // text job started from a saved structure writes against rules its own sections were built for.
+  // An explicitly supplied `custom` — including an empty string — is the caller's decision and
+  // ends the chain. Only an ABSENT one inherits: otherwise there is no way to run a text job
+  // deliberately free of the instruction its outline was planned under.
+  const authorInstruction = (b.custom !== undefined && b.custom !== null)
+    ? (String(b.custom).trim() || undefined)
+    : (String(slimOutline.meta?.authorInstruction ?? "").trim() || undefined);
+
   // CHUNKED writer (default on for 10+ sections, off with chunkedText:false): the article is
   // written 3-5 sections per call — one giant prompt degrades mid-generation (prose decays
   // into lists, tables get invented values). Falls back to single-shot if any chunk fails.
   let text: string | null = null;
+  let incomplete = false;
+  let missingHeadings: string[] = [];
+  let chunked: ChunkedTextResult | null = null;
   const secCount = Array.isArray(slimOutline.sections) ? slimOutline.sections.length : 0;
-  if (b.chunkedText !== false && b.promptType !== "custom" && secCount >= 10) {
+  // `promptType: "custom"` used to disable chunking outright, which made the two things a user
+  // wants mutually exclusive: either the author's prompt was obeyed (single-shot, and the prose
+  // of a 15-section article written in one call degrades into lists and invented table values —
+  // the exact failure the chunked writer exists to prevent) or the prose held and the prompt was
+  // ignored. Now the instruction rides in every chunk as the highest-priority block instead.
+  if (b.chunkedText !== false && secCount >= 10) {
+    b.__onProgress?.(10, "write");
     try {
-      text = await writeTextInChunks(slimOutline, {
+      chunked = await writeTextInChunks(slimOutline, {
         keyword: keyword || String(slimOutline.meta?.keyword ?? ""),
-        language: String(b.language ?? "ru"), tone: String(b.tone ?? "neutral, expert"),
+        language, tone: String(b.tone ?? "neutral, expert"),
         provider, apiKey, model, baseUrl,
         ragFacts, sources, sourceMode: effMode, includeToc: b.includeToc === true,
+        temperature: b.temperature === undefined || b.temperature === null ? undefined : Number(b.temperature),
+        bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
+        policy: b.policy,
+        custom: authorInstruction,
+        promptType: b.promptType === "custom" ? "custom" : "service",
+        chunkSections: b.chunkSections != null ? Number(b.chunkSections) : undefined,
+        onProgress: b.__onProgress,
       });
-    } catch { text = null; }
+    } catch { chunked = null; }
   }
 
+  if (chunked?.text) {
+    if (chunked.wroteChunks >= chunked.totalChunks) {
+      text = chunked.text;
+    } else if (chunked.wroteChunks >= Math.ceil(chunked.totalChunks * 0.7)) {
+      // Most of the article exists and has already been paid for. Rewriting it single-shot would
+      // spend the budget a second time AND produce worse prose — one giant prompt is precisely
+      // the degradation the chunked writer exists to avoid. Ship what was written, name what was
+      // not, and let the caller regenerate just the gap.
+      text = chunked.text;
+      incomplete = true;
+      missingHeadings = chunked.missingHeadings;
+      console.error(`[text] shipping incomplete article: ${chunked.wroteChunks}/${chunked.totalChunks} chunks, missing: ${missingHeadings.join(" | ")}`);
+    }
+  }
+
+  // The article's own target, computed once and reused by the single-shot ceiling and the
+  // volume guard below — a fixed token budget truncated long articles mid-sentence.
+  const targetWc = Number(b.targetWordCount) || Number(slimOutline.meta?.target_word_count) || 0;
+
   if (!text) {
+    // Errors the provider has already told us not to retry — an empty wallet, a bad key, an
+    // oversized body. A single-shot attempt after those spends minutes to fail identically, so
+    // the chunk failures' own reason is returned instead.
+    if (/\b(401|402|403|413)\b|insufficient_balance|invalid_api_key/i.test(chunked?.lastError || "")) {
+      return { ok: false, error: `generation_failed: ${chunked!.lastError}` };
+    }
+    // Single-shot write (small outline, or the chunked writer already failed). Only when the
+    // chunked path never ran: after it has, the bar already sits at its last honest value and
+    // must not be walked back for the fallback call.
+    if (!chunked) b.__onProgress?.(15, "write");
     const prompt = buildTextPrompt({
       outlineJson: slimOutline,
       policy: b.policy,
       tone: String(b.tone ?? "neutral, expert"),
-      language: String(b.language ?? "ru"),
-      custom: b.custom ? String(b.custom) : undefined,
+      language,
+      custom: authorInstruction,
       promptType: b.promptType === "custom" ? "custom" : "service",
       sources,
       sourceMode: effMode,
       includeToc: b.includeToc === true,
       ragFacts,
+      bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
     });
     // Detailed variant here (not the plain fetchLLM used elsewhere): this is the last-resort
     // single-shot attempt — if it also fails, its error detail (e.g. a provider content-policy
     // rejection like z.ai's "potentially unsafe or sensitive content") is what we surface below,
     // instead of a bare "generation_failed" that sends users digging through server logs.
-    const r = await fetchLLMDetailed(prompt, provider, apiKey, 12000, model, baseUrl);
+    // The ceiling scales with the article's own target (targetWc above).
+    const r = await fetchLLMDetailed(prompt, provider, apiKey, contentTokens(targetWc), model, baseUrl,
+      b.temperature === undefined || b.temperature === null ? undefined : Number(b.temperature));
     text = r.text;
-    if (!text) return { ok: false, error: r.error ? `generation_failed: ${r.error}` : "generation_failed" };
+    // Prefer the single-shot's own reason, but fall back to the chunk writer's — when the
+    // chunked path is the one that did the real work, its error is the informative one.
+    const why = r.error || chunked?.lastError;
+    if (!text) return { ok: false, error: why ? `generation_failed: ${why}` : "generation_failed" };
   }
   if (!text) return { ok: false, error: "generation_failed" };
 
@@ -968,7 +1711,7 @@ export async function genText(b: any): Promise<GenResult> {
   let redacted = 0;
   if (b.hardRedact) { const r = redactBannedWords(text, banned); text = r.text; redacted = r.count; }
 
-  text = stripForeignScripts(text, String(b.language ?? "en"));
+  text = stripForeignScripts(text, language);
 
   // AUTO fact-clean: verify the finished article against the facts bank and fix contradictions /
   // fabrications / number mismatches in one pass — so the article ships clean (fact-check then just
@@ -980,15 +1723,19 @@ export async function genText(b: any): Promise<GenResult> {
   let autoCleaned = false;
   const bank = Array.isArray(b.outline?.meta?.facts_bank) ? b.outline.meta.facts_bank : [];
   if (b.autoFactCheck !== false && bank.length && text) {
+    b.__onProgress?.(72, "factcheck");
     try {
-      const bankText = bank.map((x: any, i: number) => `[${i + 1}]${x.official ? " (ОФИЦИАЛЬНЫЙ)" : ""} ${x.domain || x.source}\n${x.facts}`).join("\n\n");
-      let cleaned = await fetchLLM(buildAutoFactCleanPrompt({ article: text, factsBank: bankText, language: String(b.language ?? "en") }), provider, apiKey, 12000, model, baseUrl);
+      const bankText = bank.map((x, i: number) => `[${i + 1}]${x.official ? " (ОФИЦИАЛЬНЫЙ)" : ""} ${x.domain || x.source}\n${x.facts}`).join("\n\n");
+      let cleaned = await fetchLLM(buildAutoFactCleanPrompt({
+        article: text, factsBank: bankText, language,
+        custom: authorInstruction, bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
+      }), provider, apiKey, contentTokens(text.split(/\s+/).filter(Boolean).length), model, baseUrl);
       if (cleaned && cleaned.trim().length > text.length * 0.85) {
         cleaned = cleaned.trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
         // Structure invariant: every heading (H2+H3, incl. FAQ questions) must survive.
         const heads = (s: string) => (s.match(/^#{2,3}\s/gm) || []).length;
         if (heads(cleaned) === heads(text)) {
-          text = stripForeignScripts(cleaned, String(b.language ?? "en"));
+          text = stripForeignScripts(cleaned, language);
           autoCleaned = true;
         }
       }
@@ -996,19 +1743,182 @@ export async function genText(b: any): Promise<GenResult> {
   }
 
   // VOLUME guard (default on, symmetric) — see enforceVolumeTarget() above. Runs LAST, after
-  // fact-clean, so it's the final word on article length. Off with expandText:false.
-  const finalTargetWc = Number(b.targetWordCount) || Number(slimOutline.meta?.target_word_count) || 0;
-  if (b.expandText !== false && finalTargetWc >= 500) {
-    text = await enforceVolumeTarget(text, finalTargetWc, { language: String(b.language ?? "en"), provider, apiKey, model, baseUrl });
+  // fact-clean, so it is the final word on article length. Off with expandText:false.
+  // Skipped when sections are missing: the guard would read the gap as "the writer undershot"
+  // and pad the surviving sections to cover words that belong to text nobody wrote.
+  const finalTargetWc = targetWc;
+  if (b.expandText !== false && finalTargetWc >= 500 && !incomplete) {
+    b.__onProgress?.(78, "volume");
+    text = await enforceVolumeTarget(text, finalTargetWc, {
+      language, provider, apiKey, model, baseUrl,
+      custom: authorInstruction, bannedWords: Array.isArray(b.bannedWords) ? b.bannedWords : undefined,
+    });
   }
 
   // Guarantee the SEO meta block is present (deterministic — don't trust the model to emit it).
   text = ensureMetaBlock(text, b.outline?.meta);
   // Guarantee the TOC label matches the article's language (deterministic — the writer, or any
   // later expand/trim/fact-clean pass, could otherwise leave/reintroduce a wrong-language word).
-  text = ensureTocLabel(text, String(b.language ?? "en"));
+  text = ensureTocLabel(text, language);
 
-  return { ok: true, data: { text, usedSources: sources.length, redacted, autoCleaned } };
+  // Layer A marks scrub (marksScrub.ts): strip the invisible fingerprints a model can leave
+  // behind — zero-width characters, bidi controls, soft hyphens, exotic spaces, tag and
+  // private-use code points — and straighten curly quotes in Latin-quote text. Deterministic,
+  // free, and placed here so the mechanics gate, the judge and the saved article all see the
+  // final characters. Off with marksScrub:false.
+  let marks: { total: number; byClass: Record<string, number> } | undefined;
+  if (b.marksScrub !== false) {
+    const scrub = scrubMarks(text);
+    if (scrub.total > 0) {
+      text = scrub.text;
+      marks = { total: scrub.total, byClass: scrub.byClass };
+    }
+  }
+
+  // ── MECHANICS GATE ────────────────────────────────────────────────────────────────────
+  // Everything above this line is the pipeline trying to get the page right by asking. This is
+  // the part that checks. The rules are derived rather than configured, so the check costs the
+  // caller nothing to set up:
+  //   • placeholders and internal links come out of the author's own instruction — if it says
+  //     "keep [[TRANSFER_WIDGET]]" and "link to /where-to-stay/athens/", those become checks;
+  //   • the forbidden brands ARE the source domains, whenever sourceMode is "facts", because
+  //     that mode already means "use these numbers, never name these companies";
+  //   • the expected currency is the outline's own country.
+  // Mixed-alphabet words are repaired here deterministically (a model cannot reliably see them —
+  // `апо́δειξη` looks correct to it too). Everything else is named, then handed to ONE scoped
+  // repair call, and whatever survives that is reported on the job instead of shipped silently.
+  const mechRules = {
+    language,
+    country: slimOutline.meta?.country ? String(slimOutline.meta.country) : undefined,
+    placeholders: placeholdersFromInstruction(authorInstruction),
+    requiredLinks: linksFromInstruction(authorInstruction),
+    forbiddenBrands: Array.isArray(b.forbiddenBrands)
+      ? b.forbiddenBrands.map(String)
+      : effMode === "facts"
+        ? brandsFromDomains([
+            ...sources.map(x => String(x.domain || x.url || "")),
+            ...bank.map((x) => String(x?.domain || x?.source || "")),
+          ])
+        : [],
+    keywords: [
+      String(slimOutline.meta?.keyword ?? ""),
+      ...(Array.isArray(slimOutline.sections) ? slimOutline.sections : []).flatMap((sec) => Array.isArray(sec?.keywords) ? sec.keywords.map(String) : []),
+    ].filter(Boolean),
+  };
+  let mechIssues: MechanicsIssue[] = [];
+  if (b.mechanics !== false) {
+    const first = checkMechanics(text, mechRules);
+    text = first.text;
+    mechIssues = first.issues;
+    const toRepair = repairableIssues(mechIssues);
+    if (toRepair.length && b.mechanicsRepair !== false) {
+      b.__onProgress?.(84, "mechanics");
+      try {
+        const repaired = await fetchLLM(
+          buildMechanicsRepairPrompt({ article: text, defects: toRepair.map(i => i.detail), language }),
+          provider, apiKey, contentTokens(text.split(/\s+/).filter(Boolean).length), model, baseUrl,
+        );
+        const cand = (repaired || "").trim().replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+        // Same two invariants the fact-clean pass uses, for the same reason: a "repair" that
+        // returns half the article or a different heading tree is a regression the caller would
+        // never see, because the defect it was asked to fix would indeed be gone.
+        const heads = (x: string) => (x.match(/^#{1,3}\s/gm) || []).length;
+        if (cand.length > text.length * 0.85 && heads(cand) === heads(text)) {
+          const second = checkMechanics(cand, mechRules);
+          if (repairableIssues(second.issues).length < toRepair.length) {
+            text = second.text;
+            mechIssues = second.issues;
+          }
+        }
+      } catch { /* keep the audited-but-unrepaired article; the issues are reported below */ }
+    }
+    if (mechIssues.length) console.error(`[text] ${summarizeMechanics(mechIssues)}`);
+  }
+
+  // Independent QA judge (per-task "judge" slot; falls back to the writer's own provider).
+  // Skipped for the self-reported partial path: `incomplete` already names the missing sections
+  // — that result is an honest partial deliberately preserved with its paid-for chunks, and a
+  // judge rejecting it for being incomplete would destroy work the design chose to keep.
+  let judgeConcerns: string[] = [];
+  if (b.judge !== false && !incomplete) {
+    b.__onProgress?.(90, "judge");
+    const verdict = await judgeArticle(
+      text,
+      {
+        provider: String(b.judgeProvider || provider),
+        apiKey: String(b.judgeApiKey || apiKey),
+        model: b.judgeModel || model || undefined,
+        baseUrl: b.judgeBaseUrl || baseUrl || undefined,
+      },
+      {
+        language,
+        // What the author deliberately excluded or required. Without it the judge rejects the
+        // article for obeying the instruction — see judgeArticle.
+        constraints: [authorInstruction, slimOutline.meta?.structureRules ? String(slimOutline.meta.structureRules) : ""]
+          .filter(Boolean).join("\n") || undefined,
+      },
+    );
+    if (verdict.verdict === "reject") {
+      return { ok: false, error: `judge_rejected: ${verdict.blockers?.join("; ") || "the QA reviewer rejected the article"}` };
+    }
+    // Everything the reviewer flagged without being sure of it. The article ships — but the doubt
+    // is said out loud instead of dropped, which is the entire point of the blocker/concern split.
+    judgeConcerns = verdict.concerns ?? [];
+  }
+
+  // ── META FIT (wave-oct T1) ────────────────────────────────────────────────────────────
+  // The head block was ensured above; now its Title/Description are measured and forced inside
+  // the target band — the model cannot count characters, and the audit flags everything
+  // outside 50–65 / 150–165 (production: titles of 66–80, descriptions up to 181). Runs as the
+  // LAST text-shaping step, after the marks scrub and the mechanics repair, so the lengths are
+  // those of the FINAL characters. Local fitting first (block value + the outline's options as
+  // candidates, deterministic trim); repair calls when needed (the text call is already paid,
+  // the provider is known). forced_cut/unfixable ride along with the judge's soft findings —
+  // they never bin the article.
+  let metaFit: MetaFitResult[] | undefined;
+  try {
+    const block = readMetaBlock(text);
+    if (block) {
+      const oMeta = b.outline?.meta || {};
+      const fitted = await fitMeta({
+        keyword: keyword || String(slimOutline.meta?.keyword ?? ""),
+        language,
+        title: block.title,
+        description: block.description,
+        titleOptions: Array.isArray(oMeta.title_options) ? oMeta.title_options.map(String) : [],
+        descriptionOptions: Array.isArray(oMeta.description_options) ? oMeta.description_options.map(String) : [],
+      }, { allow: true, provider, apiKey, model, baseUrl });
+      const t = fitted.title;
+      const d = fitted.description;
+      const patch: { title?: string; description?: string } = {};
+      if (t && t.after && t.after !== block.title) patch.title = t.after;
+      if (d && d.after && d.after !== block.description) patch.description = d.after;
+      if (patch.title != null || patch.description != null) text = writeMetaBlock(text, patch);
+      const results = [t, d].filter((r): r is MetaFitResult => !!r);
+      if (results.length) metaFit = results;
+      for (const r of results) {
+        if (r.method === "forced_cut") judgeConcerns.push(`meta_fit: ${r.field} forced_cut (${r.length}, was ${metaLength(r.before)}) — cut at a word boundary, review the wording`);
+        if (r.method === "unfixable") judgeConcerns.push(`meta_fit: ${r.field} still outside ${META_LIMITS[r.field].targetMin}–${META_LIMITS[r.field].targetMax} (${r.length}) — fix manually`);
+      }
+    }
+  } catch { /* best-effort: never fail the article over meta lengths */ }
+
+  return {
+    ok: true,
+    data: {
+      text, usedSources: sources.length, redacted, autoCleaned,
+      // Present only when something was actually found, so a clean article keeps the exact shape
+      // consumers already parse. `fixed: true` entries are informational (the text already
+      // carries the correction); the rest are what still needs a human.
+      ...(marks ? { marksScrub: marks } : {}),
+      ...(mechIssues.length ? { mechanics: mechIssues } : {}),
+      ...(judgeConcerns.length ? { judgeConcerns } : {}),
+      ...(metaFit?.length ? { metaFit } : {}),
+      // Present only when sections are genuinely absent, so existing consumers see the same
+      // shape they always did for a complete article.
+      ...(incomplete ? { incomplete: true, missingHeadings, chunkError: chunked?.lastError } : {}),
+    },
+  };
 }
 
 // Safety net: models occasionally leak characters from another writing system into the article
@@ -1017,12 +1927,12 @@ export async function genText(b: any): Promise<GenResult> {
 // Guarantee the SEO meta block (Title/Description/Slug) sits at the very top of the article.
 // The model is asked to emit it, but doesn't always comply — so we add it deterministically from
 // the outline meta if it's missing (the data is known, no need to trust the LLM for this).
-export function ensureMetaBlock(text: string, meta: any): string {
+export function ensureMetaBlock(text: string, meta?: OutlineMeta): string {
   if (!text) return text;
   const firstHeading = text.search(/^#{1,6}\s/m);
   const head = firstHeading > 0 ? text.slice(0, firstHeading) : (firstHeading === 0 ? "" : text);
   if (/(^|\n)\s*(```)?\s*title\s*:/i.test(head)) return text; // already has a meta block
-  const pick = (v: any) => Array.isArray(v) ? (v.find((x: any) => x && String(x).trim()) || "") : (v || "");
+  const pick = (v: unknown) => Array.isArray(v) ? (v.find((x) => x && String(x).trim()) || "") : (v || "");
   const title = pick(meta?.title_options) || pick(meta?.title);
   const desc = pick(meta?.description_options) || pick(meta?.description);
   const slug = pick(meta?.slug_options) || pick(meta?.slug);
@@ -1042,7 +1952,7 @@ export function stripForeignScripts(text: string, language: string): string {
 }
 
 // ─── Wireframe (Landing-flow block skeleton) ─────────────────────────────────────
-export async function genWireframe(b: any): Promise<GenResult> {
+export async function genWireframe(b: GenBody): Promise<GenResult> {
   if (!b.outline) return { ok: false, error: "no_outline" };
   const provider = String(b.aiProvider ?? "anthropic");
   const apiKey = String(b.aiApiKey ?? "");
@@ -1055,34 +1965,60 @@ export async function genWireframe(b: any): Promise<GenResult> {
     language: String(b.language ?? b.outline?.meta?.language ?? "en"),
     country: String(b.country ?? b.outline?.meta?.country ?? "us"),
     outline: b.outline,
+    competitors: Array.isArray(b.competitors) ? b.competitors : undefined,
     structureMode: b.structureMode,
     myStructure: Array.isArray(b.myStructure) ? b.myStructure : undefined,
     targetWordCount: b.targetWordCount ? Number(b.targetWordCount) : undefined,
+    policy: b.policy, tone: b.tone ? String(b.tone) : undefined,
+    custom: b.custom ? String(b.custom) : undefined,
   });
 
   let raw = await fetchLLM(prompt, provider, apiKey, 8000, model, baseUrl);
-  let wireframe = extractJson(raw);
-  if (!wireframe || !Array.isArray((wireframe as any).blocks)) {
+  let wireframe = extractJson<{ blocks?: unknown[] }>(raw);
+  if (!wireframe || !Array.isArray(wireframe.blocks)) {
     raw = await fetchLLM(prompt + "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON, без текста и без markdown-обёрток.", provider, apiKey, 8000, model, baseUrl);
     wireframe = extractJson(raw);
   }
-  if (!wireframe || !Array.isArray((wireframe as any).blocks)) return { ok: false, error: "parse_failed" };
+  if (!wireframe || !Array.isArray(wireframe.blocks)) return { ok: false, error: "parse_failed" };
   return { ok: true, data: wireframe };
+}
+
+// Slim competitor skeleton persisted with a landing result: enough to redraw each top page's real
+// structure (heading tree, price-table/FAQ markers, size) in the detail view, without the scraped
+// text_sample bulk. Pure scraped data — no extra model call.
+function slimCompetitors(list: unknown): unknown[] {
+  if (!Array.isArray(list)) return [];
+  const domainOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
+  return list.slice(0, 30).map((c) => ({
+    position: Number(c.position) || 0,
+    url: String(c.url || ""),
+    domain: String(c.domain || domainOf(c.url || "")),
+    title: String(c.title || ""),
+    headings: Array.isArray(c.headings) ? c.headings.slice(0, 40).map((h: unknown) => String(h)) : [],
+    word_count: Number(c.word_count) || 0,
+    has_price_table: !!c.has_price_table,
+    has_faq: !!c.has_faq,
+    site_type: c.site_type ? String(c.site_type) : undefined,
+  }));
 }
 
 // ─── Landing-flow orchestrator: ТЗ (+ wireframe) (+ текст), per "что генерировать" ───
 // b.generate: "tz" | "tz_text" | "tz_wireframe" | "all" (default "tz_wireframe", matches the
 // reference tool's Landing-flow which always ships a wireframe alongside the ТЗ).
-export async function genLanding(b: any): Promise<GenResult> {
+export async function genLanding(b: GenBody): Promise<GenResult> {
   const want = String(b.generate || "tz_wireframe");
   const wantsWireframe = want === "tz_wireframe" || want === "all";
   const wantsText = want === "tz_text" || want === "all";
 
   const outlineRes = await genOutline(b);
   if (!outlineRes.ok) return outlineRes;
-  const outline = outlineRes.data;
+  const outline = outlineRes.data as Outline;
 
-  const result: any = { outline };
+  const result: Record<string, unknown> = { outline };
+
+  // The real top-page skeletons ride along: the wireframe is grounded on them and the detail
+  // view shows them next to it as "how the ranking pages are actually built".
+  result.competitors = slimCompetitors(b.competitors);
 
   if (wantsWireframe) {
     const wfRes = await genWireframe({ ...b, outline });
@@ -1092,7 +2028,7 @@ export async function genLanding(b: any): Promise<GenResult> {
 
   if (wantsText) {
     const textRes = await genText({ ...b, outline });
-    if (textRes.ok) result.text = (textRes.data as any)?.text ?? textRes.data;
+    if (textRes.ok) result.text = (textRes.data as { text?: unknown })?.text ?? textRes.data;
     else result.textError = textRes.error;
   }
 
@@ -1100,7 +2036,7 @@ export async function genLanding(b: any): Promise<GenResult> {
 }
 
 // ─── Content analysis ──────────────────────────────────────────────────────────────
-export async function genAnalysis(b: any): Promise<GenResult> {
+export async function genAnalysis(b: GenBody): Promise<GenResult> {
   const keyword = String(b.keyword ?? "").trim();
   if (!keyword) return { ok: false, error: "no_keyword" };
   if (!b.targetPage) return { ok: false, error: "no_target_page" };
@@ -1119,7 +2055,7 @@ export async function genAnalysis(b: any): Promise<GenResult> {
   const baseUrl = b.aiBaseUrl ? String(b.aiBaseUrl) : undefined;
 
   let raw = await fetchLLM(prompt, provider, apiKey, 16000, model, baseUrl);
-  let report = extractJson(raw);
+  let report = extractJson<Record<string, unknown>>(raw);
   if (!report) {
     raw = await fetchLLM(prompt + "\n\nПредыдущий ответ не распарсился. Верни ТОЛЬКО валидный JSON.", provider, apiKey, 16000, model, baseUrl);
     report = extractJson(raw);
@@ -1132,19 +2068,22 @@ export async function genAnalysis(b: any): Promise<GenResult> {
 // The interactive Outline page does SERP+scrape client-side (user picks competitors);
 // batch generation from clusters can't stop for that — this wrapper does the whole
 // pipeline unattended: top-10, scrape the best pages, then the regular genOutline.
-export async function genOutlineAuto(b: any): Promise<GenResult> {
+export async function genOutlineAuto(b: GenBody): Promise<GenResult> {
   const keyword = String(b.keyword ?? "").trim();
   if (!keyword) return { ok: false, error: "no_keyword" };
   if (!b.serpKey) return { ok: false, error: "no_serp_key" };
+  b.__onProgress?.(8, "serp");
   const serp = await runSerp(String(b.serpProvider || "serper"), String(b.serpKey), keyword, {
     gl: b.gl ?? b.country, hl: b.hl ?? b.language, num: 10, engine: "google",
+    baseUrl: b.serpBaseUrl ? String(b.serpBaseUrl) : undefined,
   });
   if (serp.error || !serp.results?.length) return { ok: false, error: serp.error || "serp_failed" };
   const results = serp.results.slice(0, 10);
-  let pages: any[] = [];
+  b.__onProgress?.(12, "scrape");
+  let pages: ScrapedPage[] = [];
   try { pages = await scrapeMany(results.map(r => r.url), b.firecrawlKey ? String(b.firecrawlKey) : undefined, 4); } catch { /* outline can run on titles alone */ }
   const competitors: CompetitorInput[] = results.map(r => {
-    const p = pages.find((x: any) => x.url === r.url);
+    const p = pages.find((x) => x.url === r.url);
     return {
       position: r.position, url: r.url,
       site_type: heuristicSiteType(r.domain, r.url, r.title) || undefined,
@@ -1170,46 +2109,68 @@ const normUrl = (u: string) => {
   catch { return u.toLowerCase(); }
 };
 
-async function fetchDfsVolumes(dfsKey: string, keywords: string[], gl: string, hl: string): Promise<Record<string, number>> {
+/**
+ * Volumes for a cluster run, through the shared keyword source.
+ *
+ * This replaces a fourth private DataForSEO client that lived here with its own location table
+ * and its own `?? 2840` fallback — the one that silently ordered a Bosnian keyword set by
+ * American demand. Going through `enrichKeywords` buys three things at once: the market is
+ * validated instead of guessed, whatever is already in the shared cache costs nothing, and a
+ * user on Ahrefs finally gets volumes here at all.
+ *
+ * Still optional and still non-fatal: clusters without volumes are ordered by member count
+ * instead, which is a visibly weaker answer rather than a confidently wrong one.
+ */
+async function fetchClusterVolumes(
+  creds: { source: KwSource; apiKey: string; baseUrl?: string },
+  keywords: string[], gl: string, hl: string,
+): Promise<{ volumes: Record<string, number>; error?: string }> {
+  const country = (gl || "").trim().toLowerCase();
+  if (!country) return { volumes: {}, error: "no_country" };
+
   const out: Record<string, number> = {};
-  const cred = dfsKey.trim();
-  const auth = cred.includes(":") ? Buffer.from(cred).toString("base64") : cred;
-  for (let i = 0; i < keywords.length; i += 700) {
-    try {
-      const res = await fetch("https://api.dataforseo.com/v3/keywords_data/google_ads/search_volume/live", {
-        method: "POST",
-        headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-        body: JSON.stringify([{ keywords: keywords.slice(i, i + 700), location_code: DFS_LOC[gl.toLowerCase()] ?? 2840, language_code: hl || "en" }]),
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!res.ok) continue;
-      const d = await res.json();
-      for (const r of (d?.tasks?.[0]?.result ?? [])) {
-        if (r?.keyword != null) out[String(r.keyword).toLowerCase()] = Number(r.search_volume) || 0;
-      }
-    } catch { /* volumes are optional */ }
+  try {
+    const res = await enrichKeywords(creds, keywords, {
+      country, language: hl || "en", fetch: true,
+    });
+    for (const r of res.rows) {
+      if (r.volume != null) out[r.keyword] = r.volume;
+    }
+    return { volumes: out, error: res.error };
+  } catch (e) {
+    return { volumes: out, error: String((e as Error)?.message ?? e) };
   }
-  return out;
 }
 
-export async function genCluster(b: any): Promise<GenResult> {
+export async function genCluster(b: GenBody): Promise<GenResult> {
   const keywords: string[] = [...new Set((Array.isArray(b.keywords) ? b.keywords : [])
-    .map((k: any) => String(k).trim().toLowerCase()).filter(Boolean))].slice(0, 1000) as string[];
+    .map((k) => String(k).trim().toLowerCase()).filter(Boolean))].slice(0, 1000) as string[];
   if (keywords.length < 2) return { ok: false, error: "no_keywords" };
   const serpKey = String(b.serpKey ?? "");
   if (!serpKey) return { ok: false, error: "no_serp_key" };
   const provider = String(b.serpProvider ?? "serper");
+  const serpBaseUrl = b.serpBaseUrl ? String(b.serpBaseUrl) : undefined;
   const gl = String(b.gl ?? "us"), hl = String(b.hl ?? "en");
   const threshold = Math.max(2, Math.min(6, Number(b.threshold ?? 3)));
 
-  // 1) volumes (optional, DataForSEO)
-  const volumes = b.dfsKey ? await fetchDfsVolumes(String(b.dfsKey), keywords, gl, hl) : {};
+  // 1) volumes (optional) — through the shared source, so Ahrefs and Semrush work here too.
+  //    `kwSource`/`kwKey` are the new fields; `dfsKey` is still honoured so a job queued before
+  //    this change, or a caller not yet updated, keeps working exactly as it did.
+  const kwSource: KwSource = ["ahrefs", "semrush", "dataforseo"].includes(String(b.kwSource))
+    ? String(b.kwSource) as KwSource
+    : b.dfsKey ? "dataforseo" : "off";
+  const kwKey = String(b.kwKey ?? b.dfsKey ?? "");
+
+  const vres = kwSource !== "off" && kwKey
+    ? await fetchClusterVolumes({ source: kwSource, apiKey: kwKey, baseUrl: b.kwBaseUrl ? String(b.kwBaseUrl) : undefined }, keywords, gl, hl)
+    : { volumes: {} as Record<string, number>, error: undefined as string | undefined };
+  const volumes = vres.volumes;
 
   // 2) TOP-10 per keyword (bounded concurrency)
   const serps: Record<string, { urls: string[]; titles: string[] }> = {};
   const failed: string[] = [];
   await runPool(keywords, 4, async (kw) => {
-    const r = await runSerp(provider, serpKey, kw, { gl, hl, num: 10, engine: "google" });
+    const r = await runSerp(provider, serpKey, kw, { gl, hl, num: 10, engine: "google", baseUrl: serpBaseUrl });
     if (r.error || !r.results?.length) { failed.push(kw); return; }
     serps[kw] = { urls: r.results.slice(0, 10).map(x => normUrl(x.url)), titles: r.results.slice(0, 5).map(x => x.title) };
   });
@@ -1220,7 +2181,7 @@ export async function genCluster(b: any): Promise<GenResult> {
   const vol = (k: string) => volumes[k] ?? 0;
   const sorted = [...usable].sort((a, z) => vol(z) - vol(a));
   const assigned = new Set<string>();
-  const clusters: any[] = [];
+  const clusters: KeywordCluster[] = [];
   for (const seed of sorted) {
     if (assigned.has(seed)) continue;
     assigned.add(seed);
@@ -1244,14 +2205,19 @@ export async function genCluster(b: any): Promise<GenResult> {
   return {
     ok: true,
     data: {
-      params: { gl, hl, threshold, total_keywords: keywords.length, clustered: usable.length, failed },
+      params: {
+        gl, hl, threshold, total_keywords: keywords.length, clustered: usable.length, failed,
+        // Travels with the result so the UI can say "clusters are ordered by keyword count, not
+        // by demand" instead of showing a column of zeroes that looks like real data.
+        ...(vres.error ? { volumes_error: vres.error } : {}),
+      },
       clusters,
       generated_at: new Date().toISOString(),
     },
   };
 }
 
-export function genByType(type: string, payload: any): Promise<GenResult> {
+export function genByType(type: string, payload: GenBody): Promise<GenResult> {
   if (type === "outline") return genOutline(payload);
   if (type === "text") return genText(payload);
   if (type === "analysis") return genAnalysis(payload);

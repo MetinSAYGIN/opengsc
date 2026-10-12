@@ -1,0 +1,32 @@
+// MCP tools for AI share of voice (T7, CONTRACT.md §5).
+
+import { resolveSite, siteArg, type McpTool } from "./shared";
+import { sovForSite } from "@/lib/visibility/store";
+
+export const VISIBILITY_TOOLS: McpTool[] = [
+  {
+    name: "get_ai_share_of_voice",
+    cost: "local",
+    readOnly: true,
+    description:
+      "AI share of voice vs the site's named competitors (brand mentions and citation share, per engine, weekly trend) plus the domains AI engines cite for its tracked questions. The cited domains carry a heuristic DETERMINISTIC category (brand/competitor/forum/social/video/developer/ecommerce/reviews/reference/institutional/editorial — host rules, no AI), and `categoryCounts` + `reddit` aggregate those categories over the window (the Reddit cut lists the subreddits); `otherShare` (0..1) is the share the classifier could not name — high values mean the instance's domain lists should be extended (categories are configurable per instance via the aeo_domain_lists setting; a Greek starter set is built in). Aggregated from stored AEO answers — LOCAL/READ-ONLY: no AI call runs, adding a competitor never costs anything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        site: siteArg,
+        days: { type: "number", description: "Window: 7, 30 (default) or 90 days" },
+      },
+      required: ["site"],
+    },
+    handler: async (userId, args) => {
+      const site = await resolveSite(userId, args.site);
+      const days = [7, 30, 90].includes(Number(args.days)) ? Number(args.days) : 30;
+      const r = await sovForSite(userId, site.id, days);
+      if (!r) throw new Error("Site not found");
+      return {
+        report: r.report, cited: r.cited,
+        categoryCounts: r.categoryCounts, otherShare: r.otherShare, reddit: r.reddit,
+      };
+    },
+  },
+];

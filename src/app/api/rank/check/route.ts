@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import { getUserSerpCreds, checkSiteKeywords } from "@/lib/rank";
+import { reportLocalPackChanges } from "@/lib/rankScheduler";
 
 // POST /api/rank/check  { siteId, keywordId?, force? }
 // Runs SERP checks now: one keyword (keywordId), all stale (default), or all (force).
-// Processes up to 20 keywords per call — the client can call again while remaining > 0.
+// Processes up to 20 keywords per call (5 on A-Parser, whose checks take longer) — the client
+// can call again while remaining > 0. `before` (ms epoch, sent with force) is when the client's
+// loop started, so a forced run checks each keyword once instead of counting them all forever.
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  const userId = (session?.user as any)?.id as string | undefined;
+  const userId = await workspaceUserId("spend");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));
@@ -21,11 +22,20 @@ export async function POST(req: Request) {
   if (!creds) return NextResponse.json({ error: "no_serp_key" }, { status: 400 });
 
   const keywordId = b.keywordId ? String(b.keywordId) : undefined;
+  const beforeMs = Number(b.before);
+  const before = Number.isFinite(beforeMs) && beforeMs > 0 && beforeMs <= Date.now() + 60_000 ? new Date(beforeMs) : undefined;
   const result = await checkSiteKeywords(siteId, site.url, creds, {
     onlyIds: keywordId ? [keywordId] : undefined,
     force: !!b.force,
-    limit: 20,
+    before,
+    limit: creds.provider === "aparser" ? 5 : 20,
   });
 
-  return NextResponse.json({ ok: true, provider: creds.provider, ...result });
+  // wave-nov N3: a manual check reports map-pack moves through the same once-a-day reporter
+  // the scheduler uses (AlertEvent dedupe `lp:<siteId>:<utcDay>` keeps it to one message).
+  if (result.packChanges?.length) {
+    await reportLocalPackChanges(userId, siteId, site.url, result.packChanges);
+  }
+
+  return NextResponse.json({ ok: true, provider: creds.provider, fallbackProvider: creds.fallback?.provider ?? null, ...result });
 }

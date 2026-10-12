@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef, useEffect } from "react";
+import { Fragment, useState, useMemo, useRef, useEffect, useCallback } from "react";
 import ContentDecayMap from "@/components/ContentDecayMap";
 import KeywordCannibalization from "@/components/KeywordCannibalization";
 import StrikingDistanceKeywords from "@/components/StrikingDistanceKeywords";
@@ -13,21 +13,39 @@ import SiteAuditPanel from "@/components/SiteAuditPanel";
 import EngineView, { type AltEngine, type EngineSummary } from "@/components/EngineView";
 import SearchEnginesPanel from "@/components/SearchEnginesPanel";
 import { withShare } from "@/lib/shareParam";
-import AeoTracker from "@/components/AeoTracker";
-import { ALGO_UPDATES, ALGO_UPDATE_COLORS, algoDateLabel } from "@/lib/algoUpdates";
+import { loadSyncedAt, rememberSyncedAt, fetchSyncState, watchSync, type SyncState } from "@/lib/syncedAt";
+import VisibilityHub from "@/components/VisibilityHub";
+import UptimePanel from "@/components/uptime/UptimePanel";
+import IndexAutoPanel from "@/components/IndexAutoPanel";
+import {
+  ALGO_UPDATES, ALGO_UPDATE_COLORS, snapToChartLabel, snapBackToChartLabel, updateEnd,
+  algoChartLabel, algoImpact, withNeighbours, type AlgoImpactResult,
+  type AlgoUpdate, type AlgoUpdateType,
+} from "@/lib/algoUpdates";
+import { buildCandleRows, type MetricCandle } from "@/lib/chartCandles";
+import { CandlePanes, useChartTypePref } from "@/components/CandleChartParts";
 import { useParams, useRouter } from "next/navigation";
 import { usePrivacy } from "@/lib/PrivacyContext";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { usePersistedState, isGscPeriod, isIsoDate } from "@/lib/usePersistedState";
+import { getTaskCreds, getAhrefsDrKey } from "@/lib/seo/keys";
+import TrafficChip from "@/components/TrafficChip";
+import { drSeriesText, type DrPoint } from "@/components/DrSparkline";
+import BacklinkProfile from "@/components/BacklinkProfile";
+import BacklinkImportDialog from "@/components/BacklinkImportDialog";
+import BacklinkSyncButton from "@/components/backlinks/BacklinkSyncButton";
+import type { BacklinkRow, BacklinkListStats } from "@/lib/seo/backlinkTypes";
+import { providerLabel, type BacklinkProviderId } from "@/lib/seo/backlinkProvider";
 import {
-  ArrowLeft, Sparkles, Eye, Percent, MoveUp,
+  Sparkles, Eye, Percent, MoveUp,
   SlidersHorizontal, ChevronDown, Smartphone, Monitor, Tablet,
-  Users, Activity, Zap, DollarSign, Link2, Check,
+  Users, Activity, Zap, DollarSign, Link2, Check, Star,
   FileText, Globe, Search, ArrowLeftRight, BookmarkCheck, Calendar, X, Download,
-  ChevronLeft, ChevronRight, ExternalLink,
+  ChevronLeft, ChevronRight, ExternalLink, Pencil, Trash2,
 } from "lucide-react";
 import {
-  ComposedChart, LineChart, AreaChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend, ReferenceLine,
+  ComposedChart, LineChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from "recharts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,24 +60,27 @@ const C = {
 };
 
 // ─── Period options (module-level so all sub-components can reference) ────────
+// `label` holds an i18n KEY, not display text — the constant is module-level (above any React
+// context), so it cannot call t() itself. Every render site wraps it: t(opt.label). This keeps
+// the shared list in one place while each dropdown translates for the active language.
 const PERIOD_OPTIONS: { key: string; label: string }[] = [
-  { key: "yesterday",    label: "1 day (latest)" },
-  { key: "7d",           label: "7 days"         },
-  { key: "14d",          label: "14 days"         },
-  { key: "28d",          label: "28 days"        },
-  { key: "last_week",    label: "Last Week"      },
-  { key: "this_month",   label: "This Month"     },
-  { key: "last_month",   label: "Last Month"     },
-  { key: "this_quarter", label: "This Quarter"   },
-  { key: "last_quarter", label: "Last Quarter"   },
-  { key: "ytd",          label: "Year to Date"   },
-  { key: "3m",           label: "3 months"       },
-  { key: "6m",           label: "6 months"       },
-  { key: "8m",           label: "8 months"       },
-  { key: "12m",          label: "12 months"      },
-  { key: "16m",          label: "16 months"      },
-  { key: "2y",           label: "2 years"        },
-  { key: "3y",           label: "3 years"        },
+  { key: "yesterday",    label: "periodOneDayLatest" },
+  { key: "7d",           label: "period7Days"         },
+  { key: "14d",          label: "period14Days"         },
+  { key: "28d",          label: "period28Days"        },
+  { key: "last_week",    label: "periodLastWeek"      },
+  { key: "this_month",   label: "periodThisMonth"     },
+  { key: "last_month",   label: "periodLastMonth"     },
+  { key: "this_quarter", label: "periodThisQuarter"   },
+  { key: "last_quarter", label: "periodLastQuarter"   },
+  { key: "ytd",          label: "periodYtd"           },
+  { key: "3m",           label: "period3Months"       },
+  { key: "6m",           label: "period6Months"       },
+  { key: "8m",           label: "period8Months"       },
+  { key: "12m",          label: "period12Months"      },
+  { key: "16m",          label: "period16Months"      },
+  { key: "2y",           label: "period2Years"        },
+  { key: "3y",           label: "period3Years"        },
 ];
 
 const PERIOD_GROUPS = [
@@ -93,47 +114,95 @@ function periodToDays(period: string): number {
 // (typed core/spam/discover list with per-type colors, sundios-style).
 
 // ─── Country code helpers (GSC returns ISO 3166-1 alpha-3 codes) ──────────────
+// Complete ISO 3166-1 officially-assigned table so any country Search Console can
+// return resolves to a flag + localized name. xkk is Google's code for Kosovo
+// (user-assigned alpha-2 XK — Kosovo has no official ISO 3166-1 code).
 const ISO3_TO_ISO2: Record<string, string> = {
-  grc:"gr", usa:"us", cyp:"cy", tur:"tr", mkd:"mk", swe:"se", ita:"it",
-  srb:"rs", irl:"ie", gbr:"gb", deu:"de", fra:"fr", esp:"es", pol:"pl",
-  rou:"ro", nld:"nl", bel:"be", aut:"at", che:"ch", prt:"pt", nor:"no",
-  dnk:"dk", fin:"fi", cze:"cz", hun:"hu", bgr:"bg", hrv:"hr", svk:"sk",
-  svn:"si", alb:"al", bih:"ba", mne:"me", mda:"md", ltu:"lt", lva:"lv",
-  est:"ee", rus:"ru", ukr:"ua", blr:"by", geo:"ge", arm:"am", aze:"az",
-  aus:"au", can:"ca", bra:"br", arg:"ar", mex:"mx", chn:"cn", jpn:"jp",
-  kor:"kr", ind:"in", idn:"id", pak:"pk", sau:"sa", are:"ae", isr:"il",
-  egy:"eg", zaf:"za", nga:"ng", ken:"ke", mar:"ma", col:"co", chl:"cl",
-  per:"pe", tha:"th", vnm:"vn", phl:"ph", mys:"my", sgp:"sg", nzl:"nz",
-  irn:"ir", irq:"iq", lbn:"lb", jor:"jo", kwt:"kw", qat:"qa", bhr:"bh",
-  omn:"om", dza:"dz", tun:"tn", lby:"ly", sdn:"sd", eth:"et", tza:"tz",
-  uga:"ug", gha:"gh", cmr:"cm", ven:"ve", ecu:"ec", ury:"uy", pry:"py",
-  bol:"bo", gtm:"gt", cri:"cr", pan:"pa", dom:"do", cub:"cu", hti:"ht",
-  twn:"tw", hkg:"hk", lka:"lk", bgd:"bd", npl:"np", mmr:"mm", khm:"kh",
-  lao:"la", mnl:"ph", uzb:"uz", kaz:"kz", tkm:"tm", tad:"tj", kgz:"kg",
-  afg:"af", pse:"ps", yem:"ye", syr:"sy",
+  afg:"af", ala:"ax", alb:"al", dza:"dz", asm:"as", and:"ad", ago:"ao", aia:"ai",
+  ata:"aq", atg:"ag", arg:"ar", arm:"am", abw:"aw", aus:"au", aut:"at", aze:"az",
+  bhs:"bs", bhr:"bh", bgd:"bd", brb:"bb", blr:"by", bel:"be", blz:"bz", ben:"bj",
+  bmu:"bm", btn:"bt", bol:"bo", bes:"bq", bih:"ba", bwa:"bw", bvt:"bv", bra:"br",
+  iot:"io", brn:"bn", bgr:"bg", bfa:"bf", bdi:"bi", cpv:"cv", khm:"kh", cmr:"cm",
+  can:"ca", cym:"ky", caf:"cf", tcd:"td", chl:"cl", chn:"cn", cxr:"cx", cck:"cc",
+  col:"co", com:"km", cog:"cg", cod:"cd", cok:"ck", cri:"cr", civ:"ci", hrv:"hr",
+  cub:"cu", cuw:"cw", cyp:"cy", cze:"cz", dnk:"dk", dji:"dj", dma:"dm", dom:"do",
+  ecu:"ec", egy:"eg", slv:"sv", gnq:"gq", eri:"er", est:"ee", swz:"sz", eth:"et",
+  flk:"fk", fro:"fo", fji:"fj", fin:"fi", fra:"fr", guf:"gf", pyf:"pf", atf:"tf",
+  gab:"ga", gmb:"gm", geo:"ge", deu:"de", gha:"gh", gib:"gi", grc:"gr", grl:"gl",
+  grd:"gd", glp:"gp", gum:"gu", gtm:"gt", ggy:"gg", gin:"gn", gnb:"gw", guy:"gy",
+  hti:"ht", hmd:"hm", vat:"va", hnd:"hn", hkg:"hk", hun:"hu", isl:"is", ind:"in",
+  idn:"id", irn:"ir", irq:"iq", irl:"ie", imn:"im", isr:"il", ita:"it", jam:"jm",
+  jpn:"jp", jey:"je", jor:"jo", kaz:"kz", ken:"ke", kir:"ki", prk:"kp", kor:"kr",
+  kwt:"kw", kgz:"kg", lao:"la", lva:"lv", lbn:"lb", lso:"ls", lbr:"lr", lby:"ly",
+  lie:"li", ltu:"lt", lux:"lu", mac:"mo", mdg:"mg", mwi:"mw", mys:"my", mdv:"mv",
+  mli:"ml", mlt:"mt", mhl:"mh", mtq:"mq", mrt:"mr", mus:"mu", myt:"yt", mex:"mx",
+  fsm:"fm", mda:"md", mco:"mc", mng:"mn", mne:"me", msr:"ms", mar:"ma", moz:"mz",
+  mmr:"mm", nam:"na", nru:"nr", npl:"np", nld:"nl", ncl:"nc", nzl:"nz", nic:"ni",
+  ner:"ne", nga:"ng", niu:"nu", nfk:"nf", mkd:"mk", mnp:"mp", nor:"no", omn:"om",
+  pak:"pk", plw:"pw", pse:"ps", pan:"pa", png:"pg", pry:"py", per:"pe", phl:"ph",
+  pcn:"pn", pol:"pl", prt:"pt", pri:"pr", qat:"qa", reu:"re", rou:"ro", rus:"ru",
+  rwa:"rw", blm:"bl", shn:"sh", kna:"kn", lca:"lc", maf:"mf", spm:"pm", vct:"vc",
+  wsm:"ws", smr:"sm", stp:"st", sau:"sa", sen:"sn", srb:"rs", syc:"sc", sle:"sl",
+  sgp:"sg", sxm:"sx", svk:"sk", svn:"si", slb:"sb", som:"so", zaf:"za", sgs:"gs",
+  ssd:"ss", esp:"es", lka:"lk", sdn:"sd", sur:"sr", sjm:"sj", swe:"se", che:"ch",
+  syr:"sy", twn:"tw", tjk:"tj", tza:"tz", tha:"th", tls:"tl", tgo:"tg", tkl:"tk",
+  ton:"to", tto:"tt", tun:"tn", tur:"tr", tkm:"tm", tca:"tc", tuv:"tv", uga:"ug",
+  ukr:"ua", are:"ae", gbr:"gb", usa:"us", umi:"um", ury:"uy", uzb:"uz", vut:"vu",
+  ven:"ve", vnm:"vn", vgb:"vg", vir:"vi", wlf:"wf", esh:"eh", yem:"ye", zmb:"zm",
+  zwe:"zw", xkk:"xk",
 };
 
 const ISO3_NAMES: Record<string, string> = {
-  grc:"Greece", usa:"United States", cyp:"Cyprus", tur:"Türkiye",
-  mkd:"North Macedonia", swe:"Sweden", ita:"Italy", srb:"Serbia",
-  irl:"Ireland", gbr:"United Kingdom", deu:"Germany", fra:"France",
-  esp:"Spain", pol:"Poland", rou:"Romania", nld:"Netherlands",
-  bel:"Belgium", aut:"Austria", che:"Switzerland", prt:"Portugal",
-  nor:"Norway", dnk:"Denmark", fin:"Finland", cze:"Czech Republic",
-  hun:"Hungary", bgr:"Bulgaria", hrv:"Croatia", svk:"Slovakia",
-  svn:"Slovenia", alb:"Albania", bih:"Bosnia", mne:"Montenegro",
-  mda:"Moldova", ltu:"Lithuania", lva:"Latvia", est:"Estonia",
-  rus:"Russia", ukr:"Ukraine", blr:"Belarus", geo:"Georgia",
-  arm:"Armenia", aze:"Azerbaijan", aus:"Australia", can:"Canada",
-  bra:"Brazil", arg:"Argentina", mex:"Mexico", chn:"China",
-  jpn:"Japan", kor:"South Korea", ind:"India", idn:"Indonesia",
-  pak:"Pakistan", sau:"Saudi Arabia", are:"UAE", isr:"Israel",
-  egy:"Egypt", zaf:"South Africa", nga:"Nigeria", ken:"Kenya",
-  mar:"Morocco", col:"Colombia", chl:"Chile", per:"Peru",
-  tha:"Thailand", vnm:"Vietnam", phl:"Philippines", mys:"Malaysia",
-  sgp:"Singapore", nzl:"New Zealand", irn:"Iran", irq:"Iraq",
-  lbn:"Lebanon", jor:"Jordan", kwt:"Kuwait", qat:"Qatar",
-  dza:"Algeria", tun:"Tunisia", ven:"Venezuela",
+  afg:"Afghanistan", ala:"Åland Islands", alb:"Albania", dza:"Algeria", asm:"American Samoa",
+  and:"Andorra", ago:"Angola", aia:"Anguilla", ata:"Antarctica", atg:"Antigua & Barbuda",
+  arg:"Argentina", arm:"Armenia", abw:"Aruba", aus:"Australia", aut:"Austria",
+  aze:"Azerbaijan", bhs:"Bahamas", bhr:"Bahrain", bgd:"Bangladesh", brb:"Barbados",
+  blr:"Belarus", bel:"Belgium", blz:"Belize", ben:"Benin", bmu:"Bermuda",
+  btn:"Bhutan", bol:"Bolivia", bes:"Caribbean Netherlands", bih:"Bosnia & Herzegovina", bwa:"Botswana",
+  bvt:"Bouvet Island", bra:"Brazil", iot:"British Indian Ocean Territory", brn:"Brunei", bgr:"Bulgaria",
+  bfa:"Burkina Faso", bdi:"Burundi", cpv:"Cape Verde", khm:"Cambodia", cmr:"Cameroon",
+  can:"Canada", cym:"Cayman Islands", caf:"Central African Republic", tcd:"Chad", chl:"Chile",
+  chn:"China", cxr:"Christmas Island", cck:"Cocos (Keeling) Islands", col:"Colombia", com:"Comoros",
+  cog:"Congo - Brazzaville", cod:"Congo - Kinshasa", cok:"Cook Islands", cri:"Costa Rica", civ:"Côte d'Ivoire",
+  hrv:"Croatia", cub:"Cuba", cuw:"Curaçao", cyp:"Cyprus", cze:"Czechia",
+  dnk:"Denmark", dji:"Djibouti", dma:"Dominica", dom:"Dominican Republic", ecu:"Ecuador",
+  egy:"Egypt", slv:"El Salvador", gnq:"Equatorial Guinea", eri:"Eritrea", est:"Estonia",
+  swz:"Eswatini", eth:"Ethiopia", flk:"Falkland Islands", fro:"Faroe Islands", fji:"Fiji",
+  fin:"Finland", fra:"France", guf:"French Guiana", pyf:"French Polynesia", atf:"French Southern Territories",
+  gab:"Gabon", gmb:"Gambia", geo:"Georgia", deu:"Germany", gha:"Ghana",
+  gib:"Gibraltar", grc:"Greece", grl:"Greenland", grd:"Grenada", glp:"Guadeloupe",
+  gum:"Guam", gtm:"Guatemala", ggy:"Guernsey", gin:"Guinea", gnb:"Guinea-Bissau",
+  guy:"Guyana", hti:"Haiti", hmd:"Heard & McDonald Islands", vat:"Vatican City", hnd:"Honduras",
+  hkg:"Hong Kong SAR China", hun:"Hungary", isl:"Iceland", ind:"India", idn:"Indonesia",
+  irn:"Iran", irq:"Iraq", irl:"Ireland", imn:"Isle of Man", isr:"Israel",
+  ita:"Italy", jam:"Jamaica", jpn:"Japan", jey:"Jersey", jor:"Jordan",
+  kaz:"Kazakhstan", ken:"Kenya", kir:"Kiribati", prk:"North Korea", kor:"South Korea",
+  kwt:"Kuwait", kgz:"Kyrgyzstan", lao:"Laos", lva:"Latvia", lbn:"Lebanon",
+  lso:"Lesotho", lbr:"Liberia", lby:"Libya", lie:"Liechtenstein", ltu:"Lithuania",
+  lux:"Luxembourg", mac:"Macao SAR China", mdg:"Madagascar", mwi:"Malawi", mys:"Malaysia",
+  mdv:"Maldives", mli:"Mali", mlt:"Malta", mhl:"Marshall Islands", mtq:"Martinique",
+  mrt:"Mauritania", mus:"Mauritius", myt:"Mayotte", mex:"Mexico", fsm:"Micronesia",
+  mda:"Moldova", mco:"Monaco", mng:"Mongolia", mne:"Montenegro", msr:"Montserrat",
+  mar:"Morocco", moz:"Mozambique", mmr:"Myanmar (Burma)", nam:"Namibia", nru:"Nauru",
+  npl:"Nepal", nld:"Netherlands", ncl:"New Caledonia", nzl:"New Zealand", nic:"Nicaragua",
+  ner:"Niger", nga:"Nigeria", niu:"Niue", nfk:"Norfolk Island", mkd:"North Macedonia",
+  mnp:"Northern Mariana Islands", nor:"Norway", omn:"Oman", pak:"Pakistan", plw:"Palau",
+  pse:"Palestinian Territories", pan:"Panama", png:"Papua New Guinea", pry:"Paraguay", per:"Peru",
+  phl:"Philippines", pcn:"Pitcairn Islands", pol:"Poland", prt:"Portugal", pri:"Puerto Rico",
+  qat:"Qatar", reu:"Réunion", rou:"Romania", rus:"Russia", rwa:"Rwanda",
+  blm:"St. Barthélemy", shn:"St. Helena", kna:"St. Kitts & Nevis", lca:"St. Lucia", maf:"St. Martin",
+  spm:"St. Pierre & Miquelon", vct:"St. Vincent & Grenadines", wsm:"Samoa", smr:"San Marino", stp:"São Tomé & Príncipe",
+  sau:"Saudi Arabia", sen:"Senegal", srb:"Serbia", syc:"Seychelles", sle:"Sierra Leone",
+  sgp:"Singapore", sxm:"Sint Maarten", svk:"Slovakia", svn:"Slovenia", slb:"Solomon Islands",
+  som:"Somalia", zaf:"South Africa", sgs:"South Georgia & South Sandwich Islands", ssd:"South Sudan", esp:"Spain",
+  lka:"Sri Lanka", sdn:"Sudan", sur:"Suriname", sjm:"Svalbard & Jan Mayen", swe:"Sweden",
+  che:"Switzerland", syr:"Syria", twn:"Taiwan", tjk:"Tajikistan", tza:"Tanzania",
+  tha:"Thailand", tls:"Timor-Leste", tgo:"Togo", tkl:"Tokelau", ton:"Tonga",
+  tto:"Trinidad & Tobago", tun:"Tunisia", tur:"Türkiye", tkm:"Turkmenistan", tca:"Turks & Caicos Islands",
+  tuv:"Tuvalu", uga:"Uganda", ukr:"Ukraine", are:"United Arab Emirates", gbr:"United Kingdom",
+  usa:"United States", umi:"U.S. Outlying Islands", ury:"Uruguay", uzb:"Uzbekistan", vut:"Vanuatu",
+  ven:"Venezuela", vnm:"Vietnam", vgb:"British Virgin Islands", vir:"U.S. Virgin Islands", wlf:"Wallis & Futuna",
+  esh:"Western Sahara", yem:"Yemen", zmb:"Zambia", zwe:"Zimbabwe", xkk:"Kosovo",
 };
 
 function iso3ToFlag(code: string): string {
@@ -142,73 +211,32 @@ function iso3ToFlag(code: string): string {
   return [...iso2.toUpperCase()].map(c => String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65)).join("");
 }
 
-function iso3ToName(code: string): string {
-  return ISO3_NAMES[code.toLowerCase()] ?? code.toUpperCase();
+// ISO3 → localized country name. Intl.DisplayNames translates an ISO2 (region) code into the
+// active UI language natively in the browser — no per-country keys in the locale files for ~80
+// countries. The static ISO3_NAMES table stays as the fallback for an unknown code or an older
+// engine without DisplayNames, so the function never returns empty.
+//
+// DisplayNames is typed here locally (not via lib.dom) because the TS lib version bundled with
+// this project does not ship it, so the cast avoids `any` without claiming a runtime that isn't
+// feature-checked at the call site.
+interface DisplayNamesCtor {
+  new (locale?: string, options?: { type: string }): { of: (code: string) => string };
+}
+function iso3ToName(code: string, locale?: string): string {
+  const iso3 = code.toLowerCase();
+  const iso2 = ISO3_TO_ISO2[iso3];
+  const DN = (Intl as { DisplayNames?: DisplayNamesCtor }).DisplayNames;
+  if (iso2 && typeof Intl !== "undefined" && typeof DN === "function") {
+    try {
+      const dn = new DN(locale || undefined, { type: "region" });
+      const name = dn.of(iso2.toUpperCase());
+      if (name && name !== iso2.toUpperCase()) return name;
+    } catch { /* fall through to the static table */ }
+  }
+  return ISO3_NAMES[iso3] ?? code.toUpperCase();
 }
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
-function rnd(lo: number, hi: number) { return lo + Math.random() * (hi - lo); }
-function rndInt(lo: number, hi: number) { return Math.round(rnd(lo, hi)); }
-
-function makeChartData(days = 7) {
-  const today = new Date();
-  return Array.from({ length: days }, (_, i) => {
-    const d = new Date(today); d.setDate(today.getDate() - days + i);
-    const label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    const clicks = rndInt(5, 30);
-    const impr   = rndInt(100, 500);
-    return {
-      date: label,
-      clicks, impressions: impr,
-      ctr:      +((clicks / impr) * 100).toFixed(1),
-      position: +rnd(4, 20).toFixed(1),
-      clicksC:      rndInt(3, 25),
-      impressionsC: rndInt(80, 400),
-      ctrC:      +rnd(2, 12).toFixed(1),
-      positionC: +rnd(5, 22).toFixed(1),
-    };
-  });
-}
-
-const QUERIES = [
-  "μασαζ στο σπιτι θεσσαλονικη","λεμφικο μασαζ θεσσαλονικη","μασαζ κατοικον θεσσαλονίκη",
-  "erotic massage thessaloniki","μασαζ κατοικον θεσσαλονικη","relaxing massage thessaloniki",
-  "therapeutic massage","thai massage thessaloniki","deep tissue massage","sports massage greece",
-];
-const PAGES = [
-  "/masaz-kat-oikon-thessaloniki/","/en/massage-thessaloniki/",
-  "/masaz-sto-spiti-thessaloniki-kat-oikon-therapeia/","/",
-  "/to-kalytero-lemfiko-masaz-thessaloniki/","/sports-massage/",
-  "/thai-massage/","/deep-tissue-massage/",
-];
-const COUNTRIES = [
-  { name: "Greece", flag: "🇬🇷" },{ name: "Cyprus", flag: "🇨🇾" },
-  { name: "Türkiye", flag: "🇹🇷" },{ name: "North Macedonia", flag: "🇲🇰" },
-  { name: "Sweden", flag: "🇸🇪" },{ name: "Italy", flag: "🇮🇹" },
-  { name: "Serbia", flag: "🇷🇸" },{ name: "Ireland", flag: "🇮🇪" },
-];
-
-function makeRows(labels: string[], baseClicks: number) {
-  return labels.map((label, i) => {
-    const clicks = Math.max(0, Math.round(baseClicks * Math.exp(-i * 0.3) * (0.7 + Math.random() * 0.6)));
-    const impr   = clicks * rndInt(5, 25);
-    const ctr    = impr > 0 ? +((clicks / impr) * 100).toFixed(1) : 0;
-    const pos    = +rnd(1, 30).toFixed(1);
-    const cPct   = rndInt(-20, 300);
-    const iPct   = rndInt(-10, 200);
-    return { label, clicks, impr, ctr, pos, cPct, iPct };
-  });
-}
-
-function makeCountryRows() {
-  return COUNTRIES.map(({ name, flag }, i) => {
-    const clicks = Math.max(0, rndInt(1, 130) * Math.exp(-i * 0.3) | 0);
-    const impr   = clicks * rndInt(8, 20);
-    const ctr    = impr > 0 ? +((clicks / impr) * 100).toFixed(1) : 0;
-    const pos    = +rnd(4, 25).toFixed(1);
-    return { name, flag, clicks, impr, ctr, pos, cPct: rndInt(0, 200), iPct: rndInt(10, 400) };
-  });
-}
 
 // ─── Shared components ────────────────────────────────────────────────────────
 function Change({ pct, invert = false }: { pct: number; invert?: boolean }) {
@@ -300,6 +328,18 @@ function Pagination({ page, total, pageSize, onChange }: { page: number; total: 
 
 type DtSortCol = "clicks" | "impr" | "ctr" | "pos";
 
+const SortTh = ({ col, label, color, sortCol, sortDir, onSort }: { col: DtSortCol; label: string; color: string; sortCol: DtSortCol; sortDir: "asc" | "desc"; onSort: (col: DtSortCol) => void }) => {
+  const active = sortCol === col;
+  const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
+  return (
+    <th onClick={() => onSort(col)}
+      style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
+      {label}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
+    </th>
+  );
+};
+
+
 function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }: {
   title: string;
   rows: { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number }[];
@@ -344,16 +384,6 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
   };
 
   // Sortable column header helper
-  const SortTh = ({ col, label, color }: { col: DtSortCol; label: string; color: string }) => {
-    const active = sortCol === col;
-    const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
-    return (
-      <th onClick={() => handleSort(col)}
-        style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
-        {label}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
-      </th>
-    );
-  };
 
   // Totals row
   const totalClicks = rows.reduce((s, r) => s + r.clicks, 0);
@@ -364,7 +394,7 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{title}</h3>
-        <button onClick={handleCSV} title="Export CSV"
+        <button onClick={handleCSV} title={t("exportCsv")}
           style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "12px", cursor: "pointer" }}>
           <Download size={12} /> {t("exportCsv")}
         </button>
@@ -373,10 +403,10 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
         <thead>
           <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
             <th style={{ textAlign: "left", padding: "8px 8px 8px 0", color: "var(--color-text-secondary)", fontWeight: 500, fontSize: "11px", letterSpacing: "0.04em" }}>{title === t("queriesTable") ? t("colQuery") : t("colPage")}</th>
-            <SortTh col="clicks" label={t("clicks").toUpperCase()}      color={C.clicks} />
-            <SortTh col="impr"   label={t("impressions").toUpperCase()} color={C.impressions} />
-            <SortTh col="ctr"    label="CTR"                            color={C.ctr} />
-            <SortTh col="pos"    label={t("position").toUpperCase()}    color={C.position} />
+            <SortTh col="clicks" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} label={t("clicks").toUpperCase()}      color={C.clicks} />
+            <SortTh col="impr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}   label={t("impressions").toUpperCase()} color={C.impressions} />
+            <SortTh col="ctr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label="CTR"                            color={C.ctr} />
+            <SortTh col="pos" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label={t("position").toUpperCase()}    color={C.position} />
           </tr>
         </thead>
         <tbody>
@@ -436,7 +466,7 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
 
 type CountryRow = { name: string; flag?: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number };
 function CountryTable({ rows }: { rows: CountryRow[] }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const [page,     setPage]     = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [sortCol,  setSortCol]  = useState<DtSortCol>("clicks");
@@ -454,20 +484,10 @@ function CountryTable({ rows }: { rows: CountryRow[] }) {
   const handleCSV = () => {
     exportCSV("countries.csv",
       ["Country", "Clicks", "Impressions", "CTR%", "Position"],
-      sorted.map(r => [r.flag ? r.name : iso3ToName(r.name), r.clicks, r.impr, r.ctr, r.pos])
+      sorted.map(r => [r.flag ? r.name : iso3ToName(r.name, language), r.clicks, r.impr, r.ctr, r.pos])
     );
   };
 
-  const SortTh = ({ col, label, color }: { col: DtSortCol; label: string; color: string }) => {
-    const active = sortCol === col;
-    const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
-    return (
-      <th onClick={() => handleSort(col)}
-        style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
-        {label}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
-      </th>
-    );
-  };
 
   return (
     <div>
@@ -482,16 +502,16 @@ function CountryTable({ rows }: { rows: CountryRow[] }) {
         <thead>
           <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
             <th style={{ textAlign: "left", padding: "8px 0", color: "var(--color-text-secondary)", fontWeight: 500, fontSize: "11px" }}></th>
-            <SortTh col="clicks" label={t("clicks").toUpperCase()}      color={C.clicks} />
-            <SortTh col="impr"   label={t("impressions").toUpperCase()} color={C.impressions} />
-            <SortTh col="ctr"    label="CTR"                            color={C.ctr} />
-            <SortTh col="pos"    label={t("position").toUpperCase()}    color={C.position} />
+            <SortTh col="clicks" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} label={t("clicks").toUpperCase()}      color={C.clicks} />
+            <SortTh col="impr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}   label={t("impressions").toUpperCase()} color={C.impressions} />
+            <SortTh col="ctr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label="CTR"                            color={C.ctr} />
+            <SortTh col="pos" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label={t("position").toUpperCase()}    color={C.position} />
           </tr>
         </thead>
         <tbody>
           {paged.map((r, i) => {
             const flag = r.flag || iso3ToFlag(r.name);
-            const label = r.flag ? r.name : iso3ToName(r.name);
+            const label = r.flag ? r.name : iso3ToName(r.name, language);
             return (
               <tr key={i} style={{ borderBottom: "1px solid var(--color-border)", background: i % 2 === 0 ? "rgba(255,255,255,0.03)" : "transparent" }}>
                 <td style={{ padding: "8px 8px 8px 0", color: "var(--color-text-primary)" }}>{flag} {label}</td>
@@ -590,6 +610,7 @@ type ClusterRow = {
 };
 
 function ClusterTable({ title, data, blur = false }: { title: string; data: ClusterRow[]; blur?: boolean }) {
+  const { t } = useLanguage();
   const [tab, setTab]     = useState<'All' | 'Growing' | 'Decaying'>('All');
   const [sortBy, setSortBy] = useState<'clicks' | 'impressions' | 'ctr' | 'position'>('clicks');
   const blurStyle: React.CSSProperties = blur ? { filter: 'blur(6px)', userSelect: 'none' } : {};
@@ -598,7 +619,7 @@ function ClusterTable({ title, data, blur = false }: { title: string; data: Clus
     .filter(r => tab === 'All' || (tab === 'Growing' ? r.clicksChange > 0 : r.clicksChange < 0))
     .sort((a, b) => {
       if (sortBy === 'position') return a.position - b.position;
-      return (b as any)[sortBy] - (a as any)[sortBy];
+      return b[sortBy] - a[sortBy];
     });
 
   const fmtN = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
@@ -626,25 +647,28 @@ function ClusterTable({ title, data, blur = false }: { title: string; data: Clus
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
         <h3 style={{ fontSize: '15px', fontWeight: 700, color: 'var(--color-text-primary)' }}>{title}</h3>
         <div style={{ display: 'flex', gap: '2px', background: 'var(--color-bg)', borderRadius: '8px', padding: '2px', border: '1px solid var(--color-border)' }}>
-          {(['All', 'Growing', 'Decaying'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{ padding: '3px 10px', borderRadius: '6px', border: 'none', fontSize: '11px', fontWeight: 500, cursor: 'pointer', background: tab === t ? 'var(--color-card)' : 'transparent', color: tab === t ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
-              {t}
+          {/* loop var renamed `t` → `tabKey`: the old name shadowed the translation function `t`,
+              which is why these labels rendered as raw English ('All'/'Growing'/'Decaying') instead
+              of ever going through i18n. tabKey is the value identifier; the label is a separate t() lookup. */}
+          {(['All', 'Growing', 'Decaying'] as const).map(tabKey => (
+            <button key={tabKey} onClick={() => setTab(tabKey)} style={{ padding: '3px 10px', borderRadius: '6px', border: 'none', fontSize: '11px', fontWeight: 500, cursor: 'pointer', background: tab === tabKey ? 'var(--color-card)' : 'transparent', color: tab === tabKey ? 'var(--color-text-primary)' : 'var(--color-text-secondary)' }}>
+              {tabKey === 'All' ? t('tabAll') : tabKey === 'Growing' ? t('tabGrowing') : t('tabDecaying')}
             </button>
           ))}
         </div>
       </div>
       {visible.length === 0 ? (
-        <div style={{ padding: '24px', textAlign: 'center', fontSize: '13px', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: '10px' }}>No data</div>
+        <div style={{ padding: '24px', textAlign: 'center', fontSize: '13px', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)', borderRadius: '10px' }}>{t('clusterNoData')}</div>
       ) : (
         <div style={{ border: '1px solid var(--color-border)', borderRadius: '10px', overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: 'var(--color-bg)' }}>
-                <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)' }}>Name</th>
-                {th('Clicks', 'clicks')}
-                {th('Impressions', 'impressions')}
-                {th('CTR', 'ctr')}
-                {th('Position', 'position')}
+                <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)' }}>{t('colName')}</th>
+                {th(t('clicks'), 'clicks')}
+                {th(t('impressions'), 'impressions')}
+                {th(t('colCtr'), 'ctr')}
+                {th(t('position'), 'position')}
               </tr>
             </thead>
             <tbody>
@@ -669,12 +693,13 @@ function ClusterTable({ title, data, blur = false }: { title: string; data: Clus
 type SetupItem = { name: string; rules: string; count: number; selected: boolean; editingName?: boolean };
 
 // ─── Editable item card (cluster or group) ────────────────────────────────────
-function SetupCard({ item, index, onToggle, onRename, onDelete, onPatternChange, ruleType }: {
+function SetupCard({ item, onToggle, onRename, onDelete, onPatternChange, ruleType }: {
   item: SetupItem; index: number;
   onToggle: () => void; onRename: (name: string) => void;
   onDelete: () => void; onPatternChange: (val: string) => void;
   ruleType: 'cluster' | 'group';
 }) {
+  const { t } = useLanguage();
   const [editName, setEditName] = useState(false);
   const [nameVal, setNameVal]   = useState(item.name);
 
@@ -698,7 +723,7 @@ function SetupCard({ item, index, onToggle, onRename, onDelete, onPatternChange,
         ) : (
           <span
             onClick={() => { setEditName(true); setNameVal(item.name); }}
-            title="Click to edit name"
+            title={t("clickToEditName")}
             style={{ fontSize: '13px', fontWeight: 600, cursor: 'text', flex: 1, borderBottom: '1px dashed transparent' }}
             onMouseEnter={e => (e.currentTarget.style.borderBottomColor = 'var(--color-text-secondary)')}
             onMouseLeave={e => (e.currentTarget.style.borderBottomColor = 'transparent')}
@@ -743,21 +768,24 @@ function updateRules(item: SetupItem, patternStr: string): SetupItem {
 }
 
 // ─── Branded Chart ────────────────────────────────────────────────────────────
-function BrandedChart({ siteDbId, period, keywords }: { siteDbId: string; period: string; keywords: string[] }) {
+// Row shape returned by /api/gsc/branded-report (one per day).
+interface BrandedRow { date: string; branded: number; nonBranded: number }
+
+function BrandedChart({ siteDbId, period, customDays, keywords }: { siteDbId: string; period: string; customDays?: number | null; keywords: string[] }) {
   const { t } = useLanguage();
   const [tab, setTab] = useState<'Trend' | 'Comparison'>('Trend');
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<BrandedRow[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!siteDbId) return;
     setLoading(true);
-    fetch(`/api/gsc/branded-report?siteId=${siteDbId}&period=${period}`)
+    fetch(`/api/gsc/branded-report?siteId=${siteDbId}&period=${period}${period === "custom" && customDays ? `&days=${customDays}` : ""}`)
       .then(r => r.json())
       .then(d => setRows(d.rows ?? []))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [siteDbId, period]);
+  }, [siteDbId, period, customDays]);
 
   const fmt = (d: string) => { const dt = new Date(d); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); };
 
@@ -801,7 +829,7 @@ function BrandedChart({ siteDbId, period, keywords }: { siteDbId: string; period
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
             <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
             <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} width={32} />
-            <Tooltip formatter={(v: any, name: any) => [v, name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
+            <Tooltip formatter={(v, name) => [v, name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
             <Line type="monotone" dataKey="branded" stroke="#818cf8" strokeWidth={2} dot={false} name="branded" />
             <Line type="monotone" dataKey="nonBranded" stroke="#10b981" strokeWidth={2} dot={false} name="nonBranded" />
           </LineChart>
@@ -812,7 +840,7 @@ function BrandedChart({ siteDbId, period, keywords }: { siteDbId: string; period
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
             <XAxis dataKey="name" tick={{ fontSize: 11, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 10, fill: 'var(--color-text-secondary)' }} axisLine={false} tickLine={false} width={40} />
-            <Tooltip formatter={(v: any, name: any) => [v.toLocaleString(), name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
+            <Tooltip formatter={(v, name) => [(v as number).toLocaleString(), name === 'branded' ? t('brandBranded') : t('brandNonBranded')]} contentStyle={{ background: 'var(--color-card)', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 12 }} />
             <Bar dataKey="branded" fill="#818cf8" name="branded" radius={[4,4,0,0]} />
             <Bar dataKey="nonBranded" fill="#10b981" name="nonBranded" radius={[4,4,0,0]} />
           </BarChart>
@@ -844,10 +872,14 @@ function BrandedKeywordsModal({ siteDbId, domain, initial, onClose, onSaved }: {
 
   const suggestWithAI = async () => {
     setLoading(true);
-    const provider = localStorage.getItem('aiProvider') || 'anthropic';
-    const apiKey = localStorage.getItem(`aiKey_${provider}`) || localStorage.getItem('aiApiKey') || '';
+    // Brand detection is a short mechanical pass, so it runs on the `utility` task — the same
+    // resolution the SEO tools use, rather than a private reading of localStorage.
+    const { provider, apiKey, model, baseUrl } = getTaskCreds('utility');
     try {
-      const res = await fetch(`/api/gsc/branded?siteId=${siteDbId}&suggest=1&aiProvider=${encodeURIComponent(provider)}&aiApiKey=${encodeURIComponent(apiKey)}`);
+      const qs = new URLSearchParams({ siteId: siteDbId, suggest: '1', aiProvider: provider, aiApiKey: apiKey });
+      if (model) qs.set('aiModel', model);
+      if (baseUrl) qs.set('aiBaseUrl', baseUrl);
+      const res = await fetch(`/api/gsc/branded?${qs.toString()}`);
       const data = await res.json();
       if (data.branded?.length) {
         setKeywords(data.branded);
@@ -964,18 +996,24 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
     setStep(2); setLoading(true); setError('');
     // Resolve the key: prefer per-provider key, fall back to legacy key
     const resolvedKey = localStorage.getItem(`aiKey_${aiProvider}`) || aiApiKey;
+    // Clustering is a mechanical pass: model comes from the `utility` task when one is set.
+    const util = getTaskCreds('utility');
     try {
       const res = await fetch('/api/gsc/setup', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: siteDbId, aiProvider, aiApiKey: resolvedKey }),
+        body: JSON.stringify({
+          siteId: siteDbId, aiProvider, aiApiKey: resolvedKey,
+          aiModel: util.provider === aiProvider ? util.model || undefined : undefined,
+          aiBaseUrl: util.provider === aiProvider ? util.baseUrl || undefined : undefined,
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed');
-      setClusters((data.clusters ?? []).map((c: any) => ({ ...c, selected: true })));
-      setGroups((data.groups ?? []).map((g: any) => ({ ...g, selected: true })));
+      if (!res.ok) throw new Error(data.error ?? t("errFailed"));
+      setClusters((data.clusters ?? []).map((c: SetupItem) => ({ ...c, selected: true })));
+      setGroups((data.groups ?? []).map((g: SetupItem) => ({ ...g, selected: true })));
       setAiUsed(data.clusters?.[0]?.aiGenerated ?? false);
       setStep(3);
-    } catch (e: any) { setError(e.message); setStep(1); }
+    } catch (e) { setError((e as Error).message); setStep(1); }
     finally { setLoading(false); }
   };
 
@@ -987,7 +1025,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
         fetch('/api/gsc/groups',   { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteId: siteDbId, groups: groups.filter(g => g.selected) }) }),
       ]);
       onApplied();
-    } catch (e: any) { setError(e.message); }
+    } catch (e) { setError((e as Error).message); }
     finally { setSaving(false); }
   };
 
@@ -1180,7 +1218,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
         {/* Footer */}
         <div style={{ padding: '14px 24px', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
           <button
-            onClick={() => step > 1 && step !== 2 && setStep(s => (s - 1) as any)}
+            onClick={() => step > 1 && step !== 2 && setStep(s => (s - 1) as 1 | 2 | 3 | 4)}
             disabled={step <= 1 || step === 2}
             style={{ padding: '7px 18px', borderRadius: '8px', border: '1px solid var(--color-border)', background: 'var(--color-card)', color: 'var(--color-text-primary)', fontSize: '13px', fontWeight: 500, cursor: step <= 1 || step === 2 ? 'not-allowed' : 'pointer', opacity: step <= 1 || step === 2 ? 0.4 : 1 }}
           >
@@ -1214,10 +1252,20 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
 }
 
 // ─── Custom Chart Tooltip ─────────────────────────────────────────────────────
-function SiteTooltip({ active, payload, label }: any) {
+// Minimal recharts Tooltip-content props: `payload[i].payload` is the chart datum itself. The
+// datum stays a loose record because in candle mode the metric fields are MetricCandle objects,
+// not numbers.
+function SiteTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ payload?: Record<string, unknown> }>;
+  label?: string | number;
+}) {
   const { t } = useLanguage();
   if (!active || !payload?.length) return null;
-  const d = payload.reduce((acc: any, p: any) => { acc[p.dataKey] = p.value; return acc; }, {} as any);
+  // Read the whole datum rather than reducing over dataKeys: position series use function
+  // dataKeys (zero-guarded), whose stringification is not a field name.
+  const d: Record<string, unknown> = payload[0]?.payload ?? {};
+  const cell = (v: unknown, suffix = "") => (v == null || v === "" ? "—" : `${v}${suffix}`);
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "10px", padding: "10px 14px", fontSize: "12px", color: "var(--color-text-primary)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
       <p style={{ fontWeight: 600, marginBottom: "6px", color: "var(--color-text-primary)" }}>{label}</p>
@@ -1230,7 +1278,7 @@ function SiteTooltip({ active, payload, label }: any) {
         <div key={key} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "2px" }}>
           <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: color, flexShrink: 0, display: "inline-block" }} />
           <span style={{ color: "var(--color-text-secondary)", flex: 1 }}>{label}</span>
-          <span style={{ fontWeight: 600 }}>{d[key]}{suffix}</span>
+          <span style={{ fontWeight: 600 }}>{cell(d[key], suffix)}</span>
         </div>
       ))}
     </div>
@@ -1240,11 +1288,14 @@ function SiteTooltip({ active, payload, label }: any) {
 // ─── GA4 metric types ─────────────────────────────────────────────────────────
 type GA4Metric = "sessions" | "engagement" | "events" | "revenue";
 
+// label holds an i18n KEY (ga4Metric*), kept for symmetry with metricLabel(). It is not rendered
+// directly today — every display site calls metricLabel(key) — but storing the key here means a
+// future caller that does read .label gets a translatable value, not dead English.
 const GA4_METRICS: { key: GA4Metric; icon: React.ReactNode; label: string; color: string; bg: string }[] = [
-  { key: "sessions",   icon: <Users size={13} />,      label: "Sessions",        color: "#3B82F6", bg: "rgba(59,130,246,0.12)" },
-  { key: "engagement", icon: <Activity size={13} />,   label: "Engagement Rate", color: "#8B5CF6", bg: "rgba(139,92,246,0.12)" },
-  { key: "events",     icon: <Zap size={13} />,        label: "Key Events",      color: "#10B981", bg: "rgba(16,185,129,0.12)" },
-  { key: "revenue",    icon: <DollarSign size={13} />, label: "Revenue",         color: "#F59E0B", bg: "rgba(245,158,11,0.12)" },
+  { key: "sessions",   icon: <Users size={13} />,      label: "ga4MetricSessions",    color: "#3B82F6", bg: "rgba(59,130,246,0.12)" },
+  { key: "engagement", icon: <Activity size={13} />,   label: "ga4MetricEngagement",  color: "#8B5CF6", bg: "rgba(139,92,246,0.12)" },
+  { key: "events",     icon: <Zap size={13} />,        label: "ga4MetricEvents",      color: "#10B981", bg: "rgba(16,185,129,0.12)" },
+  { key: "revenue",    icon: <DollarSign size={13} />, label: "ga4MetricRevenue",     color: "#F59E0B", bg: "rgba(245,158,11,0.12)" },
 ];
 
 // Simple dropdown for re-use
@@ -1270,7 +1321,17 @@ function SimpleDropdown({ trigger, children, align = "right" }: { trigger: React
 }
 
 // ─── Period Dropdown ─────────────────────────────────────────────────────────
-function PeriodDropdown({ period, onChange }: { period: string; onChange: (p: string) => void }) {
+const siteDateInput: React.CSSProperties = {
+  padding: "5px 8px", borderRadius: "8px", border: "1px solid var(--color-border)",
+  background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px",
+  flex: "1 1 0", minWidth: 0,
+};
+
+function PeriodDropdown({ period, onChange, rangeStart, rangeEnd, onRangeChange }: {
+  period: string; onChange: (p: string) => void;
+  rangeStart: string; rangeEnd: string; onRangeChange: (s: string, e: string) => void;
+}) {
+  const { t } = useLanguage();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1278,7 +1339,12 @@ function PeriodDropdown({ period, onChange }: { period: string; onChange: (p: st
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
-  const label = PERIOD_OPTIONS.find(o => o.key === period)?.label ?? period;
+  const customActive = period === "custom";
+  const customReady = !!rangeStart && !!rangeEnd && rangeStart <= rangeEnd;
+  const fmtShort = (iso: string) => new Date(iso).toLocaleDateString("ru", { day: "numeric", month: "short" });
+  const label = customActive && customReady
+    ? `${fmtShort(rangeStart)} – ${fmtShort(rangeEnd)}`
+    : t((PERIOD_OPTIONS.find(o => o.key === period)?.label ?? period) as never);
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button onClick={() => setOpen(o => !o)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: open ? "rgba(255,255,255,0.07)" : "var(--color-card)", color: "var(--color-text-primary)", fontSize: "13px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -1299,13 +1365,25 @@ function PeriodDropdown({ period, onChange }: { period: string; onChange: (p: st
                     onMouseOver={e => { if (!active) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
                     onMouseOut={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
                   >
-                    {opt.label}
+                    {t(opt.label as never)}
                     {active && <Check size={12} />}
                   </button>
                 );
               })}
             </div>
           ))}
+          <div style={{ height: "1px", background: "var(--color-border)", margin: "4px 0" }} />
+          {/* Custom range — applies the moment both dates are picked and ordered */}
+          <div style={{ padding: "8px 14px 10px", display: "flex", flexDirection: "column", gap: "6px", background: customActive ? "rgba(59,130,246,0.07)" : "transparent" }}>
+            <div style={{ fontSize: "11px", fontWeight: 600, color: customActive ? "#3B82F6" : "var(--color-text-secondary)" }}>{t("custom")}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }} onClick={e => e.stopPropagation()}>
+              <input type="date" value={rangeStart} max={rangeEnd || undefined}
+                onChange={e => onRangeChange(e.target.value, rangeEnd)} style={siteDateInput}/>
+              <span style={{ color: "var(--color-text-secondary)", fontSize: "12px" }}>–</span>
+              <input type="date" value={rangeEnd} min={rangeStart || undefined}
+                onChange={e => onRangeChange(rangeStart, e.target.value)} style={siteDateInput}/>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -1317,11 +1395,16 @@ function PeriodDropdown({ period, onChange }: { period: string; onChange: (p: st
 // (Note adding/management itself lives on the "Заметки" tab — the old dropdown
 // here duplicated that with a couple of dead, unwired buttons, so it's gone.)
 // ─── AIO Impact tooltip: raw values + their index vs the base (=100) day ──────
-function AioTooltip({ active, payload, label }: any) {
+// Only mounted in AIO mode, where every series value is a number (clicksIdx / imprIdx).
+function AioTooltip({ active, payload, label }: {
+  active?: boolean;
+  payload?: ReadonlyArray<{ dataKey: string | number; value: number; payload?: Record<string, number> }>;
+  label?: string | number;
+}) {
   const { t } = useLanguage();
   if (!active || !payload?.length) return null;
-  const d = payload.reduce((acc: any, p: any) => { acc[p.dataKey] = p.value; return acc; }, {} as any);
-  const row = payload[0]?.payload ?? {};
+  const d = payload.reduce((acc: Record<string, number>, p: { dataKey: string | number; value: number }) => { acc[p.dataKey] = p.value; return acc; }, {} as Record<string, number>);
+  const row: Record<string, number> = payload[0]?.payload ?? {};
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "10px", padding: "10px 14px", fontSize: "12px", color: "var(--color-text-primary)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
       <p style={{ fontWeight: 600, marginBottom: "6px" }}>{label}</p>
@@ -1350,6 +1433,140 @@ function GoogleUpdatesToggle({ on, onToggle }: { on: boolean; onToggle: () => vo
   );
 }
 
+// ─── Share Link quick access (Dashboard) ─────────────────────────────────────
+// The public share link is managed in full on the Settings tab; this is its discoverable
+// twin on the dashboard toolbar — grab the client link (or create it) without hunting
+// through twelve tabs. State is fetched once on first open and mirrored back on mutate;
+// revoke/reset stay on Settings, the footer link jumps there.
+function ShareLinkButton({ siteDbId, domain, onOpenSettings }: { siteDbId: string; domain: string; onOpenSettings: () => void }) {
+  const { t } = useLanguage();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const [fetched, setFetched] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // One GET per mount, on first open — the Settings tab owns the authoritative state.
+  useEffect(() => {
+    if (!open || fetched || !siteDbId) return;
+    setFetched(true);
+    setLoading(true);
+    fetch(`/api/gsc/site/share?siteId=${siteDbId}`)
+      .then(r => r.json())
+      .then(d => { setEnabled(!!d.shareEnabled); setToken(d.shareToken || null); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [open, siteDbId, fetched]);
+
+  const update = async (action: "generate" | "toggle", val?: boolean) => {
+    try {
+      const res = await fetch("/api/gsc/site/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          siteId: siteDbId,
+          action: action !== "toggle" ? action : undefined,
+          shareEnabled: action === "toggle" ? val : undefined,
+        }),
+      });
+      const d = await res.json();
+      setEnabled(!!d.shareEnabled);
+      setToken(d.shareToken || null);
+    } catch {}
+  };
+
+  const shareUrl = token ? `${typeof window !== "undefined" ? window.location.origin : ""}/share/${siteDbId}/${token}` : "";
+
+  // Same tab set the guest view exposes (and the Settings tab offers as deep links).
+  const GUEST_TABS = [
+    { key: "dashboard", label: t("tabDashboard") },
+    { key: "positions", label: t("tabPositions") },
+    { key: "ga4",       label: t("tabGA4") },
+    { key: "backlinks", label: t("shareLinkProfile") },
+    { key: "health",    label: t("tabHealth") },
+    { key: "audit",     label: t("tabAudit") },
+  ];
+
+  const copy = async (text: string, key: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(c => (c === key ? null : c)), 2000);
+  };
+
+  const chipStyle = (on: boolean): React.CSSProperties => ({
+    padding: "3px 9px", borderRadius: "6px", border: "1px solid var(--color-border)",
+    background: on ? "rgba(16,185,129,0.1)" : "transparent",
+    color: on ? "#10B981" : "var(--color-text-secondary)", fontSize: "11px", cursor: "pointer",
+  });
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button onClick={() => setOpen(o => !o)} title={t("setSharedLink")}
+        style={{ display: "flex", alignItems: "center", padding: "6px 10px", borderRadius: "8px", border: `1px solid ${open ? "#3B82F6" : "var(--color-border)"}`, background: open ? "rgba(59,130,246,0.1)" : "var(--color-card)", color: open ? "#3B82F6" : "var(--color-text-secondary)", fontSize: "12px", fontWeight: 500, cursor: "pointer" }}>
+        <Link2 size={13} />
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 300, width: "330px", padding: "14px", textAlign: "left" }}>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>{t("setSharedLink")}</div>
+          <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "10px" }}>
+            {t("setSharedLinkDesc1").replace("{domain}", domain)}
+          </div>
+          {loading ? (
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("shareSettingsLoading") || "Loading share settings..."}</div>
+          ) : token ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", cursor: "pointer" }}>
+                <input type="checkbox" checked={enabled} onChange={e => update("toggle", e.target.checked)} />
+                {t("shareActiveCheckbox")}
+              </label>
+              {enabled && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 9px", borderRadius: "8px", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
+                    <span style={{ flex: 1, fontSize: "11px", fontFamily: "monospace", color: "#3B82F6", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shareUrl}</span>
+                    <button onClick={() => copy(shareUrl, "url")} style={chipStyle(copied === "url")}>
+                      {copied === "url" ? t("setCopied") : t("setCopy")}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+                    {t("shareTabHint")}
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "5px" }}>
+                      {GUEST_TABS.map(gt => (
+                        <button key={gt.key} onClick={() => copy(`${shareUrl}?tab=${gt.key}`, gt.key)} style={chipStyle(copied === gt.key)}>
+                          {copied === gt.key ? t("setCopied") : gt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <button onClick={() => update("generate")}
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "7px 13px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+              {t("setGenerateLink")}
+            </button>
+          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginTop: "10px" }}>
+            <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", lineHeight: 1.4 }}>{t("setSharedLinkNote")}</span>
+            <button onClick={() => { setOpen(false); onOpenSettings(); }}
+              style={{ flexShrink: 0, padding: "4px 8px", borderRadius: "6px", border: "none", background: "transparent", color: "#3B82F6", fontSize: "11px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              {t("tabSettings")} →
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Filter Dropdown (Dashboard) ─────────────────────────────────────────────
 function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterText, onDimension, onFilterText, preset, onPreset, onApply }: {
   positionFilter: number | null; onPositionFilter: (v: number | null) => void;
@@ -1358,6 +1575,7 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
   preset: string | null; onPreset: (v: string | null) => void;
   onApply?: () => void;
 }) {
+  const { t } = useLanguage();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1374,13 +1592,15 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
     <div style={{ padding: "10px 14px 4px", fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
   );
 
-  const dims = [
-    { icon: <Search size={14}/>,        v: "query",   label: "Query" },
-    { icon: <FileText size={14}/>,       v: "page",    label: "Page" },
-    { icon: <Globe size={14}/>,          v: "country", label: "Country" },
-    { icon: <Monitor size={14}/>,        v: "device",  label: "Device" },
-    { icon: <BookmarkCheck size={14}/>,  v: "",        label: "Content Group", disabled: true },
-    { icon: <ArrowLeftRight size={14}/>, v: "",        label: "Compare Filters", disabled: true },
+  // label holds an i18n KEY (rendered via t(label) below) so the dimension list stays single-
+  // sourced while each language renders its own word for Query/Page/Country/Device.
+  const dims: { icon: React.ReactNode; v: string; label: string; disabled?: boolean }[] = [
+    { icon: <Search size={14}/>,        v: "query",   label: "dimQuery" },
+    { icon: <FileText size={14}/>,       v: "page",    label: "dimPage" },
+    { icon: <Globe size={14}/>,          v: "country", label: "dimCountry" },
+    { icon: <Monitor size={14}/>,        v: "device",  label: "dimDevice" },
+    { icon: <BookmarkCheck size={14}/>,  v: "",        label: "dimContentGroup", disabled: true },
+    { icon: <ArrowLeftRight size={14}/>, v: "",        label: "dimCompareFilters", disabled: true },
   ];
 
   return (
@@ -1394,13 +1614,13 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
       {open && (
         <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 300, minWidth: "260px", overflow: "hidden" }}>
           {/* Dimension */}
-          {dims.map(({ icon, v, label, disabled }: any) => (
+          {dims.map(({ icon, v, label, disabled }) => (
             <button key={label} disabled={disabled}
               onClick={() => { if (disabled) return; const same = filterDimension === v; onDimension(same ? null : v); onFilterText(""); }}
               style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 14px", fontSize: "13px", cursor: disabled ? "default" : "pointer", width: "100%", background: filterDimension === v && !disabled ? "rgba(59,130,246,0.1)" : "transparent", color: disabled ? "var(--color-text-secondary)" : filterDimension === v ? "#3B82F6" : "var(--color-text-primary)", border: "none", opacity: disabled ? 0.4 : 1 }}
               onMouseOver={e => { if (!disabled && filterDimension !== v) e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
               onMouseOut={e => { if (filterDimension !== v) e.currentTarget.style.background = "transparent"; }}>
-              {icon} {label}
+              {icon} {t(label as never)}
               {filterDimension === v && <Check size={12} style={{ marginLeft: "auto" }} />}
             </button>
           ))}
@@ -1429,7 +1649,7 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
           )}
 
           {divider}
-          {sec("Position Filter")}
+          {sec(t("sectionPositionFilter"))}
           <div style={{ padding: "4px 14px 10px", display: "flex", gap: "8px" }}>
             {([10, 20] as const).map(v => {
               const active = positionFilter === v;
@@ -1443,17 +1663,17 @@ function FilterDd({ positionFilter, onPositionFilter, filterDimension, filterTex
           </div>
 
           {divider}
-          {sec("Preset Filters")}
+          {sec(t("sectionPresetFilters"))}
           {[
-            { v: "paa",      label: "People Also Ask",  hint: "queries with ?" },
-            { v: "longtail", label: "Long Tail Keywords", hint: "3+ words" },
+            { v: "paa",      label: "presetPaa",      hint: "presetPaaHint" },
+            { v: "longtail", label: "presetLongTail", hint: "presetLongTailHint" },
           ].map(({ v, label, hint }) => (
             <button key={v} onClick={() => { onPreset(preset === v ? null : v); onDimension(null); onFilterText(""); }}
               style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "9px 14px", fontSize: "13px", fontWeight: preset === v ? 700 : 600, cursor: "pointer", background: preset === v ? "rgba(59,130,246,0.1)" : "transparent", color: preset === v ? "#3B82F6" : "var(--color-text-primary)", border: "none" }}
               onMouseOver={e => { if (preset !== v) e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
               onMouseOut={e => { if (preset !== v) e.currentTarget.style.background = "transparent"; }}>
-              <span>{label}</span>
-              <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", fontWeight: 400 }}>{hint}</span>
+              <span>{t(label as never)}</span>
+              <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", fontWeight: 400 }}>{t(hint as never)}</span>
             </button>
           ))}
 
@@ -1599,11 +1819,12 @@ function GA4SetupSteps({ errors }: { errors?: string[] }) {
   );
 }
 
-function GA4Tab({ domain, period, setPeriod, periodOptions }: {
+function GA4Tab({ domain, period, setPeriod, periodOptions, customDays }: {
   domain: string;
   period: string;
   setPeriod: (p: string) => void;
   periodOptions: string[];
+  customDays?: number | null;
 }) {
   const [activeMetrics, setActiveMetrics] = useState<Set<GA4Metric>>(new Set(["sessions", "engagement", "events", "revenue"]));
   const [selectedProp, setSelectedProp] = useState("");
@@ -1628,7 +1849,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
   const loadReport = async () => {
     setLoading(true);
     try {
-      const res = await fetch(withShare(`/api/ga4/report?domain=${encodeURIComponent(domain)}&period=${encodeURIComponent(period)}`));
+      const res = await fetch(withShare(`/api/ga4/report?domain=${encodeURIComponent(domain)}&period=${encodeURIComponent(period)}${period === "custom" && customDays ? `&days=${customDays}` : ""}`));
       const data: GA4Report = await res.json();
       setReport(data);
       if (!data.linked) { loadProperties(); setBd(null); }
@@ -1643,7 +1864,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
 
   const loadBreakdowns = async () => {
     try {
-      const res = await fetch(withShare(`/api/ga4/breakdowns?domain=${encodeURIComponent(domain)}&period=${encodeURIComponent(period)}`));
+      const res = await fetch(withShare(`/api/ga4/breakdowns?domain=${encodeURIComponent(domain)}&period=${encodeURIComponent(period)}${period === "custom" && customDays ? `&days=${customDays}` : ""}`));
       const data = await res.json();
       setBd(data.linked && !data.error ? data : null);
     } catch {
@@ -1666,7 +1887,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
     }
   };
 
-  useEffect(() => { loadReport(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [domain, period]);
+  useEffect(() => { loadReport();   }, [domain, period]);
 
   const linkProperty = async () => {
     const prop = properties.find(p => p.id === selectedProp);
@@ -1692,7 +1913,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
   };
 
   const toggleMetric = (m: GA4Metric) => setActiveMetrics(p => {
-    const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n;
+    const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n;
   });
 
   return (
@@ -1730,7 +1951,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
           }
         >
           {periodOptions.map(p => {
-            const lbl = PERIOD_OPTIONS.find(o => o.key === p)?.label ?? p;
+            const lbl = t((PERIOD_OPTIONS.find(o => o.key === p)?.label ?? p) as never);
             return (
               <button key={p} onClick={() => setPeriod(p)} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "9px 14px", fontSize: "13px", cursor: "pointer", width: "100%", background: period === p ? "rgba(59,130,246,0.12)" : "transparent", color: period === p ? "#3B82F6" : "var(--color-text-primary)", border: "none" }}>
                 {lbl} {period === p && <Check size={12} style={{ marginLeft: "auto" }} />}
@@ -1854,7 +2075,9 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
 
           {report?.series && report.series.length > 0 ? (
             <div style={{ height: "260px" }}>
-              <ResponsiveContainer width="100%" height="100%">
+              {/* initialDimension seeds the pre-measure render: recharts 3.x defaults it to -1×-1
+                  and logs a width(-1)/height(-1) warning before the first ResizeObserver report */}
+              <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 260 }}>
                 <LineChart data={report.series} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--color-border)" />
                   <XAxis dataKey="date" tickFormatter={(d: string) => (typeof d === "string" && d.length >= 10 ? d.slice(5) : d)} tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }} axisLine={false} tickLine={false} interval="preserveStartEnd" minTickGap={24} />
@@ -1862,7 +2085,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
                   <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }} axisLine={false} tickLine={false} width={36} />
                   <Tooltip
                     contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value: any, name: any, item: any) => {
+                    formatter={(value, name, item) => {
                       const key = item?.dataKey as GA4Metric | undefined;
                       if (key === "engagement") return [`${value}%`, name];
                       if (key === "revenue") return [`$${value}`, name];
@@ -1926,22 +2149,6 @@ function GA4Tab({ domain, period, setPeriod, periodOptions }: {
 }
 
 // ─── Indexing Tab ─────────────────────────────────────────────────────────────
-function statusColor(s: string): string {
-  if (/submitted and indexed/i.test(s))           return "#4ADE80";
-  if (/crawled.*not indexed/i.test(s))            return "#FBBF24";
-  if (/discovered.*not indexed/i.test(s))         return "#F97316";
-  if (/unknown/i.test(s))                         return "#60A5FA";
-  if (/excluded|blocked|not found|404|noindex/i.test(s)) return "#F87171";
-  return "#94a3b8";
-}
-
-function statusCategory(s: string): string {
-  if (/submitted and indexed/i.test(s))           return "indexed";
-  if (/crawled.*not indexed/i.test(s))            return "notIndexed";
-  if (/discovered.*not indexed/i.test(s))         return "discovered";
-  return "other";
-}
-
 function timeAgo(date: string | Date): string {
   const ms = Date.now() - new Date(date).getTime();
   const mins  = Math.floor(ms / 60000);
@@ -1953,196 +2160,484 @@ function timeAgo(date: string | Date): string {
   return `${days}d ago`;
 }
 
+// One row of /api/indexing/sitemap/operations — the shared history shape rendered by both the
+// Backlinks tab (backlink_* ops) and the Indexing tab (everything else).
+interface IndexOpRow {
+  id: string;
+  type: string;
+  result?: string | null;
+  urlCount?: number | null;
+  detail?: string | null;
+  createdAt: string;
+}
+
 // ─── BacklinksTab ─────────────────────────────────────────────────────────────
+// Backlinks v2 (T5): reads SiteBacklink through the paginated /api/backlinks list, so the
+// DOM never holds more than pageSize rows however large the profile is. Three opinions are
+// deliberately kept apart (CONTRACT §0) and no cell derives one from another:
+//   api*      — what Ahrefs says,
+//   checkStatus — whether our own fetch found the link on the page,
+//   pageStatus — whether the donor page answers at all.
 function BacklinksTab({ siteDbId }: { siteDbId: string }) {
   const { t } = useLanguage();
 
-  const [links,    setLinks]    = useState<any[]>([]);
-  const [stats,    setStats]    = useState<any>({});
-  const [loading,  setLoading]  = useState(false);
+  const [rows, setRows] = useState<BacklinkRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [stats, setStats] = useState<BacklinkListStats | null>(null);
+  // Who filled the api rows (issue #29): every "per Ahrefs" label names the real provider.
+  const [provider, setProvider] = useState<BacklinkProviderId | null>(null);
+  const tp = (k: "bluiFilterLost" | "bluiSourceApi" | "bluiAnchorFromApi") => t(k).replace("{provider}", providerLabel(provider));
+  const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Add URLs
-  const [showAdd,   setShowAdd]   = useState(false);
-  const [addText,   setAddText]   = useState("");
-  const [adding,    setAdding]    = useState(false);
+  // The filter object doubles as the bulk-action scope: "recheck everything the current
+  // filter matches" must mean everything, not the first 50 rows on screen.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSizeState] = useState(50);
+  const [sort, setSort] = useState("added_desc");
+  const [filters, setFilters] = useState({
+    status: "", rel: "", source: "", domain: "", drMin: "", drMax: "",
+    favorite: false, lost: false,
+  });
+  const [domainInput, setDomainInput] = useState("");
+  const [drInput, setDrInput] = useState({ min: "", max: "" });
 
-  // Check states
+  const [actionMsg, setActionMsg] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+
+  // Legacy checks (check-alive / check-xr) still run against the pre-v2 Backlink model and
+  // stay wired exactly as before per the task split; the visible list above them is v2.
   const [checking404, setChecking404] = useState(false);
-  const [checkingXr,  setCheckingXr]  = useState(false);
-  const [submitting2i, setSubmitting2i] = useState(false);
-  const [actionMsg,   setActionMsg]   = useState("");
+  const [checkingXr, setCheckingXr] = useState(false);
 
-  // Operations history
-  const [ops,       setOps]       = useState<any[]>([]);
-  const [showOps,   setShowOps]   = useState(false);
-  const [opsLoading, setOpsLoading] = useState(false);
+  // Placement verification progress (SiteBacklinkSync via /api/backlinks/verify, T4)
+  const [verify, setVerify] = useState<{ progress: number; stage: string; rowsSeen: number } | null>(null);
+  const verifyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadSeq = useRef(0);
 
-  // ── Display limit ──
-  const [displayLimit, setDisplayLimit] = useState(50);
+  // Remembered per-browser preference (allowed); the data itself never lives in localStorage.
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("blui:pageSize"));
+    if ([50, 100, 250, 500].includes(saved)) setPageSizeState(saved);
+  }, []);
+  const setPageSize = (n: number) => {
+    setPageSizeState(n); setPage(1);
+    try { localStorage.setItem("blui:pageSize", String(n)); } catch {}
+  };
 
-  const load = async () => {
+  // t() returns the raw string — {n}-style placeholders are substituted by hand.
+  const subst = (key: Parameters<typeof t>[0], vars: Record<string, string | number>) =>
+    Object.entries(vars).reduce((s, [k, v]) => s.split(`{${k}}`).join(String(v)), t(key));
+
+  const filtersToParams = (f: typeof filters) => {
+    const sp = new URLSearchParams();
+    if (f.status) sp.set("status", f.status);
+    if (f.rel) sp.set("rel", f.rel);
+    if (f.source) sp.set("source", f.source);
+    if (f.domain) sp.set("domain", f.domain);
+    if (f.drMin !== "") sp.set("drMin", f.drMin);
+    if (f.drMax !== "") sp.set("drMax", f.drMax);
+    if (f.favorite) sp.set("favorite", "1");
+    if (f.lost) sp.set("lost", "1");
+    return sp;
+  };
+  const filtersToBody = (f: typeof filters): Record<string, string | boolean> => {
+    const sp = filtersToParams(f);
+    return Object.fromEntries([...sp.entries()].map(([k, v]) => [k, v === "1" ? true : v]));
+  };
+  const updateFilters = (patch: Partial<typeof filters>) => {
+    setFilters(prev => ({ ...prev, ...patch }));
+    setPage(1);
+  };
+
+  const load = useCallback(async () => {
     setLoading(true);
+    const seq = ++loadSeq.current; // stale responses from quick filter flips are dropped
     try {
-      const res = await fetch(`/api/backlinks?siteDbId=${siteDbId}`);
+      const qs = filtersToParams(filters);
+      qs.set("siteDbId", siteDbId);
+      qs.set("page", String(page));
+      qs.set("pageSize", String(pageSize));
+      qs.set("sort", sort);
+      const res = await fetch(`/api/backlinks?${qs.toString()}`);
       const d = await res.json();
-      setLinks(d.links ?? []);
-      setStats(d.stats ?? {});
+      if (seq !== loadSeq.current) return;
+      setRows(d.rows ?? []);
+      setTotal(d.total ?? 0);
+      setStats(d.stats ?? null);
+      setProvider(d.provider ?? null);
     } catch {}
-    setLoading(false);
+    if (seq === loadSeq.current) setLoading(false);
+  }, [siteDbId, page, pageSize, sort, filters]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // ── placement verification: kick off, then poll the background run ──
+
+  const stopVerifyPolling = () => {
+    if (verifyTimer.current) { clearInterval(verifyTimer.current); verifyTimer.current = null; }
+  };
+  const startVerifyPolling = useCallback(() => {
+    stopVerifyPolling();
+    verifyTimer.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/backlinks/verify?siteId=${siteDbId}`);
+        const d = await res.json();
+        if (d.running) {
+          setVerify({ progress: d.run?.progress ?? 0, stage: d.run?.stage ?? "", rowsSeen: d.run?.rowsSeen ?? 0 });
+        } else {
+          stopVerifyPolling();
+          setVerify(null);
+          if (d.run?.error) setActionMsg(`✗ ${d.run.error}`);
+          else if (d.run?.summary) setActionMsg(`✓ ${subst("blchkSummary", d.run.summary)}`);
+          await load();
+        }
+      } catch {}
+    }, 2000);
+  }, [siteDbId, load]);
+
+  useEffect(() => {
+    // A run started in another tab or before a reload keeps showing its progress here.
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/backlinks/verify?siteId=${siteDbId}`);
+        const d = await res.json();
+        if (!cancelled && d.running) {
+          setVerify({ progress: d.run?.progress ?? 0, stage: d.run?.stage ?? "", rowsSeen: d.run?.rowsSeen ?? 0 });
+          startVerifyPolling();
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; stopVerifyPolling(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [siteDbId]);
+
+  // T4's verify takes an enum scope, not the full filter object; map to the closest scope it
+  // can express. A filter it cannot express (domain, DR, rel…) widens to "all" — acceptable
+  // for a non-destructive check: the progress and summary report what actually ran.
+  const verifyScope = (f: typeof filters): string => {
+    if (f.status === "missing") return "missing";
+    if (f.status === "unchecked") return "unchecked";
+    const plain = !f.status && !f.rel && !f.source && !f.domain && f.drMin === "" && f.drMax === "" && !f.lost;
+    if (f.favorite && plain) return "favorites";
+    return "all";
   };
 
-  useEffect(() => { load(); }, [siteDbId]);
-
-  const handleAdd = async () => {
-    const urls = addText.split(/[\n,]+/).map(s => s.trim()).filter(s => s.startsWith('http'));
-    if (!urls.length) return;
-    setAdding(true);
+  const handleVerify = async () => {
+    if (verify) return;
+    const body = selected.size > 0
+      ? { siteId: siteDbId, ids: [...selected] }
+      : { siteId: siteDbId, filter: verifyScope(filters) };
     try {
-      await fetch('/api/backlinks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteDbId, urls }),
+      const res = await fetch("/api/backlinks/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
-      setAddText(''); setShowAdd(false);
-      await load();
-    } catch {}
-    setAdding(false);
+      if (res.status === 409) {
+        // already running — attach to it rather than reporting an error
+        setVerify({ progress: 0, stage: "pull", rowsSeen: 0 });
+        startVerifyPolling();
+        return;
+      }
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setActionMsg(`✗ ${d.error ?? "verify failed"}`);
+        return;
+      }
+      setVerify({ progress: 0, stage: "pull", rowsSeen: 0 });
+      startVerifyPolling();
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
   };
 
-  const handleDelete = async (ids: string[]) => {
-    await fetch('/api/backlinks', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ siteDbId, ids }),
+  // ── favourites (DB column, not localStorage: survives a browser change, visible to the
+  //    second person in the workspace) ──
+
+  const toggleFavorite = async (row: BacklinkRow) => {
+    setRows(rs => rs.map(r => (r.id === row.id ? { ...r, favorite: !r.favorite } : r)));
+    await fetch("/api/backlinks", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteDbId, id: row.id, favorite: !row.favorite }),
+    });
+  };
+
+  const handleBulkFavorite = async () => {
+    if (selected.size === 0) return;
+    await fetch("/api/backlinks", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteDbId, ids: [...selected], favorite: true }),
     });
     setSelected(new Set());
     await load();
   };
 
-  const handleCheck404 = async (all = false) => {
-    setChecking404(true); setActionMsg('');
-    const ids = !all && selected.size > 0 ? [...selected] : [];
+  // ── destructive bulk delete: by ids when rows are picked, by the live filter otherwise;
+  //    the confirm always names the real number of affected rows ──
+
+  const handleDelete = async (ids?: string[]) => {
+    const effectiveIds = ids ?? (selected.size > 0 ? [...selected] : null);
+    const count = effectiveIds ? effectiveIds.length : (stats?.total ?? 0);
+    if (!window.confirm(subst("bluiBulkScope", { n: count }))) return;
+    await fetch("/api/backlinks", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(effectiveIds ? { siteDbId, ids: effectiveIds } : { siteDbId, filter: filtersToBody(filters) }),
+    });
+    setSelected(new Set());
+    await load();
+  };
+
+  // ── legacy checks, unchanged targets ──
+
+  const handleCheck404 = async () => {
+    setChecking404(true); setActionMsg("");
     try {
-      const res = await fetch('/api/backlinks/check-alive', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteDbId, ids, forceAll: all }),
+      const res = await fetch("/api/backlinks/check-alive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteDbId, ids: [], forceAll: true }),
       });
       const d = await res.json();
-      setActionMsg(`✓ ${t("idxChecked")} ${d.checked}: ${t("blAlive")} ${d.alive}, ${t("blDead")} ${d.dead}`);
-      await load();
-    } catch (e: any) { setActionMsg(`✗ ${e.message}`); }
+      setActionMsg(`✓ ${t("idxChecked")} ${d.checked}: ${t("blAlive")} ${d.alive}, ${t("blDead")} ${d.dead}${d.blocked ? `, ${t("blBlocked")} ${d.blocked}` : ""}`);
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
     setChecking404(false);
   };
 
   const handleCheckXr = async () => {
-    setCheckingXr(true); setActionMsg('');
-    const ids = selected.size > 0 ? [...selected] : [];
+    setCheckingXr(true); setActionMsg("");
     try {
-      const res = await fetch('/api/backlinks/check-xr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteDbId, ids }),
+      const res = await fetch("/api/backlinks/check-xr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteDbId, ids: [] }),
       });
       const d = await res.json();
       setActionMsg(`✓ XML River: ${t("idxChecked")} ${d.checked}`);
-      await load();
-    } catch (e: any) { setActionMsg(`✗ ${e.message}`); }
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
     setCheckingXr(false);
   };
 
-  const handleExport = () => {
-    const csv = ['url,title,alive,xr_status,2index,added']
-      .concat(links.map(l => `"${l.url}","${l.title ?? ''}",${l.isAlive ?? ''},${l.xrStatus ?? ''},${l.twoIndexStatus ?? ''},"${l.addedAt}"`))
-      .join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-    a.download = `backlinks-${siteDbId}.csv`; a.click();
+  // ── export: the current filter, not the visible page — that is what "export" means to
+  //    someone who filtered to "missing" and wants a work list for the contractor ──
+
+  const handleExport = async () => {
+    try {
+      const qs = filtersToParams(filters);
+      qs.set("siteDbId", siteDbId);
+      qs.set("pageSize", "all");
+      qs.set("sort", sort);
+      const res = await fetch(`/api/backlinks?${qs.toString()}`);
+      const d = await res.json();
+      const all: BacklinkRow[] = d.rows ?? [];
+      const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      // rel follows the same precedence as the cell and the server-side filter: our check
+      // when it found the link, Ahrefs otherwise.
+      const relOf = (r: BacklinkRow) => {
+        if (r.checkStatus === "found") {
+          const parts = [r.checkNofollow && "nofollow", r.checkSponsored && "sponsored", r.checkUgc && "ugc"].filter(Boolean);
+          return parts.length ? parts.join("|") : "dofollow";
+        }
+        const parts = [!r.apiDofollow && "nofollow", r.apiSponsored && "sponsored", r.apiUgc && "ugc"].filter(Boolean);
+        return parts.length ? parts.join("|") : "dofollow";
+      };
+      const csv = ["url_from,url_to,domain,favorite,placement,anchor,rel,dr,page,xr_status,sources,added_at"]
+        .concat(all.map(r => [
+          r.urlFrom, r.urlTo, r.domainFrom, r.favorite ? "1" : "0", r.checkStatus,
+          r.checkAnchor || r.apiAnchor, relOf(r), r.apiDr ?? "", r.pageStatus, r.xrStatus,
+          r.sources.join("|"), r.addedAt,
+        ].map(esc).join(",")))
+        .join("\n");
+      const blob = new Blob([csv], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `backlinks-${siteDbId}.csv`;
+      a.click();
+    } catch (e) { setActionMsg(`✗ ${(e as Error).message}`); }
   };
+
+  const [ops, setOps] = useState<IndexOpRow[]>([]);
+  const [showOps, setShowOps] = useState(false);
+  const [opsLoading, setOpsLoading] = useState(false);
 
   const loadOps = async () => {
     setOpsLoading(true);
     try {
       const res = await fetch(`/api/indexing/sitemap/operations?siteDbId=${siteDbId}&limit=30`);
       const d = await res.json();
-      setOps((d.ops ?? []).filter((o: any) => o.type.startsWith('backlink')));
+      setOps((d.ops ?? []).filter((o: IndexOpRow) => o.type.startsWith("backlink")));
     } catch {}
     setOpsLoading(false);
   };
 
   const toggleSel = (id: string) => setSelected(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
   });
-  const toggleAll = () => setSelected(prev =>
-    prev.size === links.length && links.length > 0 ? new Set() : new Set(links.map(l => l.id))
-  );
+  const toggleAll = () => setSelected(prev => {
+    const pageIds = rows.map(r => r.id);
+    const allOnPage = pageIds.length > 0 && pageIds.every(id => prev.has(id));
+    const n = new Set(prev);
+    pageIds.forEach(id => (allOnPage ? n.delete(id) : n.add(id)));
+    return n;
+  });
 
-  const displayed = links.slice(0, displayLimit);
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+
+  // rel precedence, shared by the cell and the export: our check's flags when it found the
+  // link, Ahrefs' otherwise.
+  const relParts = (r: BacklinkRow): { label: string; color: string }[] => {
+    if (r.checkStatus === "found") {
+      return [
+        ...(r.checkNofollow ? [{ label: "nofollow", color: "#94a3b8" }] : []),
+        ...(r.checkSponsored ? [{ label: "sponsored", color: "#a78bfa" }] : []),
+        ...(r.checkUgc ? [{ label: "ugc", color: "#22d3ee" }] : []),
+      ];
+    }
+    return [
+      ...(!r.apiDofollow ? [{ label: "nofollow", color: "#94a3b8" }] : []),
+      ...(r.apiSponsored ? [{ label: "sponsored", color: "#a78bfa" }] : []),
+      ...(r.apiUgc ? [{ label: "ugc", color: "#22d3ee" }] : []),
+    ];
+  };
+
+  const sel = <V extends string | number | boolean>(value: V, onChange: (v: string) => void, options: { v: string; l: string }[], title: string) => (
+    <select value={String(value)} title={title} onChange={e => onChange(e.target.value)}
+      style={{ padding: "5px 8px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "11px", cursor: "pointer" }}>
+      {options.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+    </select>
+  );
 
   return (
     <div style={{ padding: "24px 32px", display: "flex", flexDirection: "column", gap: "20px" }}>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
+      {/* The provider's view of the link graph, above the tracked list. Kept separate rather
+          than merged: this one answers "what points at me", the list below answers "did the
+          link I built survive". Merging them would lose the second question. */}
+      <BacklinkProfile siteDbId={siteDbId} />
+
       {/* ── Header ── */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
         <h2 style={{ fontSize: "17px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("backlinksTitle")}</h2>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-          <button onClick={() => handleCheck404(true)} disabled={checking404}
-            style={{ display: "flex", alignItems: "center", gap: "5px", padding: "7px 13px", borderRadius: "8px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: checking404 ? "not-allowed" : "pointer", opacity: checking404 ? 0.6 : 1 }}>
+          <button onClick={() => setImportOpen(true)}
+            style={{ padding: "7px 13px", borderRadius: "8px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+            {t("bluiImport")}
+          </button>
+          <BacklinkSyncButton siteDbId={siteDbId} onFinished={() => { void load(); }} />
+          <button onClick={handleCheck404} disabled={checking404}
+            style={{ padding: "7px 13px", borderRadius: "8px", border: "none", background: "#64748B", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: checking404 ? "not-allowed" : "pointer", opacity: checking404 ? 0.6 : 1 }}>
             {checking404 ? t("backlinksChecking") : t("backlinksCheck404")}
           </button>
           <button onClick={handleCheckXr} disabled={checkingXr}
-            style={{ display: "flex", alignItems: "center", gap: "5px", padding: "7px 13px", borderRadius: "8px", border: "none", background: "#10B981", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: checkingXr ? "not-allowed" : "pointer", opacity: checkingXr ? 0.6 : 1 }}>
+            style={{ padding: "7px 13px", borderRadius: "8px", border: "none", background: "#10B981", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: checkingXr ? "not-allowed" : "pointer", opacity: checkingXr ? 0.6 : 1 }}>
             {checkingXr ? t("backlinksChecking") : t("backlinksIndexXr")}
           </button>
           <button onClick={handleExport}
             style={{ padding: "7px 13px", borderRadius: "8px", border: "none", background: "#F59E0B", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-            {t("backlinksExport")}
+            {t("bluiExport")}
           </button>
         </div>
       </div>
 
-      {/* ── Stats bar ── */}
-      <div style={{ display: "flex", gap: "20px", flexWrap: "wrap", fontSize: "13px" }}>
+      {/* ── Placement verification progress (background run) ── */}
+      {verify && (
+        <div style={{ background: "var(--color-card)", border: "1px solid rgba(59,130,246,0.3)", borderRadius: "10px", padding: "10px 14px", display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{ width: 16, height: 16, border: "2px solid var(--color-border)", borderTopColor: "#3B82F6", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+          <span style={{ fontSize: "12px", fontWeight: 600, color: "#60a5fa", whiteSpace: "nowrap" }}>{t("blchkRunning")}</span>
+          <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--color-border)", overflow: "hidden" }}>
+            <div style={{ width: `${Math.min(100, verify.progress)}%`, height: "100%", background: "#3B82F6", transition: "width 0.5s" }} />
+          </div>
+          <span style={{ fontSize: "12px", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{verify.progress}% · {verify.rowsSeen}</span>
+        </div>
+      )}
+
+      {/* ── Stats bar — server-side over the whole filtered set, not the visible page ── */}
+      <div style={{ display: "flex", gap: "20px", flexWrap: "wrap", fontSize: "13px", alignItems: "center" }}>
         {[
-          { label: t("backlinksTotal"), value: stats.total ?? 0, color: "var(--color-text-primary)" },
-          { label: t("backlinksDead"),  value: stats.dead   ?? 0, color: "#F87171" },
-          { label: t("backlinksAlive"), value: stats.alive  ?? 0, color: "#4ADE80" },
-          { label: t("backlinksXrIndexed"), value: stats.xrIndexed ?? 0, color: "#60a5fa" },
+          { label: t("backlinksTotal"), value: stats?.total ?? 0, color: "var(--color-text-primary)" },
+          { label: t("blchkFound"), value: stats?.found ?? 0, color: "#4ADE80" },
+          { label: t("blchkMissing"), value: stats?.missing ?? 0, color: "#F87171" },
+          { label: t("blchkBlocked"), value: stats?.blocked ?? 0, color: "#FBBF24" },
+          { label: t("blchkUnchecked"), value: stats?.unchecked ?? 0, color: "var(--color-text-secondary)" },
+          { label: tp("bluiFilterLost"), value: stats?.apiLost ?? 0, color: "#a78bfa" },
         ].map(({ label, value, color }) => (
           <span key={label} style={{ fontWeight: 600 }}>
             {label} <span style={{ color }}>{value}</span>
           </span>
         ))}
-        {actionMsg && <span style={{ color: actionMsg.startsWith('✓') ? "#4ADE80" : "#F87171", fontWeight: 600 }}>{actionMsg}</span>}
+        <span style={{ fontWeight: 600 }}>
+          <Star size={12} color="#F59E0B" style={{ display: "inline", verticalAlign: "-1px" }} fill="#F59E0B" />{" "}
+          <span style={{ color: "#F59E0B" }}>{stats?.favorites ?? 0}</span>
+        </span>
+        {actionMsg && <span style={{ color: actionMsg.startsWith("✓") ? "#4ADE80" : "#F87171", fontWeight: 600 }}>{actionMsg}</span>}
       </div>
 
-      {/* ── Add URLs block ── */}
-      <div style={{ background: "var(--color-card)", borderRadius: "12px", border: "1px solid var(--color-border)", overflow: "hidden" }}>
-        <div style={{ padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{t("backlinksAdd")}</span>
-          <button onClick={() => setShowAdd(o => !o)}
-            style={{ fontSize: "12px", padding: "4px 12px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer" }}>
-            {showAdd ? "▲" : "▼"}
+      {/* ── Filters ── */}
+      <div style={{ background: "var(--color-card)", borderRadius: "12px", border: "1px solid var(--color-border)", padding: "12px 16px", display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+          {sel(filters.status, v => updateFilters({ status: v }), [
+            { v: "", l: `${t("bluiFilterStatus")}: —` },
+            { v: "found", l: `✓ ${t("blchkFound")}` },
+            { v: "missing", l: `✗ ${t("blchkMissing")}` },
+            { v: "blocked", l: `⚠ ${t("blchkBlocked")}` },
+            { v: "error", l: `⚠ ${t("blchkError")}` },
+            { v: "unchecked", l: t("blchkUnchecked") },
+          ], t("bluiFilterStatus"))}
+          {sel(filters.rel, v => updateFilters({ rel: v }), [
+            { v: "", l: `${t("bluiFilterRel")}: —` },
+            { v: "dofollow", l: "dofollow" },
+            { v: "nofollow", l: "nofollow" },
+          ], t("bluiFilterRel"))}
+          {sel(filters.source, v => updateFilters({ source: v }), [
+            { v: "", l: `${t("bluiFilterSource")}: —` },
+            { v: "api", l: tp("bluiSourceApi") },
+            { v: "csv", l: t("bluiSourceCsv") },
+            { v: "manual", l: t("bluiSourceManual") },
+          ], t("bluiFilterSource"))}
+          {sel(sort, v => { setSort(v); setPage(1); }, [
+            { v: "added_desc", l: t("bluiSortNewest") },
+            { v: "dr_desc", l: t("bluiColDr") },
+            { v: "first_seen_desc", l: t("bluiSortFirstSeen") },
+            { v: "last_seen_desc", l: t("bluiSortLastSeen") },
+            { v: "checked_desc", l: t("blchkLastCheck") },
+            { v: "domain_asc", l: t("bluiColDonor") },
+          ], t("bluiFilterReset"))}
+          <button onClick={() => { setFilters({ status: "", rel: "", source: "", domain: "", drMin: "", drMax: "", favorite: false, lost: false }); setDomainInput(""); setDrInput({ min: "", max: "" }); setPage(1); }}
+            style={{ padding: "5px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "11px", cursor: "pointer" }}>
+            {t("bluiFilterReset")}
           </button>
         </div>
-        {showAdd && (
-          <div style={{ padding: "0 16px 14px", borderTop: "1px solid var(--color-border)", display: "flex", flexDirection: "column", gap: "8px" }}>
-            <textarea
-              value={addText} onChange={e => setAddText(e.target.value)}
-              placeholder={t("backlinksAddPlaceholder")}
-              rows={6}
-              style={{ width: "100%", fontSize: "12px", padding: "8px 10px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", resize: "vertical", fontFamily: "monospace", boxSizing: "border-box", marginTop: "10px" }}
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            value={domainInput} onChange={e => setDomainInput(e.target.value)}
+            onBlur={() => updateFilters({ domain: domainInput.trim().toLowerCase() })}
+            onKeyDown={e => { if (e.key === "Enter") updateFilters({ domain: domainInput.trim().toLowerCase() }); }}
+            placeholder={t("bluiFilterDomain")}
+            style={{ padding: "5px 8px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "11px", width: 160 }}
+          />
+          <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t("bluiFilterDr")}</span>
+          {(["min", "max"] as const).map(bound => (
+            <input
+              key={bound} type="number" value={drInput[bound]}
+              onChange={e => setDrInput(prev => ({ ...prev, [bound]: e.target.value }))}
+              onBlur={() => updateFilters({ drMin: drInput.min, drMax: drInput.max })}
+              onKeyDown={e => { if (e.key === "Enter") updateFilters({ drMin: drInput.min, drMax: drInput.max }); }}
+              placeholder={bound}
+              style={{ padding: "5px 8px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "11px", width: 64 }}
             />
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button onClick={handleAdd} disabled={adding || !addText.trim()}
-                style={{ padding: "7px 18px", borderRadius: "8px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "12px", fontWeight: 700, cursor: adding ? "not-allowed" : "pointer", opacity: adding ? 0.7 : 1 }}>
-                {adding ? t("backlinksChecking") : t("backlinksAddBtn")}
-              </button>
-            </div>
-          </div>
-        )}
+          ))}
+          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: "pointer" }}>
+            <input type="checkbox" checked={filters.favorite} onChange={e => updateFilters({ favorite: e.target.checked })} style={{ width: 13, height: 13, accentColor: "#F59E0B", cursor: "pointer" }} />
+            {t("bluiFavoriteOnly")}
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "11px", color: "var(--color-text-secondary)", cursor: "pointer" }}>
+            <input type="checkbox" checked={filters.lost} onChange={e => updateFilters({ lost: e.target.checked })} style={{ width: 13, height: 13, accentColor: "#a78bfa", cursor: "pointer" }} />
+            {tp("bluiFilterLost")}
+          </label>
+        </div>
       </div>
 
       {/* ── Loading ── */}
@@ -2153,89 +2648,159 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
       )}
 
       {/* ── Empty state ── */}
-      {!loading && links.length === 0 && (
+      {!loading && total === 0 && (
         <div style={{ textAlign: "center", padding: "50px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
           <Link2 size={36} color="var(--color-text-secondary)" style={{ opacity: 0.25 }} />
-          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", maxWidth: "360px", lineHeight: 1.6 }}>{t("backlinksEmpty")}</p>
+          <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", maxWidth: "420px", lineHeight: 1.6 }}>{t("bluiEmpty")}</p>
+          <button onClick={() => setImportOpen(true)}
+            style={{ padding: "8px 18px", borderRadius: "8px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "12px", fontWeight: 700, cursor: "pointer" }}>
+            {t("bluiImport")}
+          </button>
+          <BacklinkSyncButton siteDbId={siteDbId} onFinished={() => { void load(); }} />
         </div>
       )}
 
-      {/* ── Selection toolbar ── */}
-      {selected.size > 0 && (
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 12px", background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.25)", borderRadius: "8px", flexWrap: "wrap" }}>
-          <span style={{ fontSize: "12px", color: "#60a5fa", fontWeight: 600 }}>{selected.size} {t("backlinksSelected")}</span>
-          <button onClick={() => handleCheck404(false)} disabled={checking404}
-            style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid rgba(59,130,246,0.35)", background: "transparent", color: "#60a5fa", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
-            Check 404
+      {/* ── Bulk actions: by selection when rows are picked, by the live filter otherwise ── */}
+      {!loading && total > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "12px", color: selected.size > 0 ? "#60a5fa" : "var(--color-text-secondary)", fontWeight: 600 }}>
+            {selected.size > 0 ? `${selected.size} ${t("backlinksSelected")}` : `${stats?.total ?? 0} ${t("backlinksTotal").toLowerCase()}`}
+          </span>
+          <button onClick={handleVerify} disabled={!!verify}
+            style={{ padding: "5px 12px", borderRadius: "6px", border: "1px solid rgba(59,130,246,0.35)", background: "transparent", color: "#60a5fa", fontSize: "11px", fontWeight: 600, cursor: verify ? "not-allowed" : "pointer", opacity: verify ? 0.5 : 1 }}>
+            {verify ? t("blchkRunning") : t("bluiBulkVerify")}
           </button>
-          <button onClick={handleCheckXr} disabled={checkingXr}
-            style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid rgba(16,185,129,0.35)", background: "transparent", color: "#34d399", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
-            {t("backlinksIndexXr")}
+          {selected.size > 0 && (
+            <button onClick={handleBulkFavorite}
+              style={{ padding: "5px 12px", borderRadius: "6px", border: "1px solid rgba(245,158,11,0.35)", background: "transparent", color: "#FBBF24", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
+              {t("bluiBulkFavorite")}
+            </button>
+          )}
+          <button onClick={() => handleDelete()}
+            style={{ padding: "5px 12px", borderRadius: "6px", border: "1px solid rgba(239,68,68,0.35)", background: "transparent", color: "#f87171", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
+            {t("bluiBulkDelete")}
           </button>
-          <button onClick={() => handleDelete([...selected])}
-            style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid rgba(239,68,68,0.35)", background: "transparent", color: "#f87171", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
-            {t("backlinksDelete")}
-          </button>
-          <button onClick={() => setSelected(new Set())}
-            style={{ padding: "4px 8px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "11px", cursor: "pointer" }}>
-            {t("backlinksClearSel")}
-          </button>
+          {selected.size > 0 && (
+            <button onClick={() => setSelected(new Set())}
+              style={{ padding: "5px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "11px", cursor: "pointer" }}>
+              {t("backlinksClearSel")}
+            </button>
+          )}
         </div>
       )}
 
       {/* ── Table ── */}
-      {links.length > 0 && (
+      {!loading && total > 0 && (
         <div style={{ background: "var(--color-card)", borderRadius: "12px", border: "1px solid var(--color-border)", overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", minWidth: "700px" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", minWidth: "1050px" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--color-border)", background: "rgba(255,255,255,0.02)" }}>
                   <th style={{ padding: "9px 12px", width: 32 }}>
-                    <input type="checkbox" checked={selected.size === links.length && links.length > 0} onChange={toggleAll}
+                    <input type="checkbox" checked={rows.length > 0 && rows.every(r => selected.has(r.id))} onChange={toggleAll}
                       style={{ cursor: "pointer", width: 13, height: 13, accentColor: "#3B82F6" }} />
                   </th>
-                  {[t("backlinksColUrl"), t("backlinksColDate"), t("backlinksColTitle"), t("backlinksColAlive"), t("backlinksColXr"), t("backlinks2index"), t("backlinksColActions")].map(h => (
+                  <th style={{ width: 34 }} />
+                  {[t("bluiColDonor"), t("bluiColTarget"), t("bluiColPlacement"), t("bluiColAnchor"), t("bluiColRel"), t("bluiColDr"), t("bluiColPage"), t("backlinksColXr"), t("bluiColSource")].map(h => (
                     <th key={h} style={{ textAlign: "left", padding: "9px 12px", color: "var(--color-text-secondary)", fontWeight: 500, fontSize: "10px", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
+                  <th style={{ padding: "9px 12px", width: 60 }} />
                 </tr>
               </thead>
               <tbody>
-                {displayed.map((link, i) => {
+                {rows.map((link, i) => {
                   const isSelected = selected.has(link.id);
-                  const path = link.url.replace(/^https?:\/\/[^/]+/, "") || "/";
-                  const host = (() => { try { return new URL(link.url).hostname; } catch { return link.url; } })();
+                  const donorHost = link.domainFrom || (() => { try { return new URL(link.urlFrom).hostname; } catch { return link.urlFrom; } })();
+                  const donorPath = link.urlFrom.replace(/^https?:\/\/[^/]+/, "") || "/";
+                  const targetHost = (() => { try { return link.urlTo ? new URL(link.urlTo).hostname : ""; } catch { return ""; } })();
+                  const targetPath = link.urlTo.replace(/^https?:\/\/[^/]+/, "") || "/";
+                  const rels = relParts(link);
                   return (
                     <tr key={link.id} style={{ borderBottom: "1px solid var(--color-border)", background: isSelected ? "rgba(59,130,246,0.05)" : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)" }}>
                       <td style={{ padding: "8px 12px" }}>
                         <input type="checkbox" checked={isSelected} onChange={() => toggleSel(link.id)}
                           style={{ cursor: "pointer", width: 13, height: 13, accentColor: "#3B82F6" }} />
                       </td>
-                      {/* URL */}
-                      <td style={{ padding: "8px 12px", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        <div style={{ fontWeight: 600, fontSize: "11px", color: "var(--color-text-secondary)", marginBottom: "1px" }}>{host}</div>
-                        <a href={link.url} target="_blank" rel="noreferrer" title={link.url}
+                      {/* ⭐ favourite — DB-backed, not localStorage */}
+                      <td style={{ padding: "8px 6px" }}>
+                        <button onClick={() => toggleFavorite(link)} title={t("bluiFavorite")}
+                          style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex" }}>
+                          <Star size={14} color={link.favorite ? "#F59E0B" : "var(--color-border)"} fill={link.favorite ? "#F59E0B" : "none"} />
+                        </button>
+                      </td>
+                      {/* Donor page */}
+                      <td style={{ padding: "8px 12px", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <div style={{ fontWeight: 600, fontSize: "11px", color: "var(--color-text-secondary)", marginBottom: "1px" }}>{donorHost}</div>
+                        <a href={link.urlFrom} target="_blank" rel="noreferrer" title={link.urlFrom}
                           style={{ color: "#60a5fa", textDecoration: "none", fontSize: "11px" }}
                           onMouseOver={e => (e.currentTarget.style.textDecoration = "underline")}
-                          onMouseOut={e => (e.currentTarget.style.textDecoration = "none")}>{path || "/"}</a>
+                          onMouseOut={e => (e.currentTarget.style.textDecoration = "none")}>{donorPath || "/"}</a>
                       </td>
-                      {/* Date */}
-                      <td style={{ padding: "8px 12px", fontSize: "11px", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>
-                        {timeAgo(new Date(link.addedAt))}
+                      {/* Our page */}
+                      <td style={{ padding: "8px 12px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {link.urlTo ? (
+                          <span title={link.checkTargetOk === false ? t("blchkTargetMismatch") : link.urlTo} style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+                            {link.checkTargetOk === false && <span style={{ color: "#FBBF24", fontSize: "10px", fontWeight: 700 }}>⚠ {t("blchkTargetMismatch")}</span>}
+                            <a href={link.urlTo} target="_blank" rel="noreferrer"
+                              style={{ color: link.checkTargetOk === false ? "#FBBF24" : "#93c5fd", textDecoration: "none", fontSize: "11px" }}
+                              onMouseOver={e => (e.currentTarget.style.textDecoration = "underline")}
+                              onMouseOut={e => (e.currentTarget.style.textDecoration = "none")}>
+                              {targetHost}{targetPath === "/" ? "" : targetPath}
+                            </a>
+                          </span>
+                        ) : <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>}
                       </td>
-                      {/* Title */}
-                      <td style={{ padding: "8px 12px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px", color: "var(--color-text-primary)" }}>
-                        {link.title ?? <span style={{ color: "rgba(255,255,255,0.2)" }}>—</span>}
-                      </td>
-                      {/* Alive */}
+                      {/* Placement — our own check for the link itself. blocked is AMBER:
+                          the site refused our bot, which is not "the link was removed". */}
                       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
-                        {link.isAlive === null || link.isAlive === undefined
-                          ? <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>
-                          : link.isAlive
-                            ? <span style={{ color: "#4ADE80", fontWeight: 600, fontSize: "11px" }}>✓ Alive</span>
-                            : <span style={{ color: "#F87171", fontWeight: 600, fontSize: "11px" }}>✗ Dead</span>
-                        }
+                        {(() => {
+                          const meta: Record<string, { c: string; m: string; l: string }> = {
+                            found: { c: "#4ADE80", m: "✓", l: t("blchkFound") },
+                            missing: { c: "#F87171", m: "✗", l: t("blchkMissing") },
+                            blocked: { c: "#FBBF24", m: "⚠", l: t("blchkBlocked") },
+                            error: { c: "#FBBF24", m: "⚠", l: t("blchkError") },
+                            unchecked: { c: "rgba(255,255,255,0.25)", m: "—", l: t("blchkUnchecked") },
+                          };
+                          const s = meta[link.checkStatus] ?? meta.unchecked;
+                          return (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                              <span title={link.checkStatus === "error" ? link.checkError : s.l} style={{ color: s.c, fontWeight: 600, fontSize: "11px" }}>{s.m} {s.m === "—" ? "" : s.l}</span>
+                              {/* Ahrefs still sees it after JS runs: raw-HTML "missing" is not a removal */}
+                              {link.checkStatus === "missing" && link.apiSeen && link.apiJsCrawl && (
+                                <span title={t("blchkJsHint")} style={{ fontSize: "9px", fontWeight: 700, color: "#FBBF24", border: "1px solid rgba(251,191,36,0.4)", borderRadius: "4px", padding: "0 4px" }}>JS</span>
+                              )}
+                            </span>
+                          );
+                        })()}
                       </td>
-                      {/* XR */}
+                      {/* Anchor: our check first; Ahrefs' marked as such when it's all we have */}
+                      <td style={{ padding: "8px 12px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "11px" }}>
+                        {link.checkAnchor ? <span style={{ color: "var(--color-text-primary)" }}>{link.checkAnchor}</span>
+                          : link.apiAnchor ? <span style={{ color: "var(--color-text-secondary)" }}>{link.apiAnchor} <span style={{ fontSize: "9px", opacity: 0.7 }}>({tp("bluiAnchorFromApi")})</span></span>
+                          : <span style={{ color: "rgba(255,255,255,0.2)" }}>—</span>}
+                      </td>
+                      {/* rel */}
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                        {rels.length > 0 ? rels.map(b => (
+                          <span key={b.label} title={link.checkRel || undefined} style={{ display: "inline-block", fontSize: "9px", fontWeight: 700, color: b.color, border: `1px solid ${b.color}55`, borderRadius: "4px", padding: "0 4px", marginRight: "3px" }}>{b.label}</span>
+                        )) : <span style={{ color: "#4ADE80", fontSize: "10px", fontWeight: 600 }}>dofollow</span>}
+                      </td>
+                      {/* DR */}
+                      <td style={{ padding: "8px 12px", fontSize: "11px", color: "var(--color-text-primary)", fontWeight: 600, whiteSpace: "nowrap" }}>
+                        {link.apiDr != null ? Math.round(link.apiDr) : <span style={{ color: "rgba(255,255,255,0.2)", fontWeight: 400 }}>—</span>}
+                      </td>
+                      {/* Donor page availability — independent of placement: alive+missing is "they removed the link" */}
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                        {(() => {
+                          // Same palette rule as the old aliveStatus cell: blocked is amber,
+                          // a refusal to answer, never shown as a death.
+                          if (link.pageStatus === "alive") return <span style={{ color: "#4ADE80", fontWeight: 600, fontSize: "11px" }}>✓ {t("blAlive")}</span>;
+                          if (link.pageStatus === "dead") return <span style={{ color: "#F87171", fontWeight: 600, fontSize: "11px" }}>✗ {t("blDead")}</span>;
+                          if (link.pageStatus === "blocked") return <span style={{ color: "#FBBF24", fontWeight: 600, fontSize: "11px" }}>⚠ {t("blBlocked")}</span>;
+                          return <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>;
+                        })()}
+                      </td>
+                      {/* Indexation */}
                       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
                         {link.xrStatus
                           ? <span style={{ fontSize: "11px", color: link.xrStatus === "indexed" ? "#4ADE80" : link.xrStatus === "error" ? "#F87171" : "#FBBF24", fontWeight: 600 }}>
@@ -2244,18 +2809,20 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
                           : <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>
                         }
                       </td>
-                      {/* 2index */}
-                      <td style={{ padding: "8px 12px" }}>
-                        {link.twoIndexStatus === "submitted"
-                          ? <span style={{ fontSize: "11px", color: "#34d399", fontWeight: 600 }}>✓ {t("idxSent")}</span>
-                          : <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>
-                        }
+                      {/* Sources */}
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                        {link.sources.length > 0 ? link.sources.map(src => (
+                          <span key={src} style={{ display: "inline-block", fontSize: "9px", fontWeight: 700, borderRadius: "4px", padding: "0 5px", marginRight: "3px",
+                            ...(src === "api" ? { color: "#60a5fa", border: "1px solid rgba(96,165,250,0.4)" } : src === "csv" ? { color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)" } : { color: "var(--color-text-secondary)", border: "1px solid var(--color-border)" }) }}>
+                            {src === "api" ? tp("bluiSourceApi") : src === "csv" ? t("bluiSourceCsv") : t("bluiSourceManual")}
+                          </span>
+                        )) : <span style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px" }}>—</span>}
                       </td>
-                      {/* Actions */}
+                      {/* Row delete */}
                       <td style={{ padding: "8px 12px" }}>
                         <button onClick={() => handleDelete([link.id])}
                           style={{ padding: "3px 9px", borderRadius: "5px", border: "1px solid rgba(239,68,68,0.3)", background: "transparent", color: "#f87171", fontSize: "10px", fontWeight: 600, cursor: "pointer" }}>
-                          {t("backlinksDelete")}
+                          {t("bluiBulkDelete")}
                         </button>
                       </td>
                     </tr>
@@ -2264,18 +2831,30 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
               </tbody>
             </table>
           </div>
-          {links.length > displayLimit && (
-            <div style={{ padding: "12px", textAlign: "center", borderTop: "1px solid var(--color-border)" }}>
-              <button onClick={() => setDisplayLimit(n => n + 100)}
-                style={{ padding: "7px 20px", borderRadius: "20px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "12px", cursor: "pointer" }}>
-                {t("backlinksShowMore")} ({links.length - displayLimit})
+          {/* ── Server-side pagination ── */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "10px 12px", borderTop: "1px solid var(--color-border)", flexWrap: "wrap" }}>
+            <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}
+              style={{ padding: "5px 8px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "11px", cursor: "pointer" }}>
+              {[50, 100, 250, 500].map(n => <option key={n} value={n}>{n} {t("bluiPerPage")}</option>)}
+            </select>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}
+                style={{ display: "flex", padding: "4px", border: "1px solid var(--color-border)", background: "transparent", borderRadius: "6px", color: "var(--color-text-secondary)", cursor: page <= 1 ? "not-allowed" : "pointer", opacity: page <= 1 ? 0.4 : 1 }}>
+                <ChevronLeft size={14} />
+              </button>
+              <span style={{ fontSize: "12px", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>
+                {t("bluiPage")} {page} {t("bluiOf")} {pages}
+              </span>
+              <button disabled={page >= pages} onClick={() => setPage(p => Math.min(pages, p + 1))}
+                style={{ display: "flex", padding: "4px", border: "1px solid var(--color-border)", background: "transparent", borderRadius: "6px", color: "var(--color-text-secondary)", cursor: page >= pages ? "not-allowed" : "pointer", opacity: page >= pages ? 0.4 : 1 }}>
+                <ChevronRight size={14} />
               </button>
             </div>
-          )}
+          </div>
         </div>
       )}
 
-      {/* ── Operations history ── */}
+      {/* ── Operations history (legacy) ── */}
       <div style={{ background: "var(--color-card)", borderRadius: "12px", border: "1px solid var(--color-border)", overflow: "hidden" }}>
         <div style={{ padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>🕐 {t("backlinksOpsTitle")}</span>
@@ -2302,13 +2881,13 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {ops.map((op: any, i: number) => (
+                  {ops.map((op: IndexOpRow, i: number) => (
                     <tr key={op.id} style={{ borderTop: "1px solid var(--color-border)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)" }}>
                       <td style={{ padding: "8px 14px", fontWeight: 600, color: "var(--color-text-primary)" }}>
-                        {op.type === 'backlink_check_alive' ? 'Check 404' : op.type === 'backlink_check_xr' ? 'XML River' : op.type}
+                        {op.type === "backlink_check_alive" ? t("opCheck404") : op.type === "backlink_check_xr" ? t("opXmlRiver") : op.type}
                       </td>
                       <td style={{ padding: "8px 14px" }}>
-                        <span style={{ color: op.result === 'success' ? "#4ADE80" : "#F87171", fontWeight: 600 }}>{op.result}</span>
+                        <span style={{ color: op.result === "success" ? "#4ADE80" : "#F87171", fontWeight: 600 }}>{op.result}</span>
                         {op.urlCount != null && <span style={{ color: "var(--color-text-secondary)", marginLeft: 4 }}>· {op.urlCount} URL</span>}
                         {op.detail && <span style={{ color: "var(--color-text-secondary)", marginLeft: 4 }}>· {op.detail}</span>}
                       </td>
@@ -2321,28 +2900,122 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
           </div>
         )}
       </div>
+
+      {importOpen && (
+        <BacklinkImportDialog
+          siteDbId={siteDbId}
+          onClose={() => setImportOpen(false)}
+          onImported={r => { setActionMsg(`✓ ${subst("bluiImportDone", r)}`); void load(); }}
+        />
+      )}
     </div>
   );
+}
+
+// One row of /api/indexing/sitemap/urls — the Prisma SitemapUrl fields this tab reads (JSON
+// form: DateTime → ISO string, nullable column → null), plus the `audit` summary the route
+// always attaches.
+interface SitemapUrlRow {
+  id: string;
+  url: string;
+  sourceSitemap: string | null;
+  sitemapType: string;
+  lastmod: string | null;
+  lastmodValid: boolean | null;
+  imageCount: number;
+  videoCount: number;
+  newsCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  inventoryStatus: string;
+  changeStatus: string;
+  lastmodReliability: string;
+  googleStatus: string | null;
+  googleChecked: string | null;
+  xrStatus: string | null;
+  xrChecked: string | null;
+  twoIndexStatus: string | null;
+  neuralStatus: string | null;
+  neuralAt: string | null;
+  neuralQueue: string | null;
+  audit: { covered: boolean; issueCount: number };
+}
+
+// Per-status counts the same endpoint returns; every key is a number (0 when nothing matches).
+interface SitemapCounters {
+  total: number;
+  indexed: number;
+  notIndexed: number;
+  notChecked: number;
+  neuralSubmitted: number;
+  neuralChecked: number;
+  twoIndexSubmitted: number;
+  active: number;
+  added: number;
+  changed: number;
+  pendingMissing: number;
+  missing: number;
+  suspiciousLastmod: number;
+  auditCovered: number;
+}
+
+// Site-level sync metadata. `latestSync`/`summary` are non-optional in the type because the
+// render dereferences them directly under an `(…?.summary?.invalid ?? 0) > 0` guard; the state
+// starts empty (cast below), and that guard is what keeps the dereference safe before load.
+interface SitemapMeta {
+  lastSitemapSync?: string | null;
+  sitemapUrl?: string | null;
+  crawlInterval?: string | null;
+  siteUrl?: string | null;
+  latestSync: {
+    result: string | null;
+    summary: { invalid: number };
+    invalidExamples: string[];
+  };
+}
+
+// Doorway domain from /api/indexer/domains — only the picker fields are read here.
+interface IndexerDomainRow { id: string; domain: string }
+
+// Result banner of the NeuralIndexer / 2index submits (union of both response shapes).
+interface SubmitResultState {
+  ok?: boolean;
+  accepted?: number;
+  charged?: number | null;
+  balance?: number | null;
+  error?: string | null;
+  submitted?: number;
+  total?: number;
 }
 
 function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string }) {
   const { t } = useLanguage();
   // ── URL list state ──
-  const [urlRows,    setUrlRows]    = useState<any[]>([]);
-  const [counters,   setCounters]   = useState<any>({});
-  const [meta,       setMeta]       = useState<any>({});
+  const [urlRows,    setUrlRows]    = useState<SitemapUrlRow[]>([]);
+  // Cast: the counters/meta start genuinely empty and only arrive with the first loadUrls;
+  // every render that reads them is gated on counters.total > 0 or optional chains.
+  const [counters,   setCounters]   = useState<SitemapCounters>({} as SitemapCounters);
+  const [meta,       setMeta]       = useState<SitemapMeta>({} as SitemapMeta);
   const [total,      setTotal]      = useState(0);
   const [pages,      setPages]      = useState(1);
   const [page,       setPage]       = useState(1);
   const [statusFilter, setStatusFilter] = useState("all");
   const [search,     setSearch]     = useState("");
   const [loading,    setLoading]    = useState(false);
+  const [sortKey,    setSortKey]    = useState("");
+  const [sortDir,    setSortDir]    = useState<"asc" | "desc">("desc");
+  const [selectingAll, setSelectingAll] = useState(false);
 
   // ── Sitemap sync state ──
   const [syncing,    setSyncing]    = useState(false);
   const [syncError,  setSyncError]  = useState("");
+  const [syncNotice, setSyncNotice] = useState("");
   const [customSitemapUrl, setCustomSitemapUrl] = useState("");
   const [crawlInterval, setCrawlInterval] = useState("disabled");
+  const [metadataChecking, setMetadataChecking] = useState(false);
+  const [metadataMsg, setMetadataMsg] = useState("");
+  const [auditStarting, setAuditStarting] = useState(false);
+  const [auditSeedMsg, setAuditSeedMsg] = useState("");
 
   // ── Selection ──
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -2353,14 +3026,16 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
   const [hasTwoIndex, setHasTwoIndex] = useState(false);
 
   // ── Custom Bot Farm Indexer ──
-  const [indexerDomains, setIndexerDomains] = useState<any[]>([]);
-  const [selectedFarmDomainId, setSelectedFarmDomainId] = useState("");
+  const [indexerDomains, setIndexerDomains] = useState<IndexerDomainRow[]>([]);
+  // "all" mirrors the Indexer's own default: let the queue distribute URLs across every doorway
+  // domain instead of making the operator pick one per submission.
+  const [selectedFarmDomainId, setSelectedFarmDomainId] = useState("all");
   const [submittingToFarm, setSubmittingToFarm] = useState(false);
   const [farmSubmitResult, setFarmSubmitResult] = useState<string | null>(null);
 
   // ── Submit state ──
   const [submitting,   setSubmitting]   = useState(false);
-  const [submitResult, setSubmitResult] = useState<any>(null);
+  const [submitResult, setSubmitResult] = useState<SubmitResultState | null>(null);
   const [nnQueue,      setNnQueue]      = useState<"slow"|"fast"|"yandex">("slow");
 
   // ── Google check ──
@@ -2372,16 +3047,19 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
   const [xrCheckMsg,  setXrCheckMsg]  = useState("");
 
   // ── Operations history ──
-  const [ops,      setOps]      = useState<any[]>([]);
+  const [ops,      setOps]      = useState<IndexOpRow[]>([]);
   const [showOps,  setShowOps]  = useState(false);
   const [opsLoading, setOpsLoading] = useState(false);
 
   // ── Load URL list ──
-  const loadUrls = async (pg = page, sf = statusFilter, sq = search) => {
+  // sk/sd default to the current sort state but are passed explicitly when the sort itself
+  // changes — setSortKey() won't be visible to this closure until the next render.
+  const loadUrls = async (pg = page, sf = statusFilter, sq = search, sk = sortKey, sd = sortDir) => {
     if (!siteDbId) return;
     setLoading(true);
     try {
       const params = new URLSearchParams({ siteDbId, page: String(pg), limit: "50", status: sf, search: sq });
+      if (sk) { params.set("sort", sk); params.set("dir", sd); }
       const res = await fetch(`/api/indexing/sitemap/urls?${params}`);
       const d = await res.json();
       setUrlRows(d.rows ?? []);
@@ -2419,23 +3097,63 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   // ── Sitemap sync ──
   const runSync = async () => {
-    setSyncing(true); setSyncError(""); setSubmitResult(null);
+    setSyncing(true); setSyncError(""); setSyncNotice(""); setSubmitResult(null);
     try {
       const res = await fetch("/api/indexing/sitemap/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siteDbId, sitemapUrl: customSitemapUrl || undefined }),
+        body: JSON.stringify({ siteDbId, sitemapUrl: customSitemapUrl || undefined, crawlInterval }),
       });
       const d = await res.json();
-      if (!res.ok) throw new Error(d.error ?? "Sync failed");
+      if (!res.ok) throw new Error(d.error ?? t("errSyncFailed"));
+      setSyncNotice(d.partial ? t("idxPartialSync") : t("idxSyncComplete"));
       await loadUrls(1, statusFilter, search);
-    } catch (e: any) { setSyncError(e.message); }
+    } catch (e) { setSyncError((e as Error).message); }
     setSyncing(false);
+  };
+
+  const verifyInventoryMetadata = async () => {
+    setMetadataChecking(true); setMetadataMsg("");
+    try {
+      const res = await fetch("/api/indexing/sitemap/metadata", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteDbId, ...(selected.size ? { urls: [...selected] } : {}) }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error ?? t("errSyncFailed"));
+      setMetadataMsg(t("idxMetadataVerified").replace("{n}", String(d.checked ?? 0)) + (d.errors ? ` · ${d.errors} ${t("idxErrors")}` : ""));
+      await loadUrls(page, statusFilter, search);
+    } catch (error) {
+      setMetadataMsg(`✗ ${(error as Error).message}`);
+    }
+    setMetadataChecking(false);
+  };
+
+  const startSitemapAudit = async () => {
+    setAuditStarting(true); setAuditSeedMsg("");
+    try {
+      const res = await fetch("/api/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId: siteDbId, maxPages: Math.max(10, Math.min(500, counters.active || 200)), seedFromSitemap: true }),
+      });
+      const d = await res.json();
+      if (res.status === 409 && d.error === "already_running") setAuditSeedMsg(t("idxAuditAlreadyRunning"));
+      else if (!res.ok) throw new Error(d.error ?? t("errSyncFailed"));
+      else setAuditSeedMsg(t("idxAuditStarted"));
+    } catch (error) {
+      setAuditSeedMsg(`✗ ${(error as Error).message}`);
+    }
+    setAuditStarting(false);
   };
 
   // ── Google URL Inspection check ──
   const runGoogleCheck = async () => {
-    const urls = selected.size > 0 ? [...selected] : urlRows.filter(r => !r.googleStatus).map(r => r.url);
+    // Nothing selected → every unchecked URL on the site, not just the page on screen.
+    const urls = selected.size > 0
+      ? [...selected]
+      : (await fetchAllRows("all", "")).filter(r => !r.googleStatus).map(r => r.url);
     if (!urls.length) return;
     setChecking(true); setCheckMsg("");
     try {
@@ -2449,21 +3167,24 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
         setCheckMsg(`⚠ ${t("idxGoogleScDomainError")}`);
       } else if (d.hint === "property_not_verified") {
         setCheckMsg(`⚠ ${t("idxGoogleNotVerifiedError")}`);
+      } else if (d.hint === "quota_exhausted") {
+        setCheckMsg(`⚠ ${t("idxAutoExhausted")}`);
       } else if (d.hint === "api_error") {
         setCheckMsg(`✗ ${d.detail ?? t("idxErrors")}`);
       } else {
         setCheckMsg(`✓ ${t("idxChecked")} ${d.checked ?? 0} URLs${d.errors ? ` · ${d.errors} ${t("idxErrors")}` : ""}`);
         await loadUrls(page, statusFilter, search);
       }
-    } catch (e: any) { setCheckMsg(`✗ ${e.message}`); }
+    } catch (e) { setCheckMsg(`✗ ${(e as Error).message}`); }
     setChecking(false);
   };
 
   // ── NeuralIndexer submit ──
   const runNeuralSubmit = async () => {
+    // The toolbar label counts "not sent yet" across the whole site, so the fallback must too.
     const urls = selected.size > 0
       ? [...selected]
-      : urlRows.filter(r => r.neuralStatus !== "submitted").map(r => r.url);
+      : (await fetchAllRows("all", "")).filter(r => r.neuralStatus !== "submitted").map(r => r.url);
     if (!urls.length) return;
     setSubmitting(true); setSubmitResult(null);
     try {
@@ -2481,13 +3202,16 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   // ── Private Bot Farm submit ──
   const runFarmSubmit = async () => {
-    if (!selectedFarmDomainId) {
-      setFarmSubmitResult("✗ Choose a domain first");
-      return;
-    }
+    // No guard on an empty selection any more: the picker defaults to "all", which the queue
+    // endpoint already understands as "spread these across every doorway domain, round-robin".
+    // The old check refused to submit while the select visibly showed a domain — the state
+    // started empty but the browser renders the first <option>, so the two disagreed and the
+    // button answered "choose a domain first" for a domain that was on screen.
+    // The label next to the button promises "All N URLs" — deliver the whole site, not the
+    // 50 rows of the current pagination page.
     const urls = selected.size > 0
       ? [...selected]
-      : urlRows.map(r => r.url);
+      : (await fetchAllRows("all", "")).map(r => r.url);
 
     if (!urls.length) return;
     setSubmittingToFarm(true);
@@ -2504,14 +3228,14 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       });
       const d = await res.json();
       if (res.ok && d.success) {
-        setFarmSubmitResult(`✓ Queued ${d.count} URLs`);
+        setFarmSubmitResult(`✓ ${t("farmQueuedN").replace("{n}", String(d.count))}`);
         setSelected(new Set());
         await loadUrls(page, statusFilter, search);
       } else {
-        setFarmSubmitResult(`✗ ${d.error || "Failed to submit"}`);
+        setFarmSubmitResult(`✗ ${d.error || t("farmFailedToSubmit")}`);
       }
-    } catch (e: any) {
-      setFarmSubmitResult(`✗ ${e.message}`);
+    } catch (e) {
+      setFarmSubmitResult(`✗ ${(e as Error).message}`);
     } finally {
       setSubmittingToFarm(false);
     }
@@ -2519,15 +3243,14 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   // ── XMLRiver / NeuralIndexer indexation check ──
   const runXrCheck = async (via: "xr" | "neural") => {
-    // If nothing selected — fetch ALL site URLs (not just current page)
+    // If nothing selected — fetch ALL site URLs (not just current page). The list API caps a
+    // single call at 200 rows, so the old one-shot limit=1000 fetch silently stopped there.
     let urls: string[];
     if (selected.size > 0) {
       urls = [...selected];
     } else {
       try {
-        const allRes = await fetch(`/api/indexing/sitemap/urls?siteDbId=${siteDbId}&page=1&limit=1000`);
-        const allData = await allRes.json();
-        urls = (allData.rows ?? []).map((r: any) => r.url);
+        urls = (await fetchAllRows("all", "")).map(r => r.url);
       } catch {
         urls = urlRows.map(r => r.url);
       }
@@ -2543,7 +3266,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
         body: JSON.stringify({ siteDbId, urls }),
       });
       const d = await res.json();
-      if (!res.ok) { setXrCheckMsg(`✗ ${d.error ?? "Error"}`); setXrChecking(false); return; }
+      if (!res.ok) { setXrCheckMsg(`✗ ${d.error ?? t("errGeneric")}`); setXrChecking(false); return; }
 
       // XMLRiver: synchronous result
       if (!d.pending) {
@@ -2558,7 +3281,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       // Neural: poll /status every 10s until done (no new tasks created)
       const checkId: string = d.checkId;
       const est: number = d.estimatedMinutes ?? 3;
-      setXrCheckMsg(`⏳ NeuralIndexer обрабатывает ${d.urlCount} URL (~${est} мин)...`);
+      setXrCheckMsg(t("neuralProcessing").replace("{n}", String(d.urlCount)).replace("{min}", String(est)));
 
       const maxAttempts = Math.max(30, est * 8); // 10s × attempts ≥ estimated time
       for (let i = 0; i < maxAttempts; i++) {
@@ -2566,7 +3289,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
         try {
           const sRes = await fetch(`/api/indexing/neural/status?checkId=${encodeURIComponent(checkId)}&siteDbId=${siteDbId}`);
           const s = await sRes.json();
-          if (s.failed) { setXrCheckMsg(`✗ NeuralIndexer: check failed`); break; }
+          if (s.failed) { setXrCheckMsg(`✗ ${t("neuralCheckFailed")}`); break; }
           if (s.done) {
             setXrCheckMsg(`✓ ${t("idxChecked")} ${s.checked} URLs · ${s.indexed} ${t("idxInIndex")}${s.charged != null ? ` · $${Number(s.charged).toFixed(4)}` : ""}`);
             await loadUrls(page, statusFilter, search);
@@ -2574,16 +3297,17 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
           }
           // Still processing — update progress
           const pct = s.totalLinks > 0 ? Math.round((s.checkedLinks / s.totalLinks) * 100) : 0;
-          setXrCheckMsg(`⏳ NeuralIndexer: ${s.checkedLinks ?? 0}/${s.totalLinks ?? d.urlCount} URL проверено${pct > 0 ? ` (${pct}%)` : ""}...`);
+          const prog = t("neuralProgress").replace("{checked}", String(s.checkedLinks ?? 0)).replace("{total}", String(s.totalLinks ?? d.urlCount));
+          setXrCheckMsg(pct > 0 ? `${prog} (${pct}%)` : prog);
         } catch { /* network error, retry */ }
       }
-    } catch (e: any) { setXrCheckMsg(`✗ ${(e as any).message}`); }
+    } catch (e) { setXrCheckMsg(`✗ ${(e as Error).message}`); }
     setXrChecking(false);
   };
 
   // ── 2index.ninja submit ──
   const runTwoIndexSubmit = async () => {
-    const urls = selected.size > 0 ? [...selected] : urlRows.map(r => r.url);
+    const urls = selected.size > 0 ? [...selected] : (await fetchAllRows("all", "")).map(r => r.url);
     if (!urls.length) return;
     setSubmitting(true); setSubmitResult(null);
     try {
@@ -2612,11 +3336,47 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   // ── Selection helpers ──
   const toggleSelect = (url: string) => setSelected(prev => {
-    const n = new Set(prev); n.has(url) ? n.delete(url) : n.add(url); return n;
+    const n = new Set(prev); if (n.has(url)) n.delete(url); else n.add(url); return n;
   });
-  const toggleAll = () => setSelected(prev =>
-    prev.size === urlRows.length && urlRows.length > 0 ? new Set() : new Set(urlRows.map(r => r.url))
-  );
+
+  // The list API caps `limit` at 200 per call, so "everything" means paging through. The 20k
+  // guard mirrors the doorway queue's own ceiling, so a selection can never outgrow what a
+  // submit can accept anyway.
+  const fetchAllRows = async (sf = statusFilter, sq = search): Promise<SitemapUrlRow[]> => {
+    const out: SitemapUrlRow[] = [];
+    let pg = 1, pageCount = 1;
+    while (pg <= pageCount && out.length < 20000) {
+      const res = await fetch(`/api/indexing/sitemap/urls?${new URLSearchParams({ siteDbId, page: String(pg), limit: "200", status: sf, search: sq })}`);
+      const d = await res.json();
+      const rows: SitemapUrlRow[] = d.rows ?? [];
+      if (!rows.length) break;
+      out.push(...rows);
+      pageCount = d.pages ?? 1;
+      pg++;
+    }
+    return out;
+  };
+
+  // "Select all" means every URL matching the current filter across all pagination pages, not
+  // just the 50 rows on screen — the selection then travels with the user through the pager
+  // and every action button acts on the full set.
+  const toggleAll = async () => {
+    if (selectingAll) return;
+    if (total > 0 && selected.size >= total) { setSelected(new Set()); return; }
+    setSelectingAll(true);
+    try {
+      setSelected(new Set((await fetchAllRows()).map(r => r.url)));
+    } catch { /* keep the current selection */ }
+    setSelectingAll(false);
+  };
+
+  // ── Column sort ──
+  // First click: A→Z for URLs, newest/fullest first for everything else; further clicks toggle.
+  const applySort = (k: string) => {
+    const nextDir = sortKey === k ? (sortDir === "desc" ? "asc" : "desc") : (k === "url" ? "asc" : "desc");
+    setSortKey(k); setSortDir(nextDir); setPage(1);
+    loadUrls(1, statusFilter, search, k, nextDir);
+  };
 
   // ── Helpers ──
   const googleStatusColor = (s: string | null) => {
@@ -2634,15 +3394,42 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
     if (/blocked/i.test(s)) return t("idxBlocked");
     return s;
   };
+  const inventoryStatusLabel = (row: SitemapUrlRow) => {
+    if (row.inventoryStatus === "missing") return t("idxMissing");
+    if (row.inventoryStatus === "pending_missing") return t("idxPendingMissing");
+    if (row.changeStatus === "added") return t("idxAdded");
+    if (row.changeStatus === "changed") return t("idxChanged");
+    if (row.changeStatus === "restored") return t("idxRestored");
+    return t("idxInventoryActive");
+  };
+  const inventoryStatusColor = (row: SitemapUrlRow) => row.inventoryStatus === "missing" ? "#F87171"
+    : row.inventoryStatus === "pending_missing" ? "#FBBF24"
+    : row.changeStatus === "added" ? "#4ADE80"
+    : row.changeStatus === "changed" ? "#FBBF24"
+    : row.changeStatus === "restored" ? "#60A5FA"
+    : "var(--color-text-secondary)";
   const opTypeLabel = (type: string) => {
     const m: Record<string,string> = {
-      sitemap_sync: "Sync sitemap", google_check: "Google check",
-      xr_check: "XML River", "2index_submit": "2index submit", neural_submit: "NeuralIndexer",
+      sitemap_sync: t("opSyncSitemap"), google_check: t("opGoogleCheck"),
+      xr_check: t("opXmlRiver"), "2index_submit": t("op2indexSubmit"), neural_submit: "NeuralIndexer",
+      sitemap_metadata: t("idxVerifyMetadata"),
+      backlink_check_alive: "Check 404", backlink_check_xr: "XML River",
     };
     return m[type] ?? type;
   };
+  const operationDetail = (op: IndexOpRow) => {
+    if (!op.detail?.startsWith("{")) return op.detail ?? "—";
+    try {
+      const detail = JSON.parse(op.detail);
+      if (op.type === "sitemap_sync") {
+        const summary = detail.summary ?? {};
+        return `${detail.sitemapUrl ?? "sitemap"} · +${summary.added ?? 0} · Δ${summary.changed ?? 0} · −${summary.disappeared ?? 0}${summary.partial ? " · partial" : ""}`;
+      }
+      if (op.type === "sitemap_metadata") return `${detail.checked ?? 0} checked · ${detail.suspicious ?? 0} suspicious · ${detail.errors ?? 0} errors`;
+      return op.detail;
+    } catch { return op.detail; }
+  };
 
-  const hasData = urlRows.length > 0 || counters.total > 0;
 
   const COUNTER_CHIPS = [
     { label: t("idxTotal"), value: counters.total ?? 0, color: "var(--color-text-primary)", filter: "all" },
@@ -2655,6 +3442,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   return (
     <div style={{ padding: "24px 32px", display: "flex", flexDirection: "column", gap: "20px" }}>
+      <IndexAutoPanel siteDbId={siteDbId} domain={domain} />
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
       {/* ── Search engines: Bing / Yandex / IndexNow actions ── */}
@@ -2695,6 +3483,52 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
             style={{ flex: 1, fontSize: "12px", padding: "5px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", maxWidth: "480px" }}
           />
         </div>
+        {counters.total > 0 && (
+          <div style={{ padding: "10px 16px", borderTop: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--color-text-primary)", marginRight: 2 }}>{t("idxInventory")}</span>
+            {[
+              [t("idxInventoryActive"), counters.active ?? 0, "inventory_active", "#4ADE80"],
+              [t("idxAdded"), counters.added ?? 0, "inventory_added", "#34D399"],
+              [t("idxChanged"), counters.changed ?? 0, "inventory_changed", "#FBBF24"],
+              [t("idxPendingMissing"), counters.pendingMissing ?? 0, "inventory_pending", "#F59E0B"],
+              [t("idxMissing"), counters.missing ?? 0, "inventory_missing", "#F87171"],
+              [t("idxSuspiciousLastmod"), counters.suspiciousLastmod ?? 0, "lastmod_suspicious", "#FB7185"],
+            ].map(([label, value, filter, color]) => (
+              <button key={String(filter)} onClick={() => { setStatusFilter(String(filter)); setPage(1); loadUrls(1, String(filter), search); }}
+                style={{ padding: "4px 8px", borderRadius: 999, border: `1px solid ${color}45`, background: `${color}10`, color: String(color), fontSize: "10px", cursor: "pointer" }}>
+                {String(label)} · {String(value)}
+              </button>
+            ))}
+            {(meta.latestSync?.summary?.invalid ?? 0) > 0 && (
+              <span title={(meta.latestSync?.invalidExamples ?? []).join("\n")} style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid rgba(248,113,113,0.3)", background: "rgba(248,113,113,0.08)", color: "#F87171", fontSize: "10px" }}>
+                {t("idxInvalid")} · {meta.latestSync.summary.invalid}
+              </span>
+            )}
+            <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", marginLeft: "auto" }}>
+              {t("idxAuditCoverage")}: {counters.auditCovered ?? 0}/{counters.total ?? 0}
+            </span>
+          </div>
+        )}
+        {counters.total > 0 && (
+          <div style={{ padding: "10px 16px", borderTop: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", background: "rgba(255,255,255,0.01)" }}>
+            <button onClick={verifyInventoryMetadata} disabled={metadataChecking}
+              style={{ padding: "6px 12px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-primary)", fontSize: "11px", fontWeight: 600, cursor: metadataChecking ? "not-allowed" : "pointer", opacity: metadataChecking ? 0.6 : 1 }}>
+              {metadataChecking ? t("idxVerifyingMetadata") : `${t("idxVerifyMetadata")}${selected.size ? ` (${selected.size})` : ""}`}
+            </button>
+            <button onClick={startSitemapAudit} disabled={auditStarting}
+              style={{ padding: "6px 12px", borderRadius: "7px", border: "1px solid rgba(139,92,246,0.35)", background: "rgba(139,92,246,0.08)", color: "#A78BFA", fontSize: "11px", fontWeight: 600, cursor: auditStarting ? "not-allowed" : "pointer", opacity: auditStarting ? 0.6 : 1 }}>
+              {auditStarting ? t("auditRunning") : t("idxAuditFromSitemap")}
+            </button>
+            {metadataMsg && <span style={{ fontSize: "11px", color: metadataMsg.startsWith("✗") ? "#F87171" : "#4ADE80" }}>{metadataMsg}</span>}
+            {auditSeedMsg && <span style={{ fontSize: "11px", color: auditSeedMsg.startsWith("✗") ? "#F87171" : "#A78BFA" }}>{auditSeedMsg}</span>}
+          </div>
+        )}
+        {(syncNotice || meta.latestSync?.result === "partial") && (
+          <div style={{ padding: "8px 16px", background: meta.latestSync?.result === "partial" ? "rgba(245,158,11,0.08)" : "rgba(74,222,128,0.05)", borderTop: "1px solid var(--color-border)", fontSize: "11px", color: meta.latestSync?.result === "partial" ? "#FBBF24" : "#4ADE80" }}>
+            {meta.latestSync?.result === "partial" ? `⚠ ${t("idxPartialSync")}. ${t("idxPartialSyncHint")}` : `✓ ${syncNotice || t("idxSyncComplete")}`}
+            {meta.latestSync?.summary?.invalid > 0 && <span> · {t("idxInvalid")}: {meta.latestSync.summary.invalid}</span>}
+          </div>
+        )}
         {syncError && (
           <div style={{ padding: "8px 16px", background: "rgba(239,68,68,0.06)", borderTop: "1px solid rgba(239,68,68,0.2)", fontSize: "12px", color: "#f87171" }}>
             ✗ {syncError}
@@ -2706,7 +3540,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
       {counters.total > 0 && (
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           {COUNTER_CHIPS.map(({ label, value, color, filter }) => (
-            <button key={label} onClick={() => { setStatusFilter(filter); loadUrls(1, filter, search); }}
+            <button key={label} onClick={() => { setStatusFilter(filter); setPage(1); loadUrls(1, filter, search); }}
               style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 18px", borderRadius: "10px", border: `1px solid ${statusFilter === filter && filter !== "all" ? color + "55" : "var(--color-border)"}`, background: statusFilter === filter && filter !== "all" ? `${color}10` : "var(--color-card)", cursor: "pointer", minWidth: "80px", gap: "2px" }}>
               <span style={{ fontSize: "22px", fontWeight: 700, color }}>{value}</span>
               <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
@@ -2720,11 +3554,11 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
         <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
           <input
             value={search} onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && loadUrls(1, statusFilter, search)}
+            onKeyDown={e => { if (e.key === "Enter") { setPage(1); loadUrls(1, statusFilter, search); } }}
             placeholder={t("idxSearchUrl")}
             style={{ fontSize: "12px", padding: "6px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", minWidth: "200px" }}
           />
-          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); loadUrls(1, e.target.value, search); }}
+          <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); loadUrls(1, e.target.value, search); }}
             style={{ fontSize: "12px", padding: "6px 10px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", cursor: "pointer" }}>
             {[
               ["all", t("idxAllStatuses")],
@@ -2733,6 +3567,13 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
               ["not_checked", t("idxNotChecked")],
               ["neural_indexed", `Neural: ✓ ${t("idxInIndex")}`],
               ["neural_not_indexed", `Neural: ✗ ${t("idxNotInIndex")}`],
+              ["inventory_active", t("idxInventoryActive")],
+              ["inventory_added", t("idxAdded")],
+              ["inventory_changed", t("idxChanged")],
+              ["inventory_pending", t("idxPendingMissing")],
+              ["inventory_missing", t("idxMissing")],
+              ["lastmod_suspicious", t("idxSuspiciousLastmod")],
+              ["audit_missing", t("idxNotAudited")],
             ].map(([v,l]) => (
               <option key={v} value={v}>{l}</option>
             ))}
@@ -2795,6 +3636,12 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
                   outline: "none"
                 }}
               >
+                {/* Auto first, and selected by default: spreading links over the whole network
+                    is the normal case, and pinning every URL of one site to a single doorway is
+                    the footprint you would rather not leave. */}
+                <option value="all">
+                  {t("farmAutoDistribute").replace("{n}", String(indexerDomains.length))}
+                </option>
                 {indexerDomains.map(d => (
                   <option key={d.id} value={d.id}>{d.domain}</option>
                 ))}
@@ -2920,16 +3767,37 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
             </div>
           </div>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", minWidth: "700px" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", minWidth: "1120px" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--color-border)", background: "rgba(255,255,255,0.02)" }}>
                   <th style={{ padding: "9px 12px", width: 32 }}>
-                    <input type="checkbox" checked={selected.size === urlRows.length && urlRows.length > 0} onChange={toggleAll}
+                    {/* Checked when the whole filtered set is selected (across all pagination
+                        pages); indeterminate while only part of it is. */}
+                    <input type="checkbox"
+                      checked={urlRows.length > 0 && selected.size >= total && urlRows.every(r => selected.has(r.url))}
+                      ref={el => { if (el) el.indeterminate = selected.size > 0 && !(selected.size >= total && urlRows.every(r => selected.has(r.url))); }}
+                      onChange={toggleAll} disabled={selectingAll}
                       style={{ cursor: "pointer", width: 13, height: 13, accentColor: "#3B82F6" }} />
                   </th>
-                  {["URL",t("idxColGoogleStatus"),"XML RIVER","2INDEX","NEURAL",t("idxColChecked")].map(h => (
-                    <th key={h} style={{ textAlign: "left", padding: "9px 12px", color: "var(--color-text-secondary)", fontWeight: 500, fontSize: "10px", letterSpacing: "0.06em", whiteSpace: "nowrap" }}>{h}</th>
-                  ))}
+                  {([
+                    ["URL", "url"],
+                    [t("idxInventoryStatus"), "inventory_status"],
+                    [t("idxLastmod"), "lastmod"],
+                    [t("idxAudit"), ""],
+                    [t("idxColGoogleStatus"), "google_status"],
+                    ["XML RIVER", "xr_status"],
+                    ["2INDEX", "twoindex_status"],
+                    ["NEURAL", "neural_status"],
+                    [t("idxColChecked"), "checked"],
+                  ] as const).map(([label, key]) => {
+                    const active = key !== "" && sortKey === key;
+                    return (
+                      <th key={label} onClick={key !== "" ? () => applySort(key) : undefined}
+                        style={{ textAlign: "left", padding: "9px 12px", color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)", fontWeight: 500, fontSize: "10px", letterSpacing: "0.06em", whiteSpace: "nowrap", cursor: key !== "" ? "pointer" : "default", userSelect: "none" }}>
+                        {label}{key !== "" ? (active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕") : ""}
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -2938,7 +3806,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
                   const gColor = googleStatusColor(row.googleStatus);
                   const isSelected = selected.has(row.url);
                   return (
-                    <tr key={row.id} style={{ borderBottom: "1px solid var(--color-border)", background: isSelected ? "rgba(59,130,246,0.05)" : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)" }}>
+                    <tr key={row.id} style={{ borderBottom: "1px solid var(--color-border)", background: isSelected ? "rgba(59,130,246,0.05)" : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)", opacity: row.inventoryStatus === "missing" ? 0.72 : 1 }}>
                       <td style={{ padding: "8px 12px" }}>
                         <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(row.url)}
                           style={{ cursor: "pointer", width: 13, height: 13, accentColor: "#3B82F6" }} />
@@ -2948,6 +3816,28 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
                           style={{ color: "#60a5fa", textDecoration: "none" }}
                           onMouseOver={e => (e.currentTarget.style.textDecoration = "underline")}
                           onMouseOut={e => (e.currentTarget.style.textDecoration = "none")}>{path}</a>
+                      </td>
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                        <span title={`${row.sourceSitemap ?? ""}\n${row.sitemapType ?? "standard"}\n${row.firstSeenAt ?? ""} → ${row.lastSeenAt ?? ""}`} style={{ color: inventoryStatusColor(row), fontSize: "10px", fontWeight: 700 }}>
+                          {inventoryStatusLabel(row)}
+                        </span>
+                        {(row.imageCount > 0 || row.videoCount > 0 || row.newsCount > 0) && (
+                          <div style={{ color: "var(--color-text-secondary)", fontSize: "9px", marginTop: 2 }}>
+                            {row.imageCount > 0 && `IMG ${row.imageCount} `}{row.videoCount > 0 && `VID ${row.videoCount} `}{row.newsCount > 0 && `NEWS ${row.newsCount}`}
+                          </div>
+                        )}
+                      </td>
+                      <td title={`${row.sourceSitemap ?? ""}\n${row.lastmod ?? ""}`} style={{ padding: "8px 12px", whiteSpace: "nowrap", color: row.lastmodValid === false || row.lastmodReliability === "suspicious" ? "#F87171" : "var(--color-text-secondary)", fontSize: "10px" }}>
+                        {row.lastmod ? row.lastmod.slice(0, 10) : "—"}
+                        {row.lastmodReliability === "suspicious" && <div style={{ fontSize: "9px", color: "#FB7185" }}>⚠ {t("idxSuspiciousLastmod")}</div>}
+                        {row.lastmodValid === false && <div style={{ fontSize: "9px", color: "#F87171" }}>⚠ {t("idxInvalid")}</div>}
+                      </td>
+                      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                        {row.audit?.covered
+                          ? <span style={{ color: row.audit.issueCount ? "#FBBF24" : "#4ADE80", fontSize: "10px", fontWeight: 600 }}>
+                              {row.audit.issueCount ? t("idxAuditIssues").replace("{n}", String(row.audit.issueCount)) : "✓"}
+                            </span>
+                          : <span style={{ color: "var(--color-text-secondary)", fontSize: "10px" }}>{t("idxNotAudited")}</span>}
                       </td>
                       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
                         {row.googleStatus ? (
@@ -2980,7 +3870,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
                       </td>
                       <td style={{ padding: "8px 12px", color: "var(--color-text-secondary)", fontSize: "11px", whiteSpace: "nowrap" }}>
                         {(row.googleChecked || row.neuralAt || row.xrChecked)
-                          ? timeAgo(new Date(row.googleChecked ?? row.neuralAt ?? row.xrChecked))
+                          ? timeAgo(new Date((row.googleChecked ?? row.neuralAt ?? row.xrChecked) as string))
                           : "—"}
                       </td>
                     </tr>
@@ -3028,7 +3918,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
                         </span>
                         {op.urlCount != null && <span style={{ color: "var(--color-text-secondary)", marginLeft: 4 }}>· {op.urlCount} URL</span>}
                       </td>
-                      <td style={{ padding: "8px 14px", color: "var(--color-text-secondary)", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{op.detail ?? "—"}</td>
+                      <td title={op.detail ?? ""} style={{ padding: "8px 14px", color: "var(--color-text-secondary)", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{operationDetail(op)}</td>
                       <td style={{ padding: "8px 14px", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{timeAgo(new Date(op.createdAt))}</td>
                     </tr>
                   ))}
@@ -3071,10 +3961,151 @@ function YandexIconSite({ size = 14 }: { size?: number }) {
   );
 }
 
+// ─── Algorithm update marker label ────────────────────────────────────────────
+/**
+ * The text above an update's start line: name, rollout length, and what traffic did across it.
+ *
+ * A custom element rather than Recharts' `label` object because the two halves need different
+ * colours — the name carries the update *type* (core / spam / discover), the percentage carries
+ * the *outcome*, and collapsing both into one colour would make a spam update and a traffic drop
+ * indistinguishable at a glance.
+ *
+ * Recharts injects `viewBox` when a label is given as an element.
+ */
+function AlgoMarkerLabel({ viewBox, text, impact, color, title }: {
+  viewBox?: { x?: number; y?: number }; text: string; impact: AlgoImpactResult;
+  color: string; title: string;
+}) {
+  const x = viewBox?.x ?? 0;
+  // 6px above the plot area rather than 4: the descender-free label still needs room for its
+  // own height, and the chart reserves 26px of top margin when markers are shown.
+  const y = (viewBox?.y ?? 0) - 6;
+  const pct = impact.ok ? impact.clicks : null;
+  const tone = pct == null ? "" : pct > 0 ? "#10B981" : pct < 0 ? "#EF4444" : "var(--color-text-tertiary)";
+  return (
+    <text x={x} y={y} textAnchor="middle" fontSize={9} fontWeight={600}>
+      {/* All four metrics live in a native SVG tooltip rather than in the label. Four figures at
+          9px, on a chart where two updates can sit days apart, is unreadable — and clicks is the
+          one people actually decide on. The rest are a hover away, and the Annotations tab lists
+          them in full. */}
+      <title>{title}</title>
+      <tspan fill={color}>{text}</tspan>
+      {/* A tilde on a thin window. Since the minimum was lowered to three days, a figure from
+          three days and one from fourteen would otherwise be typeset identically — and the first
+          is a hint while the second is close to a fact. */}
+      {pct != null && (
+        <tspan fill={tone}>{` ${impact.ok && !impact.confident ? "~" : ""}${pct > 0 ? "+" : ""}${pct}%`}</tspan>
+      )}
+    </text>
+  );
+}
+
+/** Multi-line hover text for an update marker: every metric, or a reason there is no figure. */
+function algoImpactTitle(name: string, range: string, impact: AlgoImpactResult, t: (k: never) => string): string {
+  if (!impact.ok) {
+    // "Waiting for data" and "cannot be separated from the update next to it" call for different
+    // reactions — one resolves itself in a week, the other never will.
+    return `${name}\n${range}\n${t((impact.reason === "adjacent" ? "algoImpactAdjacent" : "algoImpactUnknown") as never)}`;
+  }
+  const sign = (v: number) => (v > 0 ? "+" : "");
+  const lines = [
+    impact.clicks != null && `${t("clicks" as never)}: ${sign(impact.clicks)}${impact.clicks}%`,
+    impact.impressions != null && `${t("impressions" as never)}: ${sign(impact.impressions)}${impact.impressions}%`,
+    impact.ctrPp != null && `CTR: ${sign(impact.ctrPp)}${impact.ctrPp} pp`,
+    impact.position != null && `${t("avgPosition" as never)}: ${sign(impact.position)}${impact.position}`,
+  ].filter(Boolean);
+  // The window is part of the answer: a verdict from 5 clean days deserves less weight than one
+  // from 14, and only saying so lets the reader apply that discount.
+  const window = t("algoImpactWindow" as never)
+    .replace("{b}", String(impact.beforeDays))
+    .replace("{a}", String(impact.afterDays));
+  const caveat = impact.confident ? null : t("algoImpactApprox" as never);
+  return [name, range, ...lines, window, caveat].filter(Boolean).join("\n");
+}
+
+/** An update as the chart needs it: snapped to real axis labels, with its measured impact. */
+type AlgoMarker = AlgoUpdate & { x: string; x2: string | null; impact: AlgoImpactResult };
+
+/**
+ * Rollout bands and their edges, as chart children.
+ *
+ * A plain function returning an array rather than a component, because Recharts identifies its
+ * children by component type — a `<AlgoMarkers />` wrapper would be passed through as an unknown
+ * element and silently ignored, which is a slow way to learn how the library works.
+ *
+ * Shared by the dashboard chart and the Annotations one so the two cannot drift into drawing the
+ * same fact differently.
+ */
+function renderAlgoMarkers(updates: AlgoMarker[], t: (k: never) => string, labels = true) {
+  return updates.map(u => (
+    <Fragment key={`${u.name}-${u.date}`}>
+      {/* Shaded rollout window first so the start line draws on top of it. */}
+      {u.x2 && (
+        <ReferenceArea x1={u.x} x2={u.x2} yAxisId="left"
+          fill={ALGO_UPDATE_COLORS[u.type]} fillOpacity={0.07} stroke="none" />
+      )}
+      <ReferenceLine x={u.x} yAxisId="left"
+        stroke={ALGO_UPDATE_COLORS[u.type]} strokeWidth={1.5} strokeDasharray="3 3"
+        label={!labels ? undefined :
+          <AlgoMarkerLabel
+            text={algoChartLabel(u)}
+            impact={u.impact}
+            color={ALGO_UPDATE_COLORS[u.type]}
+            title={algoImpactTitle(u.name, updateEnd(u) ? `${u.date} → ${updateEnd(u)}` : u.date, u.impact, t)}
+          />
+        } />
+      {/* Closing edge, thinner and faded: the rollout end is a softer fact than its start, and
+          two identical lines would read as two separate updates. */}
+      {u.x2 && (
+        <ReferenceLine x={u.x2} yAxisId="left"
+          stroke={ALGO_UPDATE_COLORS[u.type]} strokeWidth={1} strokeOpacity={0.5} strokeDasharray="2 4" />
+      )}
+    </Fragment>
+  ));
+}
+
+/**
+ * The operator's own notes as chart children — solid lines against the updates' shaded bands.
+ *
+ * A note is a moment, not a window: a redirect either shipped or it did not, so there is nothing
+ * to shade. Deliberately one flat colour rather than the per-type palette updates use, because
+ * the first thing to read off the chart is whose event it was, and only then which one.
+ */
+function renderNoteMarkers(notes: { id: string; title: string; x: string; kind?: "note" | "purchase"; label?: string }[]) {
+  return notes.map(n => {
+    // Purchases keep the notes' solid-line language but claim their own colour: the first
+    // thing to read off the chart is whose event it was, and "money left here" is a third
+    // voice next to the operator's notes and Google's rollouts.
+    const purchase = n.kind === "purchase";
+    const color = purchase ? "#7C3AED" : "var(--color-text-secondary)";
+    return (
+      <ReferenceLine key={n.id} x={n.x} yAxisId="left"
+        stroke={color} strokeWidth={purchase ? 1.5 : 1.2} strokeOpacity={0.65}
+        label={<NoteMarkerLabel title={n.title} text={n.label} color={purchase ? "#7C3AED" : undefined} />} />
+    );
+  });
+}
+
+function NoteMarkerLabel({ viewBox, title, text, color }: { viewBox?: { x?: number; y?: number }; title?: string; text?: string; color?: string }) {
+  const x = viewBox?.x ?? 0;
+  const y = (viewBox?.y ?? 0) - 6;
+  // Truncated rather than wrapped: a note title can be a sentence, and the chart has one line of
+  // headroom. The full text is in the native tooltip and in the row below.
+  const raw = text ?? title ?? "";
+  const short = raw.length > 22 ? `${raw.slice(0, 21)}…` : raw;
+  return (
+    <text x={x} y={y} textAnchor="middle" fontSize={9} fontWeight={600} fill={color ?? "var(--color-text-secondary)"}>
+      <title>{title}</title>
+      {short}
+    </text>
+  );
+}
+
 // ─── Annotations Filter Dropdown ──────────────────────────────────────────────
 function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }) {
+  const { t } = useLanguage();
   const [open, setOpen] = useState(false);
-  const [activeDim, setActiveDim] = useState<string | null>("Query");
+  const [activeDim, setActiveDim] = useState<string | null>("dimQuery");
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
@@ -3082,13 +4113,14 @@ function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
+  // label holds an i18n KEY; activeDim tracks the same key so highlight comparison stays correct.
   const dims = [
-    { icon: <Search size={14}/>,          label: "Query",          disabled: false },
-    { icon: <FileText size={14}/>,         label: "Page",           disabled: false },
-    { icon: <Globe size={14}/>,            label: "Country",        disabled: false },
-    { icon: <Monitor size={14}/>,          label: "Device",         disabled: false },
-    { icon: <BookmarkCheck size={14}/>,    label: "Content Group",  disabled: true  },
-    { icon: <ArrowLeftRight size={14}/>,   label: "Compare Filters",disabled: false },
+    { icon: <Search size={14}/>,          label: "dimQuery",          disabled: false },
+    { icon: <FileText size={14}/>,         label: "dimPage",           disabled: false },
+    { icon: <Globe size={14}/>,            label: "dimCountry",        disabled: false },
+    { icon: <Monitor size={14}/>,          label: "dimDevice",         disabled: false },
+    { icon: <BookmarkCheck size={14}/>,    label: "dimContentGroup",  disabled: true  },
+    { icon: <ArrowLeftRight size={14}/>,   label: "dimCompareFilters",disabled: false },
   ];
 
   const divider = <div style={{ height: "1px", background: "var(--color-border)", margin: "4px 0" }} />;
@@ -3106,19 +4138,19 @@ function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }
           {/* Dimension filters */}
           {dims.map(({ icon, label, disabled }) => (
             <button key={label} disabled={disabled} onClick={() => { if (!disabled) setActiveDim(label); }} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 14px", fontSize: "13px", cursor: disabled ? "default" : "pointer", width: "100%", background: activeDim === label ? "rgba(59,130,246,0.12)" : "transparent", color: disabled ? "var(--color-text-secondary)" : activeDim === label ? "#3B82F6" : "var(--color-text-primary)", border: "none", opacity: disabled ? 0.45 : 1 }}>
-              {icon} {label}
+              {icon} {t(label as never)}
               {activeDim === label && <Check size={12} style={{ marginLeft: "auto" }} />}
             </button>
           ))}
 
           {divider}
-          {sec("Branded Queries")}
+          {sec(t("sectionBrandedQueries"))}
           <div style={{ padding: "4px 14px 10px", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
             <span style={{ color: "#3B82F6", cursor: "pointer" }} onClick={onSetupBranded}>Define</span> branded keywords<br />to enable branded filters.
           </div>
 
           {divider}
-          {sec("Position Filter")}
+          {sec(t("sectionPositionFilter"))}
           <div style={{ padding: "4px 14px 10px", display: "flex", gap: "8px" }}>
             {["Top 10", "Top 20"].map(v => (
               <button key={v} style={{ display: "flex", alignItems: "center", gap: "5px", padding: "5px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: 600, cursor: "pointer", border: "1px solid var(--color-border)", background: "transparent", color: "#F59E0B" }}>
@@ -3128,16 +4160,16 @@ function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }
           </div>
 
           {divider}
-          {sec("Saved Filters")}
+          {sec(t("sectionSavedFilters"))}
           <div style={{ padding: "4px 14px 10px", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
             Add filters and save them to quickly<br />access them later.
           </div>
 
           {divider}
-          {sec("Preset Filters")}
-          {["People Also Ask", "Long Tail Keywords"].map(v => (
+          {sec(t("sectionPresetFilters" as never))}
+          {(["presetPaa", "presetLongTail"] as const).map(v => (
             <button key={v} onClick={() => setOpen(false)} style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: "transparent", color: "var(--color-text-primary)", border: "none" }}>
-              {v}
+              {t(v)}
             </button>
           ))}
           <div style={{ height: "6px" }} />
@@ -3148,17 +4180,25 @@ function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }
 }
 
 // ─── Add Note Modal ───────────────────────────────────────────────────────────
-function AddNoteModal({ onClose, onSave }: { onClose: () => void; onSave: (note: { date: string; title: string; desc: string; scope: string }) => void }) {
+function AddNoteModal({ onClose, onSave, editNote }: {
+  onClose: () => void;
+  onSave: (note: { id?: string; date: string; title: string; desc: string; scope: string }) => void;
+  /** When set, the modal opens in edit mode: fields are pre-filled and the label/button reflect editing. */
+  editNote?: { id: string; title: string; desc: string; date: string } | null;
+}) {
+  const { t } = useLanguage();
   const today = new Date();
   const todayStr = today.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  const [title, setTitle] = useState("");
-  const [desc, setDesc]   = useState("");
+  const [title, setTitle] = useState(editNote?.title ?? "");
+  const [desc, setDesc]   = useState(editNote?.desc ?? "");
   const [scope, setScope] = useState<"all" | "specific" | "group">("all");
 
+  // l holds an i18n KEY. Both render (3238) and onSave (3246) translate it via t(), so the stored
+  // note scope is the localized label — same as the old hardcoded English, but in the active language.
   const scopeOptions = [
-    { v: "all",      l: "All Pages" },
-    { v: "specific", l: "Specific Page(s)" },
-    { v: "group",    l: "Content Group" },
+    { v: "all",      l: "scopeAllPages" },
+    { v: "specific", l: "scopeSpecificPages" },
+    { v: "group",    l: "scopeContentGroup" },
   ] as const;
 
   return (
@@ -3170,11 +4210,11 @@ function AddNoteModal({ onClose, onSave }: { onClose: () => void; onSave: (note:
         <button onClick={onClose} style={{ position: "absolute", top: "16px", right: "16px", background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X size={20} /></button>
 
         {/* Label */}
-        <p style={{ fontSize: "12px", color: "#9ca3af", fontWeight: 500, marginBottom: "4px" }}>Note</p>
+        <p style={{ fontSize: "12px", color: "#9ca3af", fontWeight: 500, marginBottom: "4px" }}>{editNote ? t("annEditNote") : "Note"}</p>
 
         {/* Date */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px" }}>
-          <span style={{ fontSize: "24px", fontWeight: 700 }}>{todayStr}</span>
+          <span style={{ fontSize: "24px", fontWeight: 700 }}>{editNote?.date ?? todayStr}</span>
           <Calendar size={18} color="#9ca3af" />
         </div>
 
@@ -3184,7 +4224,7 @@ function AddNoteModal({ onClose, onSave }: { onClose: () => void; onSave: (note:
           autoFocus
           value={title}
           onChange={e => setTitle(e.target.value)}
-          placeholder="What happened on this day?"
+          placeholder={t("noteTitlePlaceholder")}
           style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: `2px solid ${title ? "#3B82F6" : "#d1d5db"}`, fontSize: "14px", color: "#111", outline: "none", boxSizing: "border-box", marginBottom: "20px" }}
         />
 
@@ -3205,17 +4245,17 @@ function AddNoteModal({ onClose, onSave }: { onClose: () => void; onSave: (note:
               <div onClick={() => setScope(v)} style={{ width: "18px", height: "18px", borderRadius: "50%", border: `2px solid ${scope === v ? "#3B82F6" : "#d1d5db"}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, cursor: "pointer" }}>
                 {scope === v && <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#3B82F6" }} />}
               </div>
-              {l}
+              {t(l as never)}
             </label>
           ))}
         </div>
 
         {/* Buttons */}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-          <button onClick={onClose} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#f3f4f6", color: "#374151", fontSize: "14px", fontWeight: 500, cursor: "pointer" }}>Cancel</button>
-          <button onClick={() => { if (title.trim()) { onSave({ date: todayStr, title, desc, scope: scopeOptions.find(o => o.v === scope)!.l }); onClose(); } }}
+          <button onClick={onClose} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#f3f4f6", color: "#374151", fontSize: "14px", fontWeight: 500, cursor: "pointer" }}>{t("cancel")}</button>
+          <button onClick={() => { if (title.trim()) { onSave({ id: editNote?.id, date: editNote?.date ?? todayStr, title, desc, scope: t(scopeOptions.find(o => o.v === scope)!.l as never) }); onClose(); } }}
             style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: title.trim() ? "#374151" : "#9ca3af", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: title.trim() ? "pointer" : "not-allowed" }}>
-            Save
+            {editNote ? t("annSave") : "Save"}
           </button>
         </div>
       </div>
@@ -3223,58 +4263,207 @@ function AddNoteModal({ onClose, onSave }: { onClose: () => void; onSave: (note:
   );
 }
 
-// ─── Annotation sparkline ─────────────────────────────────────────────────────
-function AnnotationSparkline({ before, after }: { before: number[]; after: number[] }) {
-  const data = [...before, ...after].map((v, i) => ({ v, i, isPre: i < before.length }));
-  const allData = data.map(d => ({ date: d.i, value: d.v }));
-  return (
-    <ResponsiveContainer width="100%" height={60}>
-      <AreaChart data={allData} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
-        <defs>
-          <linearGradient id="ann-g" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#3B82F6" stopOpacity={0.2} />
-            <stop offset="100%" stopColor="#3B82F6" stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <Area type="monotone" dataKey="value" stroke="#3B82F6" strokeWidth={1.5} fill="url(#ann-g)" dot={false} isAnimationActive={false} />
-        {/* Annotation marker line at midpoint */}
-        <line x1="50%" y1="0" x2="50%" y2="100%" stroke="#6b7280" strokeWidth={1} strokeDasharray="3 2" />
-      </AreaChart>
-    </ResponsiveContainer>
-  );
-}
-
 // ─── Annotations Tab ──────────────────────────────────────────────────────────
+
+/**
+ * Per-day values the API returns alongside each row.
+ *
+ * Nothing on screen draws these any more — the one timeline above the list covers the whole
+ * period, which is what the per-row sparklines used to do for a single event. Kept because the
+ * endpoint still sends them and the shape has to be described somewhere; drop the field from the
+ * response first if it is ever removed for good.
+ */
+type SeriesPoint = {
+  date: string; clicks: number; impressions: number; ctr: number; position: number | null;
+  phase: "before" | "after";
+};
 interface AnnotationNote {
+  id?: string;
   date: string; title: string; scope: string;
-  cBefore: number; cAfter: number; cPct: number;
-  iBefore: number; iAfter: number; iPct: number;
-  tBefore: number; tAfter: number; tPct: number;
+  /** Where the row came from: an operator's own note, a Google ranking update, or a link
+   *  purchase derived from the magic-links ledger. The three live on one timeline and differ
+   *  only in how they are drawn. */
+  kind: "note" | "update" | "purchase";
+  /** Update type, for the band colour. Null on notes. */
+  updateType?: AlgoUpdateType | null;
+  /** Last day of a rollout, for the band's closing edge. Null on notes. */
+  endDate?: string | null;
+  /** Link purchases only: how many placements the order bought. */
+  mlQuantity?: number | null;
+  /** Link purchases only: provider id ("fieldlink" | "magic369" | "magic369links"). */
+  mlProvider?: string | null;
+  /** Link purchases only: the provider's order id, linking to /magiclinks. */
+  orderId?: string | null;
+  /** Free text under the title. For Google updates this carries the rollout length, which is the
+   *  one fact a bare date does not give you: a 2-day spam update and a 3-week core update leave
+   *  very different shapes in the data. */
+  description?: string;
+  /** false when the window after the note has no Search Console data yet (it lags 2-3 days) */
+  hasAfter?: boolean;
+  // `null` percentages mean there was no baseline to divide by — rendered as "—", never as 0%.
+  cBefore: number; cAfter: number; cPct: number | null;
+  iBefore: number; iAfter: number; iPct: number | null;
+  tBefore: number; tAfter: number; tPct: number | null;
   pBefore: number; pAfter: number; pDelta: number;
   dateRange: string;
   sparkBefore: number[]; sparkAfter: number[];
+  /** per-day values for every metric — what the chart draws */
+  series?: SeriesPoint[];
 }
 
-const getMockAnnotations = (t: any): AnnotationNote[] => [
-  { date: "Sep 5, 2024",  title: t("annMovedToAstro"),          scope: t("annAllPages"),       cBefore: 1500, cAfter: 2000,  cPct: 36,  iBefore: 49200, iAfter: 176300, iPct: 258, tBefore: 3.1, tAfter: 1.2, tPct: 1.9,  pBefore: 55.3, pAfter: 58,   pDelta: 2.7,  dateRange: "Jul 5 to Sep 3 → Sep 6 to Nov 5",    sparkBefore: [20,22,18,25,23,21,28,30], sparkAfter: [32,38,42,45,50,55,58,62] },
-  { date: "Jun 28, 2024", title: t("annRedirectGlossary"),    scope: t("annAllPages"),       cBefore: 683,  cAfter: 1400,  cPct: 118, iBefore: 37900, iAfter: 46400,  iPct: 22,  tBefore: 1.8, tAfter: 3.2, tPct: 1.4,  pBefore: 65.8, pAfter: 55.9, pDelta: 9.9,  dateRange: "Apr 29 to Jun 27 → Jun 28 to Aug 26", sparkBefore: [15,14,16,13,15,14,16,15], sparkAfter: [18,22,25,28,30,32,35,38] },
-  { date: "Aug 21, 2024", title: t("annFeaturePostsUpdate"),                    scope: t("annContentGroup"),   cBefore: 16,   cAfter: 80,    cPct: 400, iBefore: 6400,  iAfter: 17100,  iPct: 164, tBefore: 0.2, tAfter: 0.5, tPct: 0.3,  pBefore: 37.4, pAfter: 47.6, pDelta: 10.2, dateRange: "Jun 22 to Aug 20 → Aug 21 to Oct 19", sparkBefore: [5,6,4,7,5,6,5,6],        sparkAfter: [8,12,18,25,32,40,48,55]  },
-  { date: "Aug 5, 2024",  title: t("annUpdatedBrandedKw"),      scope: t("annSpecificPages"), cBefore: 4,    cAfter: 32,    cPct: 700, iBefore: 2000,  iAfter: 11200,  iPct: 456, tBefore: 0.2, tAfter: 0.3, tPct: 0.1,  pBefore: 51.3, pAfter: 48.8, pDelta: 2.5,  dateRange: "Jun 6 to Aug 4 → Aug 5 to Oct 3",    sparkBefore: [2,3,2,3,2,3,2,3],        sparkAfter: [4,8,12,18,22,26,30,32]   },
-];
+// Shape returned by /api/annotations, flattened into the row shape this table renders.
+type ApiNote = {
+  id: string; date: string; title: string; description?: string | null;
+  kind: "note" | "update" | "purchase"; updateType?: AlgoUpdateType | null; endDate?: string | null;
+  mlQuantity?: number | null; mlProvider?: string | null; orderId?: string | null;
+  scope: string; dateRange: string; hasAfter: boolean;
+  clicks: { before: number; after: number; pct: number | null };
+  impressions: { before: number; after: number; pct: number | null };
+  ctr: { before: number; after: number; pct: number | null };
+  position: { before: number; after: number; delta: number };
+  sparkBefore: number[]; sparkAfter: number[];
+  series?: SeriesPoint[];
+};
 
-function AnnotationsTab({ period, setPeriod, periodOptions, onSetupBranded }: {
-  period: string; setPeriod: (p: string) => void; periodOptions: string[]; onSetupBranded?: () => void;
+function mapApiNote(n: ApiNote): AnnotationNote {
+  return {
+    id: n.id,
+    date: n.date,
+    title: n.title,
+    kind: n.kind ?? "note",
+    updateType: n.updateType ?? null,
+    endDate: n.endDate ?? null,
+    mlQuantity: n.mlQuantity ?? null,
+    mlProvider: n.mlProvider ?? null,
+    orderId: n.orderId ?? null,
+    description: n.description || undefined,
+    scope: n.scope === "pages" ? "Specific pages" : "All Pages",
+    hasAfter: n.hasAfter,
+    cBefore: n.clicks.before, cAfter: n.clicks.after, cPct: n.clicks.pct,
+    iBefore: n.impressions.before, iAfter: n.impressions.after, iPct: n.impressions.pct,
+    tBefore: n.ctr.before, tAfter: n.ctr.after, tPct: n.ctr.pct,
+    pBefore: n.position.before, pAfter: n.position.after, pDelta: n.position.delta,
+    dateRange: n.dateRange,
+    sparkBefore: n.sparkBefore, sparkAfter: n.sparkAfter,
+    series: n.series,
+  };
+}
+
+// Comparison window in days for each period key — how far back and forward from a note's date the
+// before/after figures reach. Keys without a natural day count fall back to 28.
+/**
+ * Span of every period option in days.
+ *
+ * This map used to hold ten of the seventeen keys, and the seven it was missing — 3m through 3y —
+ * silently fell back to 28. Picking "3 months", "6 months" or "12 months" therefore produced
+ * byte-identical output, which is what "the selector does nothing" looked like from outside.
+ * Every key the dropdown offers now has an entry.
+ */
+const PERIOD_DAYS: Record<string, number> = {
+  yesterday: 1, "7d": 7, "14d": 14, "28d": 28,
+  last_week: 7, this_month: 30, last_month: 30,
+  this_quarter: 90, last_quarter: 90, ytd: 180,
+  "3m": 90, "6m": 180, "8m": 240, "12m": 365, "16m": 480,
+  "2y": 730, "3y": 1095,
+};
+
+/**
+ * How far before and after a dated event the comparison reaches.
+ *
+ * Scaled from the period rather than equal to it: on a three-year view nobody is asking what
+ * happened in the three years after an update, and the endpoint caps the window at 180 days
+ * anyway. A third of the period, floored at a week so short views still have something to
+ * compare, and capped at 90 so long ones stay legible.
+ */
+function annotationWindow(period: string): number {
+  const span = PERIOD_DAYS[period] ?? 28;
+  return Math.max(7, Math.min(90, Math.round(span / 3)));
+}
+
+function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupBranded, siteDbId, chartData, algoMarkers }: {
+  period: string; setPeriod: (p: string) => void; periodOptions: string[]; customDays?: number | null; onSetupBranded?: () => void;
+  siteDbId?: string;
+  /** The same series and markers the dashboard draws — passed down rather than refetched, so the
+   *  two views cannot disagree about what happened in the selected period. `dateIso` is what
+   *  markers snap against; `date` is the axis label. */
+  chartData?: { date: string; dateIso: string; clicks: number; impressions: number; ctr: number; position: number }[];
+  algoMarkers?: AlgoMarker[];
 }) {
   const { t } = useLanguage();
-  const [viewMode, setViewMode] = useState<"notes" | "updates">("notes");
-  const [onboarding, setOnboarding] = useState(true);
+  // Was `useState(true)`, which blurred the table and covered it with a panel advertising four
+  // invented notes from 2024 ("Moved to Astro", and so on). It appeared before the real notes had
+  // even loaded, so an operator with a full history saw fake data first. The onboarding panel now
+  // waits until the request has come back empty, and the fake rows are gone entirely — an empty
+  // table with a working "add note" button says the same thing without pretending to have data.
+  const [onboarding, setOnboarding] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
+  // When set, AddNoteModal opens in edit mode with this note's fields pre-filled.
+  const [editingNote, setEditingNote] = useState<{ id: string; title: string; desc: string; date: string } | null>(null);
   const [notes, setNotes] = useState<AnnotationNote[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const [activeMetrics, setActiveMetrics] = useState<Set<Metric>>(new Set(["clicks", "impressions", "ctr", "position"]));
 
-  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  const days = period === "custom" && customDays ? customDays : annotationWindow(period);
+  // The list always reaches across the whole tracking history: hiding a note because it is older
+  // than the selected period is exactly the trap that made the onboarding panel appear over notes
+  // that were sitting there all along. The period now controls only the before/after comparison
+  // window (`days`), not which notes are visible.
+  const lookback = 1200;
 
-  const displayNotes = notes.length > 0 ? notes : (onboarding ? getMockAnnotations(t) : []);
+  // Notes and their figures both come from the server: the note rows persist in the Annotation
+  // table, the before/after numbers are derived from DailyMetric on every read. Re-fetching when
+  // the period changes is what makes the window selector actually mean something here.
+  // One request, one list. Notes and Google updates arrive merged and already scored the same
+  // way; the client only needs `kind` to decide how to draw each.
+  const loadNotes = useCallback(async () => {
+    if (!siteDbId) return;
+    setLoading(true);
+    try {
+      const q = `siteId=${encodeURIComponent(siteDbId)}&days=${days}&lookback=${lookback}`;
+      const res = await fetch(`/api/annotations?${q}`, { cache: "no-store" });
+      const d = await res.json();
+      setUnavailable(!!d.unavailable);
+      setNotes(Array.isArray(d.notes) ? d.notes.map(mapApiNote) : []);
+    } catch { setNotes([]); }
+    setLoading(false);
+  }, [siteDbId, days, lookback]);
+
+  useEffect(() => { loadNotes(); }, [loadNotes]);
+
+  const ownNotes = useMemo(() => notes.filter(n => n.kind !== "update"), [notes]);
+
+  // Notes snapped onto the axis, the same way updates are. Search Console has gaps, and a marker
+  // pointing at a label no data point carries is dropped by Recharts without a word.
+  const noteMarkers = useMemo(() => {
+    if (!chartData?.length) return [];
+    return ownNotes
+      .map((n, i): { id: string; title: string; x: string | null; kind?: "note" | "purchase"; label?: string } => ({
+        id: n.id ?? `note-${i}`,
+        title: n.title,
+        x: snapToChartLabel(chartData, n.date),
+        kind: n.kind === "purchase" ? ("purchase" as const) : undefined,
+        // Purchases carry their own short label — quantity × provider — instead of the server's
+        // English fallback title.
+        label: n.kind === "purchase"
+          ? t("mlMarker").replace("{n}", String(n.mlQuantity ?? "?")).replace("{p}", String(n.mlProvider ?? "").startsWith("magic369") ? "369" : "FL")
+          : undefined,
+      }))
+      .filter((n): n is { id: string; title: string; x: string; kind?: "note" | "purchase"; label?: string } => n.x !== null);
+  }, [ownNotes, chartData, t]);
+  // The onboarding panel is an absolutely-positioned overlay covering everything below the
+  // sub-header, so it can only appear when there is genuinely nothing underneath. Keying it on
+  // "no notes of your own" would hide the Google-update timeline the moment a fresh instance
+  // opened the tab — a card inviting you to add something, drawn over the only thing on screen.
+  // The "+ add note" button is always present when the panel is not.
+  useEffect(() => {
+    if (loading) return;
+    setOnboarding(notes.length === 0 && !unavailable);
+  }, [loading, notes.length, unavailable]);
+
+  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
+
+  const displayNotes = notes;
 
   const fK = (n: number) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : String(n);
 
@@ -3283,18 +4472,6 @@ function AnnotationsTab({ period, setPeriod, periodOptions, onSetupBranded }: {
       {/* ── Sub-header controls ── */}
       <div style={{ padding: "10px 32px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: "8px", background: "var(--color-card)", flexWrap: "wrap" }}>
         <AnnotationsFilterDd onSetupBranded={onSetupBranded} />
-
-        {/* Notes / Updates toggle */}
-        <div style={{ display: "flex", gap: "4px" }}>
-          {([
-            { key: "notes",   label: t("annNotes"),   icon: <FileText size={13}/> },
-            { key: "updates", label: t("annUpdates"), icon: <GoogleIcon size={13}/> },
-          ] as const).map(({ key, label, icon }) => (
-            <button key={key} onClick={() => setViewMode(key)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, cursor: "pointer", border: `1px solid ${viewMode === key ? "#3B82F6" : "var(--color-border)"}`, background: viewMode === key ? "rgba(59,130,246,0.1)" : "var(--color-bg)", color: viewMode === key ? "#3B82F6" : "var(--color-text-secondary)", transition: "all 0.15s" }}>
-              {icon} {label}
-            </button>
-          ))}
-        </div>
 
         {/* Metric icons */}
         <div style={{ display: "flex", gap: "4px" }}>
@@ -3322,7 +4499,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, onSetupBranded }: {
           </button>
         }>
           {periodOptions.map(p => {
-            const lbl = PERIOD_OPTIONS.find(o => o.key === p)?.label ?? p;
+            const lbl = t((PERIOD_OPTIONS.find(o => o.key === p)?.label ?? p) as never);
             return (
               <button key={p} onClick={() => setPeriod(p)} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "9px 14px", fontSize: "13px", cursor: "pointer", width: "100%", background: period === p ? "rgba(59,130,246,0.12)" : "transparent", color: period === p ? "#3B82F6" : "var(--color-text-primary)", border: "none" }}>
                 {lbl} {period === p && <Check size={12} style={{ marginLeft: "auto" }} />}
@@ -3332,71 +4509,158 @@ function AnnotationsTab({ period, setPeriod, periodOptions, onSetupBranded }: {
         </SimpleDropdown>
       </div>
 
+      {/* The table exists only after `prisma db push`; say so plainly rather than showing an
+          empty tab that looks like "no notes yet". */}
+      {unavailable && (
+        <div style={{ margin: "16px 32px", padding: "12px 14px", borderRadius: "10px", border: "1px solid rgba(245,158,11,0.35)", background: "rgba(245,158,11,0.08)", fontSize: "13px", color: "var(--color-text-secondary)" }}>
+          {t("annUnavailable")}
+        </div>
+      )}
+
+      {/* ── One timeline: traffic, the operator's notes, and Google's updates ──
+          These were two views with a toggle between them, and the toggle was the problem: the
+          question people actually ask is "what moved my site", and answering it meant flipping
+          screens and holding one in your head. Both kinds of event are dated, both are scored the
+          same way, so they belong on the same curve. Notes are solid lines, updates are shaded
+          bands — enough to tell them apart without a legend. */}
+      {(chartData?.length ?? 0) > 0 && (
+        <div style={{ padding: "16px 32px 4px" }}>
+          <ResponsiveContainer width="100%" height={230}>
+            <ComposedChart data={chartData} margin={{ top: 26, right: 4, left: -14, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }}
+                interval="preserveStartEnd" minTickGap={28} axisLine={false} tickLine={false} />
+              <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }}
+                axisLine={false} tickLine={false} width={38} />
+              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }}
+                axisLine={false} tickLine={false} width={44} />
+              {/* Position's own hidden axis, reversed so rank 1 sits at the top. */}
+              <YAxis yAxisId="pos" reversed hide domain={[1, "dataMax"]} />
+              <Tooltip
+                contentStyle={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "8px", fontSize: "12px" }}
+                labelStyle={{ color: "var(--color-text-secondary)" }} />
+              {/* The same four metrics and the same toggle buttons as the dashboard. CTR and
+                  position were missing here, which made the tab feel like a lesser chart rather
+                  than the same one with events drawn on it. Impressions keep the right axis;
+                  putting a five-figure count on the same scale as a 1.4% CTR flattens both. */}
+              {activeMetrics.has("impressions") && (
+                <Area yAxisId="right" type="monotone" dataKey="impressions" stroke={C.impressions}
+                  fill={C.impressions} fillOpacity={0.08} strokeWidth={1.2} dot={false} name={t("impressions")} />
+              )}
+              {activeMetrics.has("clicks") && (
+                <Line yAxisId="left" type="monotone" dataKey="clicks" stroke={C.clicks}
+                  strokeWidth={1.8} dot={false} name={t("clicks")} />
+              )}
+              {activeMetrics.has("ctr") && (
+                <Line yAxisId="left" type="monotone" dataKey="ctr" stroke={C.ctr}
+                  strokeWidth={1.5} dot={false} name="CTR" />
+              )}
+              {/* Position is inverted: rank 1 belongs at the top of the chart, and the default
+                  scale would draw an improvement as a fall. */}
+              {activeMetrics.has("position") && (
+                <Line yAxisId="pos" type="monotone" dataKey={(d: { position: number }) => d.position > 0 ? d.position : null} stroke={C.position}
+                  strokeWidth={1.5} dot={false} connectNulls name={t("avgPosition")} />
+              )}
+              {renderAlgoMarkers(algoMarkers ?? [], t as never)}
+              {renderNoteMarkers(noteMarkers)}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       {/* ── Background content ── */}
-      <div style={{ filter: onboarding ? "blur(2px)" : "none", pointerEvents: onboarding ? "none" : "auto", userSelect: onboarding ? "none" : "auto", transition: "filter 0.2s" }}>
+      {/* No blur any more: it existed to make invented rows look like real data behind frosted
+          glass, and with the rows gone there is nothing to obscure. */}
+      <div>
         {displayNotes.map((note, idx) => (
-          <div key={idx} style={{ display: "grid", gridTemplateColumns: "280px 1fr auto", gap: "0", borderBottom: "1px solid var(--color-border)", alignItems: "center", padding: "0 32px" }}>
-            {/* Left: date + title + scope */}
+          // Updates drop the four sparklines a note gets. A note is one event an operator wants to
+          // study; updates are a timeline they want to read down. Eight charts on screen made the
+          // page a scroll where the useful part — the date and the deltas — was the smallest thing
+          // on it.
+          <div key={idx} style={{ display: "grid", gridTemplateColumns: "320px 1fr auto", gap: "0", borderBottom: "1px solid var(--color-border)", alignItems: "center", padding: "0 32px" }}>
+            {/* Left: date + title + scope. Purchases render their localized label (quantity ×
+                provider) instead of the server's English fallback, and link to the order. */}
             <div style={{ padding: "18px 24px 18px 0" }}>
-              <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>{note.title}</div>
+              <div style={{ fontSize: "13px", fontWeight: 700, color: note.kind === "purchase" ? "#7C3AED" : "var(--color-text-primary)", marginBottom: "4px" }}>
+                {note.kind === "purchase"
+                  ? t("mlPurchaseRow").replace("{n}", String(note.mlQuantity ?? "?")).replace("{p}", String(note.mlProvider ?? "").startsWith("magic369") ? "369Team" : "FieldLink")
+                  : note.title}
+              </div>
               <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
-                {note.date} · {note.scope}
+                {note.date} · {note.kind === "update" ? (note.description || t("annUpdates")) : note.kind === "purchase"
+                  ? <span>{t("mlOrderLabel")} <a href="/magiclinks" style={{ color: "var(--color-accent-purple)", fontFamily: "monospace" }}>{note.orderId}</a></span>
+                  : note.scope}
               </div>
             </div>
 
-            {/* Center: sparkline + date range */}
-            <div style={{ padding: "12px 24px" }}>
-              <AnnotationSparkline before={note.sparkBefore} after={note.sparkAfter} />
-              <div style={{ fontSize: "10px", color: "var(--color-text-secondary)", textAlign: "center", marginTop: "2px" }}>{note.dateRange}</div>
-            </div>
+            {/* Center: before/after chart + date range — notes only */}
 
             {/* Right: metrics before → after */}
-            <div style={{ padding: "18px 0 18px 0", display: "flex", flexDirection: "column", gap: "4px", minWidth: "260px" }}>
-              {activeMetrics.has("clicks") && (
-                <div style={{ fontSize: "12px", display: "flex", alignItems: "center", gap: "5px" }}>
-                  <Sparkles size={11} color={C.clicks} />
-                  <span style={{ color: "var(--color-text-secondary)" }}>{fK(note.cBefore)}</span>
-                  <span style={{ color: "var(--color-text-secondary)" }}>→</span>
-                  <span style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>{fK(note.cAfter)} {t("clicks").toLowerCase()}</span>
-                  <span style={{ color: "#10B981", fontSize: "11px", fontWeight: 600 }}>+{note.cPct}%</span>
-                </div>
-              )}
-              {activeMetrics.has("impressions") && (
-                <div style={{ fontSize: "12px", display: "flex", alignItems: "center", gap: "5px" }}>
-                  <Eye size={11} color={C.impressions} />
-                  <span style={{ color: "var(--color-text-secondary)" }}>{fK(note.iBefore)}</span>
-                  <span style={{ color: "var(--color-text-secondary)" }}>→</span>
-                  <span style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>{fK(note.iAfter)} {t("impressions").toLowerCase()}</span>
-                  <span style={{ color: "#10B981", fontSize: "11px", fontWeight: 600 }}>+{note.iPct}%</span>
-                </div>
-              )}
-              {activeMetrics.has("ctr") && (
-                <div style={{ fontSize: "12px", display: "flex", alignItems: "center", gap: "5px" }}>
-                  <Percent size={11} color={C.ctr} />
-                  <span style={{ color: "var(--color-text-secondary)" }}>{note.tBefore}</span>
-                  <span style={{ color: "var(--color-text-secondary)" }}>→</span>
-                  <span style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>{note.tAfter}</span>
-                  <span style={{ color: "#10B981", fontSize: "11px", fontWeight: 600 }}>+{note.tPct}%</span>
-                </div>
-              )}
-              {activeMetrics.has("position") && (
-                <div style={{ fontSize: "12px", display: "flex", alignItems: "center", gap: "5px" }}>
-                  <MoveUp size={11} color={C.position} />
-                  <span style={{ color: "var(--color-text-secondary)" }}>{note.pBefore}</span>
-                  <span style={{ color: "var(--color-text-secondary)" }}>→</span>
-                  <span style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>{note.pAfter} {t("avgPosition")}</span>
-                  <span style={{ color: "#6b7280", fontSize: "11px", fontWeight: 600 }}>+{note.pDelta}</span>
-                </div>
-              )}
+            <div style={{ padding: "18px 0", display: "flex", flexDirection: "row", flexWrap: "wrap", gap: "18px", minWidth: "260px", alignItems: "center" }}>
+              {/* Every delta used to render as a green "+" regardless of sign, so a drop appeared
+                  as a green "+-20%". Sign and colour now follow the actual number, and a note with
+                  no post-change data yet says so instead of claiming a confident zero. */}
+              {([
+                ["clicks", <Sparkles key="c" size={11} color={C.clicks} />, fK(note.cBefore), `${fK(note.cAfter)} ${t("clicks").toLowerCase()}`, note.cPct, true],
+                ["impressions", <Eye key="i" size={11} color={C.impressions} />, fK(note.iBefore), `${fK(note.iAfter)} ${t("impressions").toLowerCase()}`, note.iPct, true],
+                ["ctr", <Percent key="t" size={11} color={C.ctr} />, `${note.tBefore}%`, `${note.tAfter}%`, note.tPct, true],
+                ["position", <MoveUp key="p" size={11} color={C.position} />, note.pBefore, `${note.pAfter} ${t("avgPosition")}`, note.pDelta, false],
+              ] as const).map(([m, icon, before, after, change, isPct]) => {
+                if (!activeMetrics.has(m as Metric)) return null;
+                const noData = note.hasAfter === false;
+                // Position is the one metric where a smaller number is better; the API already
+                // reports its delta as before − after, so positive means improved everywhere.
+                const good = change !== null && change > 0;
+                const colour = noData || change === null || change === 0
+                  ? "var(--color-text-secondary)" : good ? "#10B981" : "#EF4444";
+                const label = noData ? t("annAwaitingData")
+                  : change === null ? "—"
+                  : `${change > 0 ? "+" : ""}${change}${isPct ? "%" : ""}`;
+                return (
+                  <div key={m} style={{ fontSize: "12px", display: "flex", alignItems: "center", gap: "5px" }}>
+                    {icon}
+                    <span style={{ color: "var(--color-text-secondary)" }}>{before}</span>
+                    <span style={{ color: "var(--color-text-secondary)" }}>→</span>
+                    <span style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>{after}</span>
+                    <span style={{ color: colour, fontSize: "11px", fontWeight: 600 }}>{label}</span>
+                  </div>
+                );
+              })}
             </div>
+
+            {/* Actions — only for the operator's own notes, never for Google updates. */}
+            {note.kind === "note" && note.id && (
+              <div style={{ display: "flex", gap: "4px", alignItems: "center", flexShrink: 0 }}>
+                <button
+                  title={t("annEditNote")}
+                  onClick={() => setEditingNote({ id: note.id!, title: note.title, desc: note.description ?? "", date: note.date })}
+                  style={{ width: "30px", height: "30px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
+                  title={t("annDeleteNote")}
+                  onClick={async () => {
+                    if (!confirm(t("annDeleteConfirm"))) return;
+                    await fetch(`/api/annotations?id=${encodeURIComponent(note.id!)}`, { method: "DELETE" }).catch(() => {});
+                    await loadNotes();
+                  }}
+                  style={{ width: "30px", height: "30px", borderRadius: "8px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(239,68,68,0.06)", color: "#EF4444", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
 
       {/* Empty state when not onboarding and no notes */}
-      {!onboarding && notes.length === 0 && (
+      {!onboarding && !loading && notes.length === 0 && (
         <div style={{ padding: "64px 32px", textAlign: "center" }}>
-          <p style={{ fontSize: "14px", color: "var(--color-text-secondary)" }}>{t("annEmptyDesc")}</p>
+          <p style={{ fontSize: "14px", color: "var(--color-text-secondary)" }}>
+            {t("annEmptyDesc")}
+          </p>
         </div>
       )}
 
@@ -3414,12 +4678,9 @@ function AnnotationsTab({ period, setPeriod, periodOptions, onSetupBranded }: {
               {t("annCreateNoteBtn")}
             </button>
 
-            <p style={{ textAlign: "center", fontSize: "13px", color: "var(--color-text-secondary)" }}>
-              {t("annOrTryItWith")}{" "}
-              <button onClick={() => { setOnboarding(false); setViewMode("updates"); }} style={{ display: "inline-flex", alignItems: "center", gap: "4px", background: "none", border: "none", cursor: "pointer", color: "var(--color-text-primary)", fontWeight: 600, fontSize: "13px", padding: 0 }}>
-                <GoogleIcon size={14} /> {t("annUpdates")}
-              </button>
-            </p>
+            {/* No "try it with Google updates" line any more: the panel only shows when the
+                timeline is empty, so there are no updates in this period to point at. Claiming
+                otherwise would be false exactly when someone reads it. */}
           </div>
         </div>
       )}
@@ -3428,7 +4689,33 @@ function AnnotationsTab({ period, setPeriod, periodOptions, onSetupBranded }: {
       {showAddNote && (
         <AddNoteModal
           onClose={() => setShowAddNote(false)}
-          onSave={note => setNotes(prev => [{ ...note, cBefore: 0, cAfter: 0, cPct: 0, iBefore: 0, iAfter: 0, iPct: 0, tBefore: 0, tAfter: 0, tPct: 0, pBefore: 0, pAfter: 0, pDelta: 0, dateRange: "", sparkBefore: [], sparkAfter: [] }, ...prev])}
+          // Persist, then re-read: the figures are computed server-side from DailyMetric, so the
+          // row can only be filled in by the API. Writing a locally-invented placeholder is what
+          // produced the permanent 0 → 0 +0% this tab used to show.
+          onSave={async note => {
+            if (!siteDbId) return;
+            await fetch("/api/annotations", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ siteId: siteDbId, date: note.date, title: note.title, description: note.desc }),
+            }).catch(() => {});
+            await loadNotes();
+          }}
+        />
+      )}
+
+      {/* ── Edit Note Modal ── */}
+      {editingNote && (
+        <AddNoteModal
+          editNote={editingNote}
+          onClose={() => setEditingNote(null)}
+          onSave={async note => {
+            if (!note.id) return;
+            await fetch("/api/annotations", {
+              method: "PUT", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: note.id, date: note.date, title: note.title, description: note.desc }),
+            }).catch(() => {});
+            await loadNotes();
+          }}
         />
       )}
 
@@ -3501,7 +4788,6 @@ const OPTIMIZE_TOOLS = [
 
 function OptimizeTab({ siteDbId }: { siteDbId: string }) {
   const [active, setActive] = useState<string | null>(null);
-  const { blur } = usePrivacy();
   const { t } = useLanguage();
   // We grab domain from useParams here for ContentDecayMap
   const params = useParams();
@@ -3511,8 +4797,8 @@ function OptimizeTab({ siteDbId }: { siteDbId: string }) {
     <div style={{ padding: "24px 32px", display: "flex", flexDirection: "column", gap: "0" }}>
       {OPTIMIZE_TOOLS.map(({ id, icon, iconBg, titleKey, descKey }, i) => {
         const isActive = active === id;
-        const title = t(titleKey as any);
-        const desc = t(descKey as any);
+        const title = t(titleKey as never);
+        const desc = t(descKey as never);
         return (
           <div key={id}>
             {/* Card header row */}
@@ -3619,30 +4905,20 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
     );
   };
 
-  const SortTh = ({ col, label, color }: { col: DtSortCol; label: string; color: string }) => {
-    const active = sortCol === col;
-    const arrow = active ? (sortDir === "desc" ? " ↓" : " ↑") : " ↕";
-    return (
-      <th onClick={() => handleSort(col)}
-        style={{ textAlign: "left", padding: "8px 8px", color: active ? color : "var(--color-text-secondary)", fontWeight: active ? 700 : 500, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", fontSize: "11px", letterSpacing: "0.04em" }}>
-        {label.toUpperCase()}<span style={{ opacity: active ? 1 : 0.35, marginLeft: "2px" }}>{arrow}</span>
-      </th>
-    );
-  };
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px", minHeight: "30px" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("newRankings")}</h3>
         <TabBar tabs={["Queries", "Pages"]} active={tab} onChange={handleTabChange} />
-        <button onClick={handleCSV} title="Export CSV"
+        <button onClick={handleCSV} title={t("exportCsv")}
           style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "12px", cursor: "pointer" }}>
           <Download size={12} /> CSV
         </button>
       </div>
       {rows.length === 0 ? (
         <div style={{ padding: "32px 0", textAlign: "center", color: "var(--color-text-secondary)", fontSize: "13px" }}>
-          No new rankings this period
+          {t("noNewRankings")}
         </div>
       ) : (
         <>
@@ -3650,10 +4926,10 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
             <thead>
               <tr style={{ borderBottom: "1px solid var(--color-border)" }}>
                 <th style={{ textAlign: "left", padding: "8px 0", color: "var(--color-text-secondary)", fontWeight: 500 }}></th>
-                <SortTh col="clicks" label={t("clicks")}      color={C.clicks} />
-                <SortTh col="impr"   label={t("impressions")} color={C.impressions} />
-                <SortTh col="ctr"    label="CTR"              color={C.ctr} />
-                <SortTh col="pos"    label={t("position")}    color={C.position} />
+                <SortTh col="clicks" sortCol={sortCol} sortDir={sortDir} onSort={handleSort} label={t("clicks").toUpperCase()}      color={C.clicks} />
+                <SortTh col="impr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}   label={t("impressions").toUpperCase()} color={C.impressions} />
+                <SortTh col="ctr" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label="CTR"              color={C.ctr} />
+                <SortTh col="pos" sortCol={sortCol} sortDir={sortDir} onSort={handleSort}    label={t("position").toUpperCase()}    color={C.position} />
               </tr>
             </thead>
             <tbody>
@@ -3690,16 +4966,6 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
 }
 
 // ─── Stub tab ──────────────────────────────────────────────────────────────────
-function StubTab({ label }: { label: string }) {
-  return (
-    <div style={{ padding: "80px 32px", display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-      <div style={{ fontSize: "32px" }}>🚧</div>
-      <p style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)" }}>{label}</p>
-      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>Coming soon</p>
-    </div>
-  );
-}
-
 // ─── Winners & Losers (idea from sundios/SEO-Dashboard Traffic Insights) ──────
 // Top queries/pages by click growth/decline between the current and previous period,
 // with a contribution bar showing each row's share of the total change.
@@ -3788,6 +5054,24 @@ interface SitePageProps {
   guestEngines?: { bing: boolean; yandex: boolean }; // which engines the owner configured (guest view)
 }
 
+// Response of /api/gsc/site (src/app/api/gsc/site/route.ts) — the whole dashboard payload.
+// chartData rows always carry the comparison-period twins (*C, 0 = "no comparison row"); the
+// table row types (RankRow / CountryRow / DeviceRow) mirror what the route's mapRows produces.
+interface SiteData {
+  siteDbId: string;
+  chartData: { date: string; dateIso: string; clicks: number; impressions: number; ctr: number; position: number; clicksC: number; impressionsC: number; ctrC: number; positionC: number }[];
+  summary: Record<Metric, { value: number; change: number }>;
+  queries: RankRow[];
+  pages: RankRow[];
+  countries: CountryRow[];
+  devices: DeviceRow[];
+  newQueries: RankRow[];
+  newPages: RankRow[];
+  positionBuckets: { "1-3": number; "4-10": number; "11-20": number; "21+": number };
+  winnersLosers: WlData;
+  hasData: boolean;
+}
+
 export default function SitePage({
   siteDbId: propSiteDbId,
   domain: propDomain,
@@ -3795,7 +5079,7 @@ export default function SitePage({
   shareToken,
   guestEngines,
 }: SitePageProps = {}) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const params = useParams();
   const router = useRouter();
   const domain = propDomain || decodeURIComponent(params.id as string);
@@ -3812,7 +5096,7 @@ export default function SitePage({
   // Ahrefs Domain Rating (free public API, server-cached; attribution required by license).
   const [drValue, setDrValue] = useState<number | null>(null);
   useEffect(() => {
-    fetch(getUrl(`/api/dr?domains=${encodeURIComponent(domain)}`)).then(r => r.ok ? r.json() : null).then(d => {
+    fetch(getUrl(`/api/dr?domains=${encodeURIComponent(domain)}`), { headers: { "x-ahrefs-dr-key": getAhrefsDrKey() } }).then(r => r.ok ? r.json() : null).then(d => {
       const key = domain.toLowerCase().replace(/^www\./, "");
       const v = d?.ratings?.[key]?.dr;
       if (typeof v === "number") setDrValue(v);
@@ -3820,12 +5104,51 @@ export default function SitePage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [domain, shareToken]);
 
+  // The panel's own monthly DR series for this domain (DrSnapshot) — what turns the single
+  // "DR 12" chip into "12, and it fell from 24 three months ago", which is the penalty signal.
+  // A pure local read: free, keyless, and empty until the panel has seen the domain twice.
+  const [drHist, setDrHist] = useState<DrPoint[]>([]);
+  useEffect(() => {
+    fetch(getUrl(`/api/dr/history?domains=${encodeURIComponent(domain)}`))
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const key = domain.toLowerCase().replace(/^www\./, "");
+        const pts = d?.history?.[key];
+        if (Array.isArray(pts) && pts.length >= 2) setDrHist(pts);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [domain, shareToken]);
+
   // Use index so tab state doesn't break on language change
-  const TAB_KEYS = ["dashboard", "positions", "aeo", "ga4", "indexing", "backlinks", "annotations", "optimize", "health", "audit", "ux", "settings"] as const;
-  type TabKey = typeof TAB_KEYS[number];
+  type TabKey = "dashboard" | "positions" | "aeo" | "ga4" | "indexing" | "backlinks" | "annotations" | "optimize" | "health" | "audit" | "ux" | "settings";
   const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
-  const [period, setPeriod]       = useState("7d");
-  const [siteData, setSiteData]   = useState<any>(null);
+  // Same window vocabulary as the dashboard, same stored value (gsc_period): the dashboard
+  // hands its window over in the ?period= it appends when opening a site, a refresh or a
+  // shared site link reproduces it, and changing it here is what the dashboard shows next.
+  const [period, setPeriod]       = usePersistedState<string>("gsc_period", "7d", isGscPeriod, "period");
+  // The custom range's two halves — same stores and URL params as the dashboard, so the
+  // window it hands over (?period=custom&start=&end=) reproduces exactly, here and on refresh.
+  const [rangeStart, setRangeStart] = usePersistedState<string>("gsc_start", "", isIsoDate, "start");
+  const [rangeEnd, setRangeEnd]     = usePersistedState<string>("gsc_end", "", isIsoDate, "end");
+  const customReady = period === "custom" && !!rangeStart && !!rangeEnd && rangeStart <= rangeEnd;
+  // Day count of the custom window for the consumers that speak days rather than date strings
+  // (GA4, the engine series, annotations). UTC-midnight anchors — exact calendar days.
+  const customDays = customReady
+    ? Math.max(1, Math.round((new Date(rangeEnd).getTime() - new Date(rangeStart).getTime()) / 86_400_000) + 1)
+    : null;
+  const rangeQ = customReady ? `&start=${rangeStart}&end=${rangeEnd}` : "";
+  // Both dates picked and ordered = the window applies; clearing both steps back to the
+  // default preset instead of leaving the page on a phantom window.
+  const applySiteRange = (s: string, e: string) => {
+    if (s && e && s <= e) {
+      setRangeStart(s); setRangeEnd(e); setPeriod("custom");
+    } else {
+      setRangeStart(s); setRangeEnd(e);
+      if (!s && !e && period === "custom") setPeriod("7d");
+    }
+  };
+  const [siteData, setSiteData]   = useState<SiteData | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
 
   const TABS = useMemo(() => {
@@ -3835,6 +5158,9 @@ export default function SitePage({
       { key: "dashboard" as const, label: t("tabDashboard") },
       { key: "positions" as const, label: t("tabPositions") },
       { key: "ga4" as const,       label: t("tabGA4") },
+      // Read-only by construction: the guest variant below renders only the profile panel,
+      // and the endpoint refuses to fetch for a share-token caller regardless of what is sent.
+      { key: "backlinks" as const, label: t("shareLinkProfile") },
       { key: "health" as const,    label: t("tabHealth") },
       { key: "audit" as const,     label: t("tabAudit") },
     ];
@@ -3853,6 +5179,29 @@ export default function SitePage({
       { key: "settings" as const,    label: t("tabSettings") },
     ];
   }, [readOnly, t]);
+
+  // Deep link (?tab=audit): the workspace-wide audits page (/audits) opens a site's audit tab
+  // directly. Validated against the current tab list, so a stale or guest-forbidden tab falls
+  // back to the dashboard instead of rendering a tab the bar doesn't show. Read once on mount:
+  // depending on TABS would re-run on language change and reset the user's chosen tab.
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab && TABS.some(item => item.key === tab)) setActiveTab(tab as TabKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Write side of the same param: every tab click mirrors into the URL with router.replace, so
+  // the history stack does not fill with tab clicks, a refresh (and any link copied from the
+  // address bar, guest links included) lands on the tab the user actually left from. Only
+  // `tab` is set — period and shareToken params ride along untouched — and a URL that already
+  // matches (a deep-linked landing) is not rewritten.
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get("tab") === activeTab) return;
+    sp.set("tab", activeTab);
+    router.replace(`${window.location.pathname}?${sp.toString()}`, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   const [syncing, setSyncing] = useState(false);
   const [activeMetrics, setActiveMetrics] = useState<Set<Metric>>(new Set(["clicks", "impressions", "ctr", "position"]));
@@ -3883,12 +5232,12 @@ export default function SitePage({
   const [clusterMetrics, setClusterMetrics] = useState<{ clusters: ClusterRow[]; groups: ClusterRow[] } | null>(null);
   const [clusterLoading, setClusterLoading] = useState(false);
   const siteDbId = propSiteDbId || siteData?.siteDbId || '';
-  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
 
   const fetchClusterMetrics = (p = period) => {
     if (!siteDbId) return;
     setClusterLoading(true);
-    fetch(getUrl(`/api/gsc/cluster-metrics?siteId=${encodeURIComponent(siteDbId)}&period=${p}`))
+    fetch(getUrl(`/api/gsc/cluster-metrics?siteId=${encodeURIComponent(siteDbId)}&period=${p}${p === "custom" && customDays ? `&days=${customDays}` : ""}`))
       .then(r => r.json())
       .then(d => setClusterMetrics(d))
       .catch(() => {})
@@ -3901,48 +5250,15 @@ export default function SitePage({
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   useEffect(() => {
     if (readOnly) return;
-    const s = localStorage.getItem('gsc_synced_at');
-    if (s) setSyncedAt(new Date(s));
+    let cancelled = false;
+    loadSyncedAt().then(d => { if (!cancelled && d) setSyncedAt(d); });
+    return () => { cancelled = true; };
   }, [readOnly]);
-
-  const handleSync = () => {
-    if (syncing || readOnly) return;
-    setSyncing(true);
-
-    fetch('/api/gsc/sync', { method: 'POST' })
-      .then(r => r.json())
-      .then(() => {
-        // Poll until done, then refresh site data
-        const poll = setInterval(() => {
-          fetch('/api/gsc/sync')
-            .then(r => r.json())
-            .then(s => {
-              if (!s.syncing) {
-                clearInterval(poll);
-                const now = new Date();
-                setSyncedAt(now);
-                localStorage.setItem('gsc_synced_at', now.toISOString());
-                // Sync-all: also refresh the live Bing/Yandex views if any are connected.
-                setEngineRefresh(k => k + 1);
-                fetch(getUrl(`/api/gsc/site?domain=${encodeURIComponent(domain)}&period=${period}`))
-                  .then(r => r.json())
-                  .then(d => { if (d?.chartData) setSiteData(d); })
-                  .catch(() => {})
-                  .finally(() => setSyncing(false));
-              }
-            })
-            .catch(() => {});
-        }, 15_000);
-        // Safety: stop after 15 min
-        setTimeout(() => { clearInterval(poll); setSyncing(false); }, 15 * 60_000);
-      })
-      .catch(() => setSyncing(false));
-  };
 
   // Fetch data from DB whenever domain or period changes
   useEffect(() => {
     setDataLoading(true);
-    fetch(getUrl(`/api/gsc/site?domain=${encodeURIComponent(domain)}&period=${period}`))
+    fetch(getUrl(`/api/gsc/site?domain=${encodeURIComponent(domain)}&period=${period}${rangeQ}`))
       .then(r => r.json())
       .then(d => setSiteData(d))
       .catch(() => {})
@@ -3965,19 +5281,39 @@ export default function SitePage({
 
   // Real data or empty fallback
   const chartData = useMemo(() => {
-    if (siteData?.chartData?.length > 0) return siteData.chartData;
+    if (siteData?.chartData && siteData.chartData.length > 0) return siteData.chartData;
     // Empty fallback (no fake numbers)
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(); d.setDate(d.getDate() - 7 + i);
-      return { date: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }), clicks: 0, impressions: 0, ctr: 0, position: 0, clicksC: 0, impressionsC: 0, ctrC: 0, positionC: 0 };
+      return { date: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }), dateIso: d.toISOString().split("T")[0], clicks: 0, impressions: 0, ctr: 0, position: 0, clicksC: 0, impressionsC: 0, ctrC: 0, positionC: 0 };
     });
   }, [siteData]);
+
+  // ── Candlestick view (Settings → Preferences). Read once per mount: the setting lives in a
+  // different route and navigating back here remounts the page, which re-reads it.
+  const chartTypePref = useChartTypePref();
+
+  // Daily rows → candles: one per day up to ~6 weeks, calendar weeks/months beyond (see
+  // src/lib/chartCandles.ts). *C === 0 means "no comparison row" in this dataset, not a real zero.
+  const candleData = useMemo(() => buildCandleRows<(typeof chartData)[number]>(
+    chartData,
+    [
+      { key: "clicks",      value: r => r.clicks,                                prev: r => (r.clicksC > 0 ? r.clicksC : null) },
+      { key: "impressions", value: r => r.impressions,                           prev: r => (r.impressionsC > 0 ? r.impressionsC : null) },
+      { key: "ctr",         value: r => r.ctr,                                   prev: r => (r.ctrC > 0 ? r.ctrC : null) },
+      { key: "position",    value: r => (r.position > 0 ? r.position : null),    prev: r => (r.positionC > 0 ? r.positionC : null) },
+    ],
+    r => r.date,
+    r => r.dateIso,
+  ), [chartData]);
 
   // ── AIO Impact mode: clicks & impressions normalized to index 100 at the first
   // non-zero day, drawn on ONE axis. When AI Overviews eat clicks, the impressions
   // index keeps climbing while the clicks index detaches downward — the divergence
   // is the impact, which raw dual-axis lines can't show.
   const [aioMode, setAioMode] = useState(false);
+  // The AIO index mode is its own comparison of two curves, so it stays a line chart.
+  const candleMode = chartTypePref === "candle" && !aioMode;
 
   // ── Search-engine switcher: Google (local GSC data) vs live Bing / Yandex views.
   // Alt engines appear only when their key/token is configured in Settings.
@@ -3985,6 +5321,58 @@ export default function SitePage({
   const [engineSummary, setEngineSummary] = useState<EngineSummary | null>(null); // KPI row for Bing/Yandex
   const [engineRefresh, setEngineRefresh] = useState(0); // bumped by Sync to refetch live views
   const [altEngines, setAltEngines] = useState<AltEngine[]>([]);
+
+  // ── Sync. The run itself belongs to the server process, so everything here only watches it.
+  // Sits below the engine state because it bumps `engineRefresh` when a run ends.
+  //
+  // Runs when the server reports the sync finished. See src/lib/syncedAt.ts for why the watcher
+  // has no deadline: a full sync of a couple of hundred properties takes longer than the fifteen
+  // minutes the old code allowed, and cutting the spinner off mid-run made a healthy sync look
+  // like a failed one.
+  const settleSync = (s: SyncState) => {
+    const at = s.completedAt ?? new Date();
+    setSyncedAt(at);
+    rememberSyncedAt(at);
+    // Sync-all: also refresh the live Bing/Yandex views if any are connected.
+    setEngineRefresh(k => k + 1);
+    fetch(getUrl(`/api/gsc/site?domain=${encodeURIComponent(domain)}&period=${period}${rangeQ}`))
+      .then(r => r.json())
+      .then(d => { if (d?.chartData) setSiteData(d); })
+      .catch(() => {})
+      .finally(() => setSyncing(false));
+  };
+
+  const stopWatch = useRef<(() => void) | null>(null);
+  useEffect(() => () => { stopWatch.current?.(); }, []);
+
+  const handleSync = () => {
+    if (syncing || readOnly) return;
+    setSyncing(true);
+
+    fetch('/api/gsc/sync', { method: 'POST' })
+      .then(r => r.json())
+      .then(() => {
+        stopWatch.current?.();
+        stopWatch.current = watchSync(settleSync, () => setSyncing(false));
+      })
+      .catch(() => setSyncing(false));
+  };
+
+  // Pick up a run that is already going, so opening this page mid-sync shows the spinner rather
+  // than an idle button.
+  useEffect(() => {
+    if (readOnly) return;
+    let cancelled = false;
+    fetchSyncState().then(s => {
+      if (cancelled || !s?.syncing) return;
+      setSyncing(true);
+      stopWatch.current?.();
+      stopWatch.current = watchSync(settleSync, () => setSyncing(false));
+    });
+    return () => { cancelled = true; };
+    // settleSync is rebuilt every render; listing it would restart the watcher each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readOnly]);
   useEffect(() => {
     // Guest (share link): the owner's keys aren't in this browser — use the server-provided
     // list of engines configured for this site instead.
@@ -3998,7 +5386,7 @@ export default function SitePage({
     // Owner: an engine is available if a global key OR at least one connected account exists.
     const has = (eng: string) => {
       if (localStorage.getItem(`seoKey_${eng}`)) return true;
-      try { return (JSON.parse(localStorage.getItem(`seoKey_${eng}_accounts_list`) || "[]") as any[]).length > 0; }
+      try { return (JSON.parse(localStorage.getItem(`seoKey_${eng}_accounts_list`) || "[]") as unknown[]).length > 0; }
       catch { return false; }
     };
     const list: AltEngine[] = [];
@@ -4007,7 +5395,7 @@ export default function SitePage({
     setAltEngines(list);
   }, [shareToken, guestEngines]);
   const aioChartData = useMemo(() => {
-    const rows: any[] = chartData ?? [];
+    const rows: (typeof chartData)[number][] = chartData ?? [];
     const baseClicks = rows.find(r => (r.clicks ?? 0) > 0)?.clicks ?? 0;
     const baseImpr = rows.find(r => (r.impressions ?? 0) > 0)?.impressions ?? 0;
     return rows.map(r => ({
@@ -4019,13 +5407,101 @@ export default function SitePage({
     }));
   }, [chartData]);
 
-  // Google updates that fall inside the visible chart window
+  // Google's published update list, with the built-in one as the starting value so the chart has
+  // something to draw before the request lands (and if it never does).
+  const [algoUpdates, setAlgoUpdates] = useState<AlgoUpdate[]>(ALGO_UPDATES);
+  useEffect(() => {
+    if (readOnly) return;
+    fetch(getUrl("/api/gsc/algo-updates"))
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (Array.isArray(d?.updates) && d.updates.length) setAlgoUpdates(d.updates); })
+      .catch(() => { /* built-in list stays */ });
+  }, [readOnly]);
+
+  // Google updates inside the visible window, each already snapped to a real point on the axis.
+  // Snapping happens here rather than at render time because an update with no matching point is
+  // dropped entirely, and doing that in the map below would leave holes in the JSX.
   const visibleAlgoUpdates = useMemo(() => {
-    const start = siteData?.chartData?.[0]?.dateIso;
-    const end   = siteData?.chartData?.[siteData.chartData.length - 1]?.dateIso;
+    const chart = siteData?.chartData;
+    if (!chart?.length) return [];
+    const start = chart[0]?.dateIso;
+    const end = chart[chart.length - 1]?.dateIso;
     if (!start || !end) return [];
-    return ALGO_UPDATES.filter(u => u.date >= start && u.date <= end);
-  }, [siteData]);
+
+    // Neighbours are resolved over the whole list before filtering to the window, so an update
+    // just outside the period still bounds the measurement of the one inside it.
+    return withNeighbours(algoUpdates)
+      // Overlap, not containment: a core update that began before the window and finished inside
+      // it is exactly the one an operator is looking for when traffic moved early in the period.
+      .filter(u => (updateEnd(u) ?? u.date) >= start && u.date <= end)
+      .map(u => {
+        const x = snapToChartLabel(chart, u.date);
+        const endIso = updateEnd(u);
+        const x2 = endIso ? snapBackToChartLabel(chart, endIso) : null;
+        // A band only when the rollout actually spans more than one point on this axis; on a
+        // 16-month window most updates collapse into a single label and a zero-width area would
+        // render as an invisible sliver.
+        return {
+          ...u,
+          x,
+          x2: x2 && x2 !== x ? x2 : null,
+          impact: algoImpact(chart, u.date, endIso ?? u.date,
+            { prevEndIso: u.prevEndIso, nextStartIso: u.nextStartIso }),
+        };
+      })
+      .filter((u): u is AlgoUpdate & { x: string; x2: string | null; impact: AlgoImpactResult } => u.x !== null);
+  }, [siteData, algoUpdates]);
+
+  // In candle mode the X labels are bucket ends, not days — re-snap the markers to the candle
+  // labels, or every ReferenceLine would miss the data and be dropped silently. The impact
+  // measurement above stays on daily rows: it is data, not presentation.
+  const algoMarkersForMode = useMemo(() => {
+    if (!candleMode) return visibleAlgoUpdates;
+    const chart = candleData as unknown as { date: string; dateIso: string }[];
+    const out: typeof visibleAlgoUpdates = [];
+    for (const u of visibleAlgoUpdates) {
+      const x = snapToChartLabel(chart, u.date);
+      if (!x) continue;
+      const endIso = updateEnd(u);
+      const x2raw = endIso ? snapBackToChartLabel(chart, endIso) : null;
+      out.push({ ...u, x, x2: x2raw && x2raw !== x ? x2raw : null });
+    }
+    return out;
+  }, [candleMode, visibleAlgoUpdates, candleData]);
+
+  // ── Link purchases: one purple marker per order, derived from the purchase ledger ──
+  // The date is the ORDER day (UTC), not a claim the placements are live — publications follow
+  // days later, and the annotations tab's before/after figures are where the effect question
+  // is actually answered.
+  const [purchaseOrders, setPurchaseOrders] = useState<{ orderId: string; provider: string; date: string; quantity: number }[]>([]);
+  useEffect(() => {
+    if (readOnly || !siteDbId) return;
+    fetch(getUrl(`/api/magiclinks/purchases?siteId=${encodeURIComponent(siteDbId)}`))
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (Array.isArray(d?.markers)) setPurchaseOrders(d.markers); })
+      .catch(() => {});
+  }, [siteDbId, readOnly, shareToken]);
+
+  // Snapped for whichever axis mode is active — same reason as the algo markers above.
+  const purchaseMarkersForMode = useMemo(() => {
+    const chart = (candleMode ? candleData : siteData?.chartData) as unknown as { date: string; dateIso: string }[] | undefined;
+    if (!chart?.length) return [];
+    const out: { id: string; title: string; x: string; kind: "purchase"; label: string }[] = [];
+    for (const p of purchaseOrders) {
+      const x = snapToChartLabel(chart, p.date);
+      if (!x) continue;
+      out.push({
+        id: `purchase-${p.orderId}`,
+        title: `${p.quantity} links · ${p.provider.startsWith("magic369") ? "369Team" : "FieldLink"} · ${p.orderId}`,
+        x,
+        kind: "purchase",
+        label: `${p.quantity}×${p.provider.startsWith("magic369") ? "369" : "FL"}`,
+      });
+    }
+    return out;
+  }, [candleMode, candleData, siteData, purchaseOrders]);
+
+  const hasChartMarkers = (googleUpdates && algoMarkersForMode.length > 0) || purchaseMarkersForMode.length > 0;
 
   // ── Rank tracker: which queries are already tracked (for Track buttons) ──────
   const [trackedKws, setTrackedKws] = useState<Set<string>>(new Set());
@@ -4034,7 +5510,7 @@ export default function SitePage({
     fetch(getUrl(`/api/rank/keywords?siteId=${encodeURIComponent(siteDbId)}`))
       .then(r => r.json())
       .then(d => {
-        if (Array.isArray(d.keywords)) setTrackedKws(new Set(d.keywords.map((k: any) => String(k.keyword).toLowerCase())));
+        if (Array.isArray(d.keywords)) setTrackedKws(new Set(d.keywords.map((k: { keyword?: string }) => String(k.keyword).toLowerCase())));
       })
       .catch(() => {});
   }, [siteDbId, readOnly, shareToken]);
@@ -4054,37 +5530,41 @@ export default function SitePage({
       .catch(() => {});
   };
 
-  const applyPreset = (rows: any[]) => {
-    if (filterPreset === "paa")      return rows.filter((r: any) => r.label?.includes("?"));
-    if (filterPreset === "longtail") return rows.filter((r: any) => (r.label?.split(" ").length ?? 0) >= 3);
+  const applyPreset = (rows: RankRow[]) => {
+    if (filterPreset === "paa")      return rows.filter(r => r.label?.includes("?"));
+    if (filterPreset === "longtail") return rows.filter(r => (r.label?.split(" ").length ?? 0) >= 3);
     return rows;
   };
 
   const queryRows = useMemo(() => {
     let rows = siteData?.queries ?? [];
-    if (positionFilter)                                  rows = rows.filter((r: any) => r.pos <= positionFilter);
-    if (filterDimension === "query" && filterText.trim()) rows = rows.filter((r: any) => r.label?.toLowerCase().includes(filterText.toLowerCase()));
+    if (positionFilter)                                  rows = rows.filter(r => r.pos <= positionFilter);
+    if (filterDimension === "query" && filterText.trim()) rows = rows.filter(r => r.label?.toLowerCase().includes(filterText.toLowerCase()));
     rows = applyPreset(rows);
     return rows;
   }, [siteData, positionFilter, filterDimension, filterText, filterPreset]);
 
   const pageRows = useMemo(() => {
     let rows = siteData?.pages ?? [];
-    if (positionFilter)                                 rows = rows.filter((r: any) => r.pos <= positionFilter);
-    if (filterDimension === "page" && filterText.trim()) rows = rows.filter((r: any) => r.label?.toLowerCase().includes(filterText.toLowerCase()));
+    if (positionFilter)                                 rows = rows.filter(r => r.pos <= positionFilter);
+    if (filterDimension === "page" && filterText.trim()) rows = rows.filter(r => r.label?.toLowerCase().includes(filterText.toLowerCase()));
     return rows;
   }, [siteData, positionFilter, filterDimension, filterText]);
   const countryRows = useMemo(() => {
     let rows = siteData?.countries ?? [];
+    // `country` is read defensively (the API sends `name`): undefined falls through to the
+    // iso3ToName() half, exactly as before.
     if (filterDimension === "country" && filterText.trim())
-      rows = rows.filter((r: any) => r.country?.toLowerCase().includes(filterText.toLowerCase()) || iso3ToName(r.country ?? "").toLowerCase().includes(filterText.toLowerCase()));
+      rows = rows.filter((r: CountryRow & { country?: string }) => r.country?.toLowerCase().includes(filterText.toLowerCase()) || iso3ToName(r.country ?? "", language).toLowerCase().includes(filterText.toLowerCase()));
     return rows;
   }, [siteData, filterDimension, filterText]);
 
   const deviceRowsReal = useMemo(() => {
     let rows = siteData?.devices ?? [];
+    // Same defensive read: the API sends `name`, so `device` is undefined unless a future
+    // endpoint adds it.
     if (filterDimension === "device" && filterText)
-      rows = rows.filter((r: any) => r.device?.toUpperCase() === filterText.toUpperCase());
+      rows = rows.filter((r: DeviceRow & { device?: string }) => r.device?.toUpperCase() === filterText.toUpperCase());
     return rows;
   }, [siteData, filterDimension, filterText]);
   const newQueryRows   = useMemo(() => siteData?.newQueries     ?? [], [siteData]);
@@ -4108,7 +5588,6 @@ export default function SitePage({
   ];
   const qcTotal = qcBuckets.reduce((s, b) => s + b.count, 0);
 
-  const periodLabel = PERIOD_OPTIONS.find(o => o.key === period)?.label ?? period;
   const periodOptions = PERIOD_OPTIONS.map(o => o.key);
 
   return (
@@ -4122,7 +5601,7 @@ export default function SitePage({
           </button>
           <span style={{ color: "var(--color-text-secondary)", margin: "0 8px" }}>/</span>
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
+            { }
             <img src={`/api/favicon?domain=${domain}`} width={14} height={14} alt="" style={{ borderRadius: "2px" }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
             <span style={{ fontSize: "14px", fontWeight: 600, ...blurStyle }}>{domain}</span>
             <a href={`https://${domain}`} target="_blank" rel="noreferrer" title={t("openSite") || "Open site"}
@@ -4134,7 +5613,23 @@ export default function SitePage({
             {drValue != null && (
               <span style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                 <span style={{ fontSize: "11px", fontWeight: 700, padding: "2px 7px", borderRadius: "6px", background: "rgba(58,87,252,0.12)", color: "#3A57FC", ...blurStyle }}>DR {Math.round(drValue)}</span>
-                <a href="https://ahrefs.com/" target="_blank" rel="noreferrer" style={{ fontSize: "10px", color: "var(--color-text-tertiary)", textDecoration: "none" }} title="Domain Rating by Ahrefs">by Ahrefs</a>
+                {/* The accumulated monthly series next to the number it qualifies: a chip that
+                    reads "DR 12" reads very differently with ↓12 beside it. Same arrow-delta
+                    shape as the dashboard cards — the tooltip carries the months and the
+                    ≥5-point penalty rule; no chip until the delta rounds to something. */}
+                {drHist.length >= 2 && (() => {
+                  const drop = drHist[drHist.length - 1].dr - drHist[0].dr;
+                  const shown = Math.round(Math.abs(drop));
+                  if (!shown) return null;
+                  const title = `${t("drHistHint")}\n\n${drSeriesText(drHist)}`
+                    + (drop <= -5 ? `\n\n${t("drHistFlag").replace("{n}", String(shown))}` : "");
+                  return <span title={title} style={{ fontSize: "11px", fontWeight: 700, padding: "2px 7px", borderRadius: "6px", cursor: "help",
+                    background: drop < 0 ? "rgba(239,68,68,0.12)" : "rgba(16,185,129,0.12)",
+                    color: drop < 0 ? "#F87171" : "#34D399", ...blurStyle }}>
+                    {drop < 0 ? "↓" : "↑"}{shown}
+                  </span>;
+                })()}
+                <a href="https://ahrefs.com/" target="_blank" rel="noreferrer" style={{ fontSize: "10px", color: "var(--color-text-tertiary)", textDecoration: "none" }} title={t("drByAhrefs")}>{t("byAhrefs")}</a>
               </span>
             )}
           </div>
@@ -4182,29 +5677,41 @@ export default function SitePage({
       {activeTab === "positions" && <RankTracker siteDbId={siteDbId} domain={domain} />}
 
       {/* ── AI Visibility (AEO Tracker) tab ── */}
-      {activeTab === "aeo" && <AeoTracker siteDbId={siteDbId} domain={domain} />}
+      {activeTab === "aeo" && <VisibilityHub siteDbId={siteDbId} domain={domain} readOnly={readOnly} />}
 
       {/* ── GA4 tab ── */}
       {activeTab === "ga4" && (
-        <GA4Tab domain={domain} period={period} setPeriod={setPeriod} periodOptions={periodOptions} />
+        <GA4Tab domain={domain} period={period} setPeriod={setPeriod} periodOptions={periodOptions} customDays={customDays} />
       )}
 
       {/* ── Indexing tab ── */}
       {activeTab === "indexing" && <IndexingTab siteDbId={siteDbId} domain={domain} />}
 
       {/* ── Backlinks tab ── */}
-      {activeTab === "backlinks" && <BacklinksTab siteDbId={siteDbId} />}
+      {/* Guests get the profile only — the manual list below it is a working surface with
+          add/delete/recheck actions that a client report has no business exposing. */}
+      {activeTab === "backlinks" && (readOnly
+        ? <div style={{ padding: "24px 32px" }}><BacklinkProfile siteDbId={siteDbId} /></div>
+        : <BacklinksTab siteDbId={siteDbId} />)}
 
       {/* ── Annotations tab ── */}
       {activeTab === "annotations" && (
-        <AnnotationsTab period={period} setPeriod={setPeriod} periodOptions={periodOptions} onSetupBranded={() => setShowSetupModal(true)} />
+        <AnnotationsTab period={period} setPeriod={setPeriod} periodOptions={periodOptions} customDays={customDays} onSetupBranded={() => setShowSetupModal(true)} siteDbId={siteDbId} chartData={siteData?.chartData} algoMarkers={visibleAlgoUpdates} />
       )}
 
       {/* ── Optimize tab ── */}
       {activeTab === "optimize" && <OptimizeTab siteDbId={siteDbId} />}
 
       {/* ── Health tab ── */}
-      {activeTab === "health" && <SiteHealthPanel siteDbId={siteDbId} />}
+      {/* UptimePanel renders a bare .card in every state — it doesn't carry the tab's outer
+          padding the way SiteHealthPanel does, so it gets wrapped here (same as BacklinkProfile
+          above). Bottom padding is 0: the panel below brings its own 28px top. */}
+      {activeTab === "health" && (
+        <>
+          <div style={{ padding: "28px 32px 0" }}><UptimePanel siteDbId={siteDbId} /></div>
+          <SiteHealthPanel siteDbId={siteDbId} />
+        </>
+      )}
 
       {activeTab === "audit" && <SiteAuditPanel siteDbId={siteDbId} />}
 
@@ -4236,6 +5743,7 @@ export default function SitePage({
                 {!dataLoading && chg !== 0 && <Change pct={chg} invert={invert} />}
               </div>
             ))}
+            <TrafficChip domain={domain} shareToken={shareToken} style={blurStyle} />
           </div> : engineSummary ? (
             <div style={{ display: "flex", alignItems: "center", gap: "28px", flexWrap: "wrap" }}>
               {[
@@ -4251,9 +5759,10 @@ export default function SitePage({
                 </div>
               ))}
               <span style={{ fontSize: "12px", fontWeight: 600, color: engine === "bing" ? "#00809D" : "#FC3F1D" }}>{engine === "bing" ? "Bing" : t("seEngineYandex")} <span style={{ fontWeight: 400, color: "var(--color-text-secondary)" }}>· {t("seLiveData")}</span></span>
+              <TrafficChip domain={domain} shareToken={shareToken} style={blurStyle} />
             </div>
           ) : <div style={{ fontSize: "14px", fontWeight: 700, color: engine === "bing" ? "#00809D" : "#FC3F1D" }}>{engine === "bing" ? "Bing Webmaster" : t("seEngineYandexFull")} <span style={{ fontWeight: 400, fontSize: "12px", color: "var(--color-text-secondary)" }}>· {t("seLiveData")}</span></div>}
-
+          
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             {/* Engine switcher — shown only when Bing/Yandex keys are configured */}
             {altEngines.length > 0 && (
@@ -4302,7 +5811,11 @@ export default function SitePage({
                 </button>
               );
             })}
-            <PeriodDropdown period={period} onChange={setPeriod} />
+            {/* Public share link — owner only; guests never see share management */}
+            {!readOnly && siteDbId && (
+              <ShareLinkButton siteDbId={siteDbId} domain={domain} onOpenSettings={() => setActiveTab("settings")} />
+            )}
+            <PeriodDropdown period={period} onChange={setPeriod} rangeStart={rangeStart} rangeEnd={rangeEnd} onRangeChange={applySiteRange} />
             <button
               onClick={handleSync}
               disabled={syncing}
@@ -4319,11 +5832,40 @@ export default function SitePage({
 
         {/* Main chart — GSC (local) or a live Bing/Yandex view */}
         {engine !== "google" ? (
-          <EngineView engine={engine} domain={domain} siteDbId={siteDbId} refreshKey={engineRefresh} metrics={activeMetrics} days={periodToDays(period)} onSummary={setEngineSummary} />
+          <EngineView engine={engine} domain={domain} siteDbId={siteDbId} refreshKey={engineRefresh} metrics={activeMetrics} days={period === "custom" && customDays ? customDays : periodToDays(period)} onSummary={setEngineSummary} />
         ) : (
         <div style={{ background: "var(--color-card)", borderRadius: "12px", padding: "16px", border: "1px solid var(--color-border)" }}>
+          {candleMode ? (
+            // Candles: one pane per enabled metric on a shared date axis, previous period as a
+            // ghost candle beside each one. See src/components/CandleChartParts.tsx.
+            <CandlePanes
+              rows={candleData}
+              metrics={(["clicks", "impressions", "ctr", "position"] as const)
+                .filter(m => activeMetrics.has(m))
+                .map(m => ({
+                  key: m,
+                  color: C[m],
+                  kind: m === "ctr" ? "pct" as const : m === "position" ? "pos" as const : "count" as const,
+                  label: m === "ctr" ? "CTR" : m === "position" ? t("avgPosition") : m === "clicks" ? t("clicks") : t("impressions"),
+                }))}
+              showPrev={candleData.some(r => ["clicks", "impressions", "ctr", "position"].some(k => (r[k] as MetricCandle | undefined)?.prev))}
+              height={activeMetrics.size > 2 ? 360 : 300}
+              topMargin={hasChartMarkers ? 26 : 6}
+              renderMarkers={top => [
+                ...(googleUpdates ? renderAlgoMarkers(algoMarkersForMode, t as never, top) : []),
+                ...renderNoteMarkers(purchaseMarkersForMode),
+              ]}
+            />
+          ) : (
           <ResponsiveContainer width="100%" height={300}>
-            <ComposedChart data={aioMode ? aioChartData : chartData} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>
+            {/* Extra headroom when update markers are on: their labels sit above the plot area,
+                and at the default 8px they were clipped by the top of the chart — the text was
+                half-drawn and unreadable. Only reserved when something needs it, so the plot
+                keeps its full height the rest of the time. */}
+            <ComposedChart
+              data={(aioMode ? aioChartData : chartData) as { date: string }[]}
+              margin={{ top: hasChartMarkers ? 26 : 8, right: 0, left: 0, bottom: 0 }}
+            >
               <defs>
                 {(["clicks", "impressions", "ctr", "position"] as const).map(m => (
                   <linearGradient key={m} id={`sg-${m}`} x1="0" y1="0" x2="0" y2="1">
@@ -4336,7 +5878,14 @@ export default function SitePage({
               <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
               <YAxis yAxisId="left"  axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />
               {!aioMode && <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "var(--color-text-secondary)" }} />}
-              <Tooltip content={aioMode ? <AioTooltip /> : <SiteTooltip />} cursor={{ stroke: "var(--color-border)", strokeWidth: 1 }} />
+              {/* Position gets its own hidden axis, reversed so rank 1 sits at the top: a drop
+                  must read as a fall like every other metric, and the shared left axis cannot
+                  be flipped without dragging clicks and CTR with it. */}
+              {!aioMode && <YAxis yAxisId="pos" reversed hide domain={[1, "dataMax"]} />}
+              <Tooltip
+                content={aioMode ? <AioTooltip /> : <SiteTooltip />}
+                cursor={{ stroke: "var(--color-border)", strokeWidth: 1 }}
+              />
               {aioMode ? (
                 <>
                   {/* Index 100 baseline = the first non-zero day; divergence below it while
@@ -4350,21 +5899,20 @@ export default function SitePage({
                   {activeMetrics.has("clicks")      && <Line yAxisId="left"  type="monotone" dataKey="clicksC"      stroke={C.clicks}       strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
                   {activeMetrics.has("impressions") && <Line yAxisId="right" type="monotone" dataKey="impressionsC" stroke={C.impressions}   strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
                   {activeMetrics.has("ctr")         && <Line yAxisId="left"  type="monotone" dataKey="ctrC"         stroke={C.ctr}           strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
-                  {activeMetrics.has("position")    && <Line yAxisId="left"  type="monotone" dataKey="positionC"    stroke={C.position}      strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" />}
+                  {activeMetrics.has("position")    && <Line yAxisId="pos"   type="monotone" dataKey={(d: { positionC: number }) => d.positionC > 0 ? d.positionC : null} stroke={C.position}      strokeWidth={1}   strokeDasharray="4 3" dot={false} legendType="none" name={t("avgPosition")} />}
                   {activeMetrics.has("clicks")      && <Area yAxisId="left"  type="monotone" dataKey="clicks"      stroke={C.clicks}       strokeWidth={2}   fill={`url(#sg-clicks)`}      dot={false} />}
                   {activeMetrics.has("impressions") && <Area yAxisId="right" type="monotone" dataKey="impressions" stroke={C.impressions}   strokeWidth={2}   fill={`url(#sg-impressions)`} dot={false} />}
                   {activeMetrics.has("ctr")         && <Line yAxisId="left"  type="monotone" dataKey="ctr"         stroke={C.ctr}           strokeWidth={1.5} dot={false} />}
-                  {activeMetrics.has("position")    && <Line yAxisId="left"  type="monotone" dataKey="position"    stroke={C.position}      strokeWidth={1.5} dot={false} />}
+                  {activeMetrics.has("position")    && <Line yAxisId="pos"   type="monotone" dataKey={(d: { position: number }) => d.position > 0 ? d.position : null} stroke={C.position}    strokeWidth={1.5} dot={false} connectNulls name={t("avgPosition")} />}
                 </>
               )}
               {/* Google algorithm update markers (core / spam / discover) */}
-              {googleUpdates && visibleAlgoUpdates.map(u => (
-                <ReferenceLine key={`${u.name}-${u.date}`} x={algoDateLabel(u.date)} yAxisId="left"
-                  stroke={ALGO_UPDATE_COLORS[u.type]} strokeWidth={1.5} strokeDasharray="3 3"
-                  label={{ value: u.name, position: "top", fontSize: 9, fill: ALGO_UPDATE_COLORS[u.type], fontWeight: 600 }} />
-              ))}
+              {googleUpdates && renderAlgoMarkers(algoMarkersForMode, t as never)}
+              {/* Link purchase markers — one per order, purple, from the purchase ledger */}
+              {renderNoteMarkers(purchaseMarkersForMode)}
             </ComposedChart>
           </ResponsiveContainer>
+          )}
         </div>
         )}
 
@@ -4373,7 +5921,7 @@ export default function SitePage({
           {/* Header row with One Click Setup button */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
             <span style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
-              {clusterLoading ? "Loading…" : (clusterMetrics?.clusters?.length ?? 0) + (clusterMetrics?.groups?.length ?? 0) > 0 ? "" : "No clusters configured yet"}
+              {clusterLoading ? t("loading") : (clusterMetrics?.clusters?.length ?? 0) + (clusterMetrics?.groups?.length ?? 0) > 0 ? "" : t("noClustersYet")}
             </span>
             <button
               onClick={() => setShowSetupModal(true)}
@@ -4448,7 +5996,7 @@ export default function SitePage({
               )}
             </div>
             {brandedKeywords.length > 0 ? (
-              <BrandedChart siteDbId={siteDbId} period={period} keywords={brandedKeywords} />
+              <BrandedChart siteDbId={siteDbId} period={period} customDays={customDays} keywords={brandedKeywords} />
             ) : (
               <Placeholder icon={
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="9"/><path d="M9 9h1.5a1.5 1.5 0 0 1 0 3H9v3m3-6h1.5"/></svg>
@@ -4462,7 +6010,7 @@ export default function SitePage({
             </div>
             {qcTotal === 0 ? (
               <div style={{ height: "160px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--color-text-secondary)", fontSize: "13px" }}>
-                {dataLoading ? "Loading…" : "No data yet"}
+                {dataLoading ? t("loading") : t("noDataYet")}
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>

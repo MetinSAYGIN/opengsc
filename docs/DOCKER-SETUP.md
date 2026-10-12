@@ -13,6 +13,11 @@ process management differs (Docker instead of PM2/Nginx).
 > ⚠️ The domain requirement still applies for anything internet-facing: Google OAuth does not
 > accept bare IPs. For local use, `http://localhost:3000` works fine as the OAuth origin.
 
+> ⚠️ The **build** stage compiles the app with Turbopack, which peaks around 2.4 GB of memory —
+> and a container cannot add swap to paper over a shortage, so the memory has to be real
+> (Docker Desktop: check the VM's allocation). The running container is far lighter; a 1 GB
+> limit works fine once the image is built.
+
 ## Quickstart
 
 ```bash
@@ -55,6 +60,15 @@ your-domain.com {
 
 Remember: `NEXTAUTH_URL` must exactly match the Authorized redirect URI configured in Google
 Cloud Console (`https://your-domain.com/api/auth/callback/google`), including the scheme.
+
+## Other platforms (Railway, Fly.io, …)
+
+The image keeps all state in `/data/prod.db` and deliberately declares no Docker `VOLUME` —
+on PaaS platforms anonymous volumes are either unsupported or silently lose the database
+between deploys (each deploy starts a fresh container). If you deploy the image outside
+Compose, attach a volume to `/data` through the platform's own mechanism (on Railway:
+service → Volumes → new volume, mount path `/data`). Without a mounted `/data` the database
+lives in the container's writable layer and is wiped on every redeploy.
 
 ## Backups
 

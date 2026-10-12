@@ -5,17 +5,36 @@ import { signIn, useSession } from "next-auth/react";
 import {
   ArrowLeft, Plus, X, CheckCircle, AlertCircle,
   Users, Settings, Globe, Key, KeyRound, Edit2, Copy,
-  ChevronDown, Crown, Zap, Star, Eye, Sparkles,
+  ChevronDown, Crown, Zap, Star, Eye, Sparkles, BarChart3, ScrollText,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { readChartTypePref, writeChartTypePref } from "@/lib/chartCandles";
+import TeamMembersPanel from "@/components/TeamMembersPanel";
 import SeoToolsSettings, { SeoProviderKeysSection, AeoProviderKeysSection } from "@/components/SeoToolsSettings";
+import MetricsSettingsSection from "@/components/MetricsSettingsSection";
+import ProviderLogSection from "@/components/ProviderLogSection";
+import NotifyChannelsCard, { ChannelEventsRow } from "@/components/NotifyChannelsCard";
+import UptimeSettingsCard from "@/components/uptime/UptimeSettingsCard";
+// wave-nov settings cards (CONTRACT.md §3) — each stub is replaced by its owning task.
+import PushSettingsCard from "@/components/PushSettingsCard";                       // N10
+import ReportBrandingCard from "@/components/reports/ReportBrandingCard";           // N8
+import WidgetSettingsCard from "@/components/leads/WidgetSettingsCard";             // N9
+import ExtensionTokenCard from "@/components/ExtensionTokenCard";                   // N11
 
-type NavItem = "accounts" | "bing" | "yandex" | "teams" | "api" | "api-keys" | "indexing-api" | "seo-tools" | "notifications" | "members" | "preferences" | "supersites";
+type NavItem = "accounts" | "bing" | "yandex" | "teams" | "api" | "api-keys" | "indexing-api" | "metrics" | "seo-tools" | "provider-log" | "notifications" | "members" | "preferences" | "supersites";
+
+// These screens predate a real organization/member authorization model. Keep them available to
+// contributors who are working on that RFC, but do not present client-only mock state as a
+// production feature. Existing installations can opt back in without a database migration.
+const EXPERIMENTAL_TEAM_UI = process.env.NEXT_PUBLIC_EXPERIMENTAL_TEAM_UI === "1";
 
 interface ConnectedAccount {
   id: string; email: string; picture: string | null; connected: boolean; gscAccess: boolean; ga4Access?: boolean;
 }
+
+// next-auth session user as consumed by the sections below (display fields only).
+interface SessionUser { name?: string | null; email?: string | null; image?: string | null }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 function UserAvatar({ email, picture, size = 36 }: { email: string; picture?: string | null; size?: number }) {
@@ -25,26 +44,6 @@ function UserAvatar({ email, picture, size = 36 }: { email: string; picture?: st
   return (
     <div style={{ width: size, height: size, borderRadius: "50%", background: color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.38, fontWeight: 700, color: "#fff", flexShrink: 0 }}>
       {email[0].toUpperCase()}
-    </div>
-  );
-}
-
-// Ahrefs API key (stored browser-side like other SEO keys; auto-backed-up by SeoKeysSync).
-function AhrefsKeyField() {
-  const [val, setVal] = useState("");
-  const [saved, setSaved] = useState(false);
-  useEffect(() => { setVal(localStorage.getItem("seoKey_ahrefs") || ""); }, []);
-  return (
-    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-      <input
-        type="password" value={val} onChange={e => { setVal(e.target.value); setSaved(false); }}
-        placeholder="Ahrefs API key"
-        style={{ width: "260px", padding: "8px 11px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "13px", outline: "none" }}
-      />
-      <button onClick={() => { val.trim() ? localStorage.setItem("seoKey_ahrefs", val.trim()) : localStorage.removeItem("seoKey_ahrefs"); setSaved(true); }}
-        style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: saved ? "rgba(52,199,89,0.12)" : "var(--color-bg)", color: saved ? "var(--color-accent-green)" : "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-        {saved ? "✓" : "Save"}
-      </button>
     </div>
   );
 }
@@ -61,7 +60,7 @@ function LocalKeyField({ storageKey, placeholder }: { storageKey: string; placeh
         placeholder={placeholder}
         style={{ width: "260px", padding: "8px 11px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "13px", outline: "none" }}
       />
-      <button onClick={() => { val.trim() ? localStorage.setItem(storageKey, val.trim()) : localStorage.removeItem(storageKey); setSaved(true); }}
+      <button onClick={() => { if (val.trim()) localStorage.setItem(storageKey, val.trim()); else localStorage.removeItem(storageKey); setSaved(true); }}
         style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: saved ? "rgba(52,199,89,0.12)" : "var(--color-bg)", color: saved ? "var(--color-accent-green)" : "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
         {saved ? "✓" : "Save"}
       </button>
@@ -102,6 +101,23 @@ function EngineHowTo({ color, steps, note, docHref, linkHref, linkLabel }: { col
   );
 }
 
+const NavBtn = ({ icon, label, badge, active, onSelect }: { id: NavItem; icon: React.ReactNode; label: string; badge?: string; active: boolean; onSelect: () => void }) => (
+    <button
+      onClick={onSelect}
+      className={active ? "nav-btn active" : "nav-btn"}
+      style={{
+        display: "flex", alignItems: "center", gap: "10px",
+        padding: "8px 12px", borderRadius: "8px", width: "100%",
+        background: "transparent", color: active ? "#fff" : "var(--color-text-secondary)",
+        fontSize: "13px", fontWeight: 400, border: "none", cursor: "pointer", textAlign: "left",
+      }}
+    >
+      {icon}
+      <span style={{ flex: 1 }}>{label}</span>
+      {badge && <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.07)", borderRadius: "10px", padding: "1px 7px" }}>{badge}</span>}
+    </button>
+  );
+
 function BingAccountsManager() {
   const { t } = useLanguage();
   const [accounts, setAccounts] = useState<SearchEngineAccount[]>([]);
@@ -111,7 +127,7 @@ function BingAccountsManager() {
   useEffect(() => {
     try {
       setAccounts(JSON.parse(localStorage.getItem("seoKey_bing_accounts_list") || "[]"));
-    } catch (e) {
+    } catch {
       setAccounts([]);
     }
   }, []);
@@ -184,7 +200,7 @@ function YandexAccountsManager() {
   useEffect(() => {
     try {
       setAccounts(JSON.parse(localStorage.getItem("seoKey_yandex_accounts_list") || "[]"));
-    } catch (e) {
+    } catch {
       setAccounts([]);
     }
   }, []);
@@ -297,7 +313,7 @@ function YandexIcon({ size = 16 }: { size?: number }) {
 
 // ─── Section: My Google Accounts ──────────────────────────────────────────────
 function AccountsSection({ user, accounts, loadingAccounts, removing, onAdd, onRemove, onReauth }: {
-  user: any; accounts: ConnectedAccount[]; loadingAccounts: boolean;
+  user?: SessionUser; accounts: ConnectedAccount[]; loadingAccounts: boolean;
   removing: string | null; onAdd: () => void; onRemove: (id: string) => void; onReauth: (email: string) => void;
 }) {
   const { t } = useLanguage();
@@ -464,7 +480,7 @@ function AccountsSection({ user, accounts, loadingAccounts, removing, onAdd, onR
 }
 
 // ─── Section: My Teams ────────────────────────────────────────────────────────
-function TeamsSection({ user }: { user: any }) {
+function TeamsSection({ user }: { user?: SessionUser }) {
   const { t } = useLanguage();
   const teamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
   return (
@@ -518,6 +534,9 @@ function ApiSection() {
   const [visible, setVisible] = useState(false);
   const [copied, setCopied] = useState<string>("");
   const [client, setClient] = useState<"claude-code" | "claude-desktop" | "cursor" | "codex">("claude-code");
+  // Read from the server rather than hand-maintained here: a second copy of the registry
+  // in the UI is a copy that silently goes stale, which is exactly what happened before.
+  const [tools, setTools] = useState<{ name: string; cost: string }[]>([]);
 
   const appUrl = typeof window !== "undefined" ? window.location.origin : "https://your-domain.com";
   const endpoint = `${appUrl}/api/mcp`;
@@ -525,6 +544,8 @@ function ApiSection() {
 
   useEffect(() => {
     fetch("/api/settings/mcp-token").then(r => r.json()).then(d => { setToken(d.token ?? null); setLoading(false); }).catch(() => setLoading(false));
+    // Same-origin, so the session cookie authenticates it — no MCP token needed to look.
+    fetch("/api/mcp/tools").then(r => r.json()).then(d => setTools(Array.isArray(d.tools) ? d.tools : [])).catch(() => setTools([]));
   }, []);
 
   const generate = async () => {
@@ -551,12 +572,31 @@ function ApiSection() {
       label: "Claude Code",
       cmd: `claude mcp add --transport http opengsc ${endpoint} --header "Authorization: Bearer ${shownToken}"`,
     },
+    // Claude Desktop's "Add custom connector" dialog has a URL field and, behind Advanced
+    // settings, OAuth Client ID / Client Secret — and nothing else. There is no header
+    // field, so the Bearer line this panel used to print had nowhere to go; pasting the
+    // token into OAuth Client ID (the obvious guess) silently does nothing. Hence the URL
+    // carries the token instead, with the header-based alternative underneath for anyone
+    // who would rather keep it out of a URL.
     "claude-desktop": {
       label: "Claude Desktop",
       cmd: `${t("mcpDesktopHint")}
 
-URL: ${endpoint}
-Authorization: Bearer ${shownToken}`,
+URL: ${endpoint}?token=${shownToken}
+
+${t("mcpDesktopNoHeader")}
+
+${t("mcpDesktopBridge")}
+
+{
+  "mcpServers": {
+    "opengsc": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "${endpoint}",
+               "--header", "Authorization: Bearer ${shownToken}"]
+    }
+  }
+}`,
     },
     "cursor": {
       label: "Cursor",
@@ -577,11 +617,15 @@ http_headers = { "Authorization" = "Bearer ${shownToken}" }`,
     },
   };
 
-  const TOOL_LIST = [
-    "get_capabilities", "list_sites", "get_search_performance", "compare_periods",
-    "get_striking_distance", "get_cannibalization", "get_rank_tracker", "get_aeo_visibility",
-    "get_backlinks", "get_link_mentions", "get_site_health", "get_indexing_status",
-    "get_site_audit", "query_gsc_live", "inspect_url",
+  // Cost tiers, in the order they are shown. Colour carries the meaning that matters at a
+  // glance: blue is free, amber costs a Google quota or a fetch, red spends real money.
+  // `border` is spelled out rather than derived from `color` with an alpha suffix, because
+  // one of these colours is a CSS variable and `var(--x)33` is not a colour.
+  const TIERS: { key: "local" | "quota" | "net" | "paid"; label: string; color: string; bg: string; border: string }[] = [
+    { key: "local", label: t("mcpTierLocal"), color: "var(--color-accent-blue)", bg: "rgba(59,130,246,0.08)", border: "rgba(59,130,246,0.2)" },
+    { key: "quota", label: t("mcpTierQuota"), color: "#FCD34D", bg: "rgba(252,211,77,0.08)", border: "rgba(252,211,77,0.25)" },
+    { key: "net", label: t("mcpTierNet"), color: "#FCD34D", bg: "rgba(252,211,77,0.08)", border: "rgba(252,211,77,0.25)" },
+    { key: "paid", label: t("mcpTierPaid"), color: "#f87171", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)" },
   ];
 
   const codeBox: React.CSSProperties = { display: "flex", alignItems: "stretch", background: "rgba(255,255,255,0.04)", border: "1px solid var(--color-border)", borderRadius: "8px", overflow: "hidden" };
@@ -651,12 +695,24 @@ http_headers = { "Authorization" = "Bearer ${shownToken}" }`,
 
         {/* Available tools */}
         <div style={{ marginTop: "20px" }}>
-          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "8px" }}>{t("mcpToolsTitle")}</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-            {TOOL_LIST.map(name => (
-              <code key={name} style={{ fontSize: "11px", fontFamily: "monospace", padding: "4px 9px", borderRadius: "6px", background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "var(--color-accent-blue)" }}>{name}</code>
-            ))}
+          <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>
+            {t("mcpToolsTitle")} {tools.length > 0 && <span style={{ fontWeight: 500, color: "var(--color-text-secondary)" }}>({tools.length})</span>}
           </div>
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "12px", lineHeight: 1.6 }}>{t("mcpToolsCostNote")}</div>
+          {TIERS.map(tier => {
+            const inTier = tools.filter(x => x.cost === tier.key);
+            if (!inTier.length) return null;
+            return (
+              <div key={tier.key} style={{ marginBottom: "12px" }}>
+                <div style={{ fontSize: "11.5px", fontWeight: 600, color: tier.color, marginBottom: "6px" }}>{tier.label}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {inTier.map(x => (
+                    <code key={x.name} style={{ fontSize: "11px", fontFamily: "monospace", padding: "4px 9px", borderRadius: "6px", background: tier.bg, border: `1px solid ${tier.border}`, color: tier.color }}>{x.name}</code>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
           <div style={{ fontSize: "12.5px", color: "var(--color-text-secondary)", marginTop: "14px", lineHeight: 1.6, padding: "12px 14px", borderRadius: "8px", background: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.12)", display: "flex", flexDirection: "column", gap: "6px" }}>
             <span>
               💡 <b>{t("mcpSkillsTitle") || "AI Agent Skills:"}</b> {t("mcpSkillsNote")}
@@ -673,45 +729,18 @@ http_headers = { "Authorization" = "Bearer ${shownToken}" }`,
 }
 
 // ─── Section: Team Members ────────────────────────────────────────────────────
-function MembersSection({ user }: { user: any }) {
-  const { t } = useLanguage();
-  return (
-    <SectionCard>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("members")}</h2>
-          <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", borderRadius: "20px", padding: "2px 8px" }}>{t("membersCount")}</span>
-        </div>
-        <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "7px 16px", borderRadius: "8px", background: "rgba(59,130,246,0.12)", color: "#3B82F6", border: "1px solid rgba(59,130,246,0.25)", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
-          <Plus size={14} /> {t("invite")}
-        </button>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 0", borderTop: "1px solid var(--color-border)" }}>
-        <UserAvatar email={user?.email ?? "a"} picture={user?.image} size={36} />
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)" }}>{user?.name ?? t("yourAccount")}</div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{user?.email}</div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "20px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)" }}>
-          <Crown size={12} color="#F59E0B" />
-          <span style={{ fontSize: "12px", color: "#F59E0B", fontWeight: 600 }}>{t("owner")}</span>
-        </div>
-      </div>
-    </SectionCard>
-  );
-}
-
 // ─── Section: Preferences ─────────────────────────────────────────────────────
-function PreferencesSection({ user }: { user: any }) {
+function PreferencesSection({ user }: { user?: SessionUser }) {
   const { t, language, setLanguage } = useLanguage();
   const teamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
   const [shareWithTeam, setShareWithTeam] = useState(true);
   const [useAI, setUseAI] = useState(true);
+  const [chartPref, setChartPref] = useState(readChartTypePref);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       {/* Sharing */}
-      <SectionCard>
+      {EXPERIMENTAL_TEAM_UI && <SectionCard>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("sharingTitle")}</h2>
         </div>
@@ -726,7 +755,13 @@ function PreferencesSection({ user }: { user: any }) {
             <ChevronDown size={13} color="var(--color-text-secondary)" />
           </button>
         </div>
-      </SectionCard>
+      </SectionCard>}
+
+      {!EXPERIMENTAL_TEAM_UI && (
+        <SectionCard>
+          <SectionTitle title={t("singleOperatorTitle")} sub={t("singleOperatorDesc")} />
+        </SectionCard>
+      )}
 
       {/* Language */}
       <SectionCard>
@@ -734,20 +769,43 @@ function PreferencesSection({ user }: { user: any }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
           <div>
             <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{t("language")}</div>
-            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>English / Русский / Українська</div>
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>English / Русский / Українська / Français / Español / Deutsch / 简体中文</div>
           </div>
-          <div style={{ display: "flex", gap: "6px" }}>
-            {(["en", "ru", "uk"] as const).map(lang => (
-              <button key={lang} onClick={() => setLanguage(lang)} style={{ padding: "6px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: language === lang ? "rgba(139,92,246,0.15)" : "transparent", color: language === lang ? "#8B5CF6" : "var(--color-text-secondary)", border: `1px solid ${language === lang ? "rgba(139,92,246,0.3)" : "var(--color-border)"}`, transition: "all 0.15s" }}>
-                {lang === "en" ? "🇬🇧 EN" : lang === "ru" ? "🇷🇺 RU" : "🇺🇦 UK"}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-end" }}>
+            {(["en", "ru", "uk", "fr", "es", "de", "zh"] as const).map(lang => (
+              <button key={lang} onClick={() => setLanguage(lang)} style={{ padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: language === lang ? "rgba(139,92,246,0.15)" : "transparent", color: language === lang ? "#8B5CF6" : "var(--color-text-secondary)", border: `1px solid ${language === lang ? "rgba(139,92,246,0.3)" : "var(--color-border)"}`, transition: "all 0.15s" }}>
+                {lang === "en" ? "🇬🇧 EN" : lang === "ru" ? "🇷🇺 RU" : lang === "uk" ? "🇺🇦 UK" : lang === "fr" ? "🇫🇷 FR" : lang === "es" ? "🇪🇸 ES" : lang === "de" ? "🇩🇪 DE" : "🇨🇳 ZH"}
               </button>
             ))}
           </div>
         </div>
       </SectionCard>
 
-      {/* Team Preferences */}
+      {/* Chart view: line vs candlesticks for the site performance charts. A preference, not a
+          per-chart toggle — most SEO operators live on curves, so candles are strictly opt-in.
+          Applies the next time a site page mounts (the charts read it once per mount). */}
       <SectionCard>
+        <SectionTitle title={t("chartViewTitle")} />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
+          <div>
+            <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{t("chartViewLineCandle")}</div>
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("chartViewDesc")}</div>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-end" }}>
+            {([["line", t("chartViewLine")], ["candle", t("chartViewCandle")]] as const).map(([mode, label]) => {
+              const on = chartPref === mode;
+              return (
+                <button key={mode} onClick={() => { writeChartTypePref(mode); setChartPref(mode); }} style={{ padding: "6px 14px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: on ? "rgba(245,158,11,0.15)" : "transparent", color: on ? "#F59E0B" : "var(--color-text-secondary)", border: `1px solid ${on ? "rgba(245,158,11,0.3)" : "var(--color-border)"}`, transition: "all 0.15s" }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Team Preferences */}
+      {EXPERIMENTAL_TEAM_UI && <SectionCard>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("teamPreferences")}</h2>
           <button style={{ fontSize: "13px", color: "var(--color-accent-blue)", background: "none", border: "none", cursor: "pointer", fontWeight: 500, display: "flex", alignItems: "center", gap: "4px" }}>
@@ -770,25 +828,108 @@ function PreferencesSection({ user }: { user: any }) {
             })}
           </div>
         </div>
-      </SectionCard>
-      <SectionCard>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("apiKeysMovedTitle")}</div>
-            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("apiKeysMovedDesc")}</div>
-          </div>
-          <a href="/settings?tab=api-keys" style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 16px", borderRadius: "8px", background: "rgba(59,130,246,0.12)", color: "#3B82F6", border: "1px solid rgba(59,130,246,0.25)", fontSize: "13px", fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}>
-            <KeyRound size={14} /> {t("navApiKeys")}
-          </a>
-        </div>
-      </SectionCard>
+      </SectionCard>}
+      {/* Automatic sync. Lives here rather than next to the Google accounts: it is a preference
+          about how the instance behaves, not a property of any one connected account. */}
+      <SyncScheduleSection />
     </div>
   );
 }
 
+// ─── Automatic sync schedule (Settings → Preferences) ────────────────────────
+// The hour is stored in the user's own zone rather than UTC, because the thing being scheduled
+// is "be ready before I start work" and a UTC hour drifts away from that at every DST change.
+// See src/lib/syncSchedule.ts.
+function SyncScheduleSection() {
+  const { t } = useLanguage();
+  type Schedule = { enabled: boolean; hour: number; timeZone: string; lastRunAt: string | null };
+  const [s, setS] = useState<Schedule | null>(null);
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/settings/sync").then(r => r.json()).then(d => {
+      if (!d?.settings) return;
+      // The stored default is UTC, which is nobody's working day. Until the user saves anything,
+      // show the zone their own browser is in — that is the one they mean by "nine in the morning".
+      const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      setS({ ...d.settings, timeZone: d.settings.timeZone === "UTC" ? browserZone : d.settings.timeZone });
+    }).catch(() => {});
+  }, []);
+
+  const save = async (next: Schedule) => {
+    setS(next); setErr(""); setSaved(false);
+    try {
+      const res = await fetch("/api/settings/sync", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: next }),
+      });
+      if (!res.ok) { setErr(t("autoSyncNotMigrated")); return; }
+      setSaved(true); setTimeout(() => setSaved(false), 1500);
+    } catch {
+      setErr(t("autoSyncNotMigrated"));
+    }
+  };
+
+  if (!s) return null;
+
+  const select: React.CSSProperties = {
+    padding: "7px 10px", borderRadius: "8px", border: "1px solid var(--color-border)",
+    background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "13px",
+  };
+
+  return (
+    <SectionCard>
+      <SectionTitle icon={<Zap size={17} color="#10B981" />} title={t("autoSyncTitle")} sub={t("autoSyncSub")} />
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer" }}>
+          <input type="checkbox" checked={s.enabled} onChange={e => save({ ...s, enabled: e.target.checked })} />
+          {t("autoSyncEnable")}
+        </label>
+        <span style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>{t("autoSyncAt")}</span>
+        <select value={s.hour} onChange={e => save({ ...s, hour: Number(e.target.value) })} style={select}>
+          {Array.from({ length: 24 }, (_, h) => (
+            <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>
+          ))}
+        </select>
+        <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("autoSyncZone")}: {s.timeZone}</span>
+        {saved && <span style={{ fontSize: "12px", color: "#10B981" }}>✓</span>}
+      </div>
+      <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "10px", lineHeight: 1.6 }}>
+        {t("autoSyncLastRun")}: {s.lastRunAt ? new Date(s.lastRunAt).toLocaleString() : t("autoSyncNever")}
+        <br />
+        {t("autoSyncNote")}
+      </div>
+      {err && <div style={{ fontSize: "12px", color: "#f87171", marginTop: "8px" }}>{err}</div>}
+    </SectionCard>
+  );
+}
+
 // ─── Notifications Section (Telegram bot + alert rules) ───────────────────────
+// Client-side view of GET /api/settings/alerts: the editable alert rules and the recent
+// fired events. The server's full AlertSettings (src/lib/alertScheduler.ts) is deliberately
+// not imported — that module pulls server-only code into this client bundle.
+interface AlertRule { on: boolean; threshold?: number; percent?: number; days?: number; minScore?: number; failures?: number; minDr?: number }
+interface RecentAlertEvent { id: string; title: string; message: string; sent: boolean; createdAt: string }
+type AlertNumField = "threshold" | "percent" | "days" | "minScore" | "failures" | "minDr";
+
+const numInput: React.CSSProperties = { width: "64px", padding: "6px 8px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px" };
+const alertRowStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: "10px", padding: "10px 0", borderBottom: "1px solid var(--color-border)", flexWrap: "wrap" };
+
+const AlertRow = ({ id, label, value, unit, field, alerts, onSave }: { id: string; label: string; value: AlertRule; unit: string; field: AlertNumField; alerts: Record<string, AlertRule>; onSave: (next: Record<string, AlertRule>) => void }) => (
+  <div style={alertRowStyle}>
+    <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", minWidth: "260px" }}>
+      <input type="checkbox" checked={!!value.on} onChange={e => onSave({ ...alerts, [id]: { ...value, on: e.target.checked } })} />
+      {label}
+    </label>
+    <input type="number" value={value[field]} style={numInput}
+      onChange={e => onSave({ ...alerts, [id]: { ...value, [field]: Number(e.target.value) } })} />
+    <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{unit}</span>
+  </div>
+);
+
 function NotificationsSection() {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   // Telegram state
   const [tg, setTg] = useState<{ connected: boolean; botTokenMasked: string | null; chatId: string | null } | null>(null);
   const [botToken, setBotToken] = useState("");
@@ -800,8 +941,8 @@ function NotificationsSection() {
   const [slackBusy, setSlackBusy] = useState("");
   const [slackMsg, setSlackMsg] = useState("");
   // Alerts state
-  const [alerts, setAlerts] = useState<any>(null);
-  const [recent, setRecent] = useState<any[]>([]);
+  const [alerts, setAlerts] = useState<Record<string, AlertRule> | null>(null);
+  const [recent, setRecent] = useState<RecentAlertEvent[]>([]);
   const [alertsSaved, setAlertsSaved] = useState(false);
 
   const reloadTg = () => fetch("/api/settings/telegram").then(r => r.json()).then(setTg).catch(() => {});
@@ -809,7 +950,7 @@ function NotificationsSection() {
   const reloadAlerts = () => fetch("/api/settings/alerts").then(r => r.json()).then(d => { setAlerts(d.settings); setRecent(d.recent || []); }).catch(() => {});
   useEffect(() => { reloadTg(); reloadSlack(); reloadAlerts(); }, []);
 
-  const tgAction = async (action: string, body: any = {}) => {
+  const tgAction = async (action: string, body: Record<string, unknown> = {}) => {
     setTgBusy(action); setTgMsg("");
     try {
       const res = await fetch("/api/settings/telegram", {
@@ -821,11 +962,11 @@ function NotificationsSection() {
       else if (action === "detect") setTgMsg(`${t("tgDetected")} ${d.username || d.chatId}`);
       else if (action === "test") setTgMsg(t("tgTestOk"));
       reloadTg();
-    } catch (e: any) { setTgMsg(String(e?.message ?? e)); }
+    } catch (e) { setTgMsg(String((e as Error)?.message ?? e)); }
     setTgBusy("");
   };
 
-  const slackAction = async (action: string, body: any = {}) => {
+  const slackAction = async (action: string, body: Record<string, unknown> = {}) => {
     setSlackBusy(action); setSlackMsg("");
     try {
       const res = await fetch("/api/settings/slack", {
@@ -834,14 +975,14 @@ function NotificationsSection() {
       });
       const d = await res.json();
       if (!res.ok) setSlackMsg((t("tgErr") || "Error") + ": " + (d.error ?? res.status));
-      else if (action === "save") setSlackMsg(t("slackSaved") || "Slack Webhook saved successfully.");
-      else if (action === "test") setSlackMsg(t("slackTestOk") || "Test message sent to Slack channel.");
+      else if (action === "save") setSlackMsg(t("slackSaved" as never) || "Slack Webhook saved successfully.");
+      else if (action === "test") setSlackMsg(t("slackTestOk" as never) || "Test message sent to Slack channel.");
       reloadSlack();
-    } catch (e: any) { setSlackMsg(String(e?.message ?? e)); }
+    } catch (e) { setSlackMsg(String((e as Error)?.message ?? e)); }
     setSlackBusy("");
   };
 
-  const saveAlerts = async (next: any) => {
+  const saveAlerts = async (next: Record<string, AlertRule>) => {
     setAlerts(next);
     try {
       await fetch("/api/settings/alerts", {
@@ -852,21 +993,8 @@ function NotificationsSection() {
     } catch {}
   };
 
-  const numInput: React.CSSProperties = { width: "64px", padding: "6px 8px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px" };
-  const rowStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: "10px", padding: "10px 0", borderBottom: "1px solid var(--color-border)", flexWrap: "wrap" };
   const smallBtn: React.CSSProperties = { padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" };
 
-  const AlertRow = ({ id, label, value, unit, field }: { id: string; label: string; value: any; unit: string; field: string }) => (
-    <div style={rowStyle}>
-      <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--color-text-primary)", cursor: "pointer", minWidth: "260px" }}>
-        <input type="checkbox" checked={!!value.on} onChange={e => saveAlerts({ ...alerts, [id]: { ...value, on: e.target.checked } })} />
-        {label}
-      </label>
-      <input type="number" value={value[field]} style={numInput}
-        onChange={e => saveAlerts({ ...alerts, [id]: { ...value, [field]: Number(e.target.value) } })} />
-      <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{unit}</span>
-    </div>
-  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -904,6 +1032,9 @@ function NotificationsSection() {
           </div>
         )}
         {tgMsg && <div style={{ fontSize: "12px", color: tgMsg.startsWith(t("tgErr")) ? "#f87171" : "#10B981", marginTop: "10px" }}>{tgMsg}</div>}
+        {/* Wave-oct T3: which event types this channel receives (empty = everything). The bot
+            credentials themselves stay in the block above. */}
+        <ChannelEventsRow id="telegram" />
       </SectionCard>
 
       {/* Slack Webhook */}
@@ -936,16 +1067,36 @@ function NotificationsSection() {
           </div>
         )}
         {slackMsg && <div style={{ fontSize: "12px", color: slackMsg.includes("Error") || slackMsg.includes("invalid") ? "#f87171" : "#10B981", marginTop: "10px" }}>{slackMsg}</div>}
+        {/* Wave-oct T3: event filter for the Slack channel (credentials stay in the block above). */}
+        <ChannelEventsRow id="slack" />
       </SectionCard>
+
+      {/* Wave-oct delivery channels (Discord/Teams/SMTP/webhook) and the uptime workspace settings */}
+      <NotifyChannelsCard />
+      <UptimeSettingsCard />
+
+      {/* Wave-nov settings cards (CONTRACT.md §3), after UptimeSettingsCard. Stub bodies from
+          the foundation commit; N10/N8/N9/N11 replace their own card in place. */}
+      <PushSettingsCard />
+      <ReportBrandingCard />
+      <WidgetSettingsCard />
+      <ExtensionTokenCard />
 
       {/* Alert rules */}
       {alerts && (
         <SectionCard>
           <SectionTitle icon={<AlertCircle size={17} color="#F59E0B" />} title={t("alertsTitle")} sub={t("alertsSub")} />
-          <AlertRow id="rankDrop" label={t("alertRankDrop")} value={alerts.rankDrop} unit={t("alertPositionsUnit")} field="threshold" />
-          <AlertRow id="trafficDrop" label={t("alertTrafficDrop")} value={alerts.trafficDrop} unit="%" field="percent" />
-          <AlertRow id="ssl" label={t("alertSsl")} value={alerts.ssl} unit={t("alertDaysUnit")} field="days" />
-          <AlertRow id="audit" label={t("alertAudit")} value={alerts.audit} unit={t("alertScoreUnit")} field="minScore" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="rankDrop" label={t("alertRankDrop")} value={alerts.rankDrop} unit={t("alertPositionsUnit")} field="threshold" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="trafficDrop" label={t("alertTrafficDrop")} value={alerts.trafficDrop} unit="%" field="percent" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="ssl" label={t("alertSsl")} value={alerts.ssl} unit={t("alertDaysUnit")} field="days" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="audit" label={t("alertAudit")} value={alerts.audit} unit={t("alertScoreUnit")} field="minScore" />
+          {/* Провайдерские алерты читают только локальные данные (кэш балансов / журнал
+              вызовов) и сами никогда не ходят в сеть быстрее почасового тика. */}
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="balanceLow" label={t("alertBalanceLow")} value={alerts.balanceLow} unit="%" field="percent" />
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="providerDown" label={t("alertProviderDown")} value={alerts.providerDown} unit={t("alertFailuresUnit")} field="failures" />
+          {/* Off by default and dependent on a loaded backlink profile — it reads stored rows
+              and never calls a provider, so enabling it cannot cost anything by itself. */}
+          <AlertRow alerts={alerts} onSave={saveAlerts} id="lostLink" label={t("alertLostLink")} value={alerts.lostLink} unit={t("alertLostLinkDr")} field="minDr" />
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
             <button onClick={async () => {
               const d = await fetch("/api/settings/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run" }) }).then(r => r.json());
@@ -967,7 +1118,7 @@ function NotificationsSection() {
               <div key={a.id} style={{ padding: "10px 12px", borderRadius: "8px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--color-border)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)" }}>{a.title}</span>
-                  {a.sent && <span style={{ fontSize: "11px", color: "#34c759" }}>✓ {t("alertSent") || "Sent"}</span>}
+                  {a.sent && <span style={{ fontSize: "11px", color: "#34c759" }}>✓ {t("alertSent" as never) || "Sent"}</span>}
                   <span style={{ flex: 1 }} />
                   <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{new Date(a.createdAt).toLocaleString()}</span>
                 </div>
@@ -1028,6 +1179,17 @@ const AI_PROVIDERS = [
     logo: "R",
   },
   {
+    id: "cheaperinference",
+    name: "Cheaper Inference",
+    model: "GPT-5.6 Luna",
+    placeholder: "ir_live_...",
+    hint: "Wallet-backed gateway that routes each request to the cheapest available provider for that model; one key for Claude, GPT, Gemini, GLM and Kimi ids",
+    docsUrl: "https://cheaperinference.com/docs",
+    docsLabel: "cheaperinference.com",
+    color: "#0F9D58",
+    logo: "C",
+  },
+  {
     id: "zai",
     name: "Z.AI",
     model: "GLM-4.5-Air",
@@ -1084,6 +1246,22 @@ const AI_PROVIDERS = [
   },
 ] as const;
 
+// Shown as the endpoint field's placeholder: the URL used when the field is EMPTY. Spelled per
+// provider the way its gateway override wants it — OpenAI-shaped roots include /v1 (that is
+// what a compatible gateway expects pasted), anthropic is the bare host (Claude-CLI convention;
+// lib/llm.ts appends /v1/messages itself).
+const OFFICIAL_ENDPOINTS: Record<string, string> = {
+  anthropic: "https://api.anthropic.com",
+  openai: "https://api.openai.com/v1",
+  gemini: "https://generativelanguage.googleapis.com",
+  openrouter: "https://openrouter.ai/api/v1",
+  cheaperinference: "https://api.cheaperinference.com/v1",
+  kimi: "https://api.moonshot.ai/v1",
+  kie: "https://api.kie.ai",
+  deepseek: "https://api.deepseek.com",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+};
+
 function AIProviderCard({ provider }: { provider: typeof AI_PROVIDERS[number] }) {
   const { t } = useLanguage();
   const storageKey = `aiKey_${provider.id}`;
@@ -1095,21 +1273,26 @@ function AIProviderCard({ provider }: { provider: typeof AI_PROVIDERS[number] })
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsErr, setModelsErr] = useState(false);
+  // Only rendered for zai; "" means the general API endpoint (the default in lib/llm.ts).
+  const [endpoint, setEndpoint] = useState("");
   const isConfigured = key.trim().length > 6;
 
   useEffect(() => {
     setKey(localStorage.getItem(storageKey) || "");
     setModel(localStorage.getItem(modelKey) || "");
-  }, [storageKey, modelKey]);
+    setEndpoint(localStorage.getItem(`aiBaseUrl_${provider.id}`) || "");
+  }, [storageKey, modelKey, provider.id]);
 
-  // Live model list from the provider's own API (server-side proxy avoids CORS).
+  // Live model list from the provider's own API (server-side proxy avoids CORS). The endpoint
+  // rides along so proxy gateways (anthropic + aiBaseUrl_) are queried at their own catalogue
+  // instead of the official one, where the proxy key is meaningless.
   const loadModels = async (apiKey: string) => {
     if (!apiKey.trim()) return;
     setModelsLoading(true); setModelsErr(false);
     try {
       const res = await fetch("/api/seo/models", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: provider.id, apiKey: apiKey.trim() }),
+        body: JSON.stringify({ provider: provider.id, apiKey: apiKey.trim(), baseUrl: endpoint.trim() || undefined }),
       });
       const d = await res.json();
       const list = Array.isArray(d?.models) ? d.models : [];
@@ -1250,6 +1433,62 @@ function AIProviderCard({ provider }: { provider: typeof AI_PROVIDERS[number] })
         <div style={{ fontSize: "11px", color: "#f87171", marginBottom: "8px" }}>{t("aiModelLoadFail")}</div>
       )}
 
+      {/* Optional endpoint override — the same convention for every provider: EMPTY = the
+          provider's official API (shown as the placeholder); a custom URL routes every call
+          through that gateway (proxies, NewAPI-style resellers). lib/llm.ts picks the right
+          wire format per provider and the key mirrors server-side for background jobs.
+          zai is excluded: it has its own selector, because its two endpoints are a product
+          choice (which balance burns), not an arbitrary gateway. */}
+      {provider.id !== "zai" && (
+        <div style={{ marginBottom: "10px" }}>
+          <input
+            value={endpoint}
+            onChange={e => {
+              const v = e.target.value.trim();
+              setEndpoint(e.target.value);
+              if (v) localStorage.setItem(`aiBaseUrl_${provider.id}`, v);
+              else localStorage.removeItem(`aiBaseUrl_${provider.id}`);
+            }}
+            placeholder={OFFICIAL_ENDPOINTS[provider.id] || "https://"}
+            style={{
+              width: "100%", padding: "8px 12px",
+              borderRadius: "8px", border: "1px solid var(--color-border)",
+              background: "var(--color-card)", color: "var(--color-text-primary)",
+              fontSize: "12px", outline: "none", boxSizing: "border-box",
+              fontFamily: "monospace",
+            }}
+          />
+          <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginTop: "5px", lineHeight: 1.5 }}>
+            {t("aiEndpointHint" as never)}
+          </div>
+        </div>
+      )}
+
+      {/* Z.AI ships the same models behind two products on ONE account key, and the endpoint is
+          what decides which balance a request spends. Sending app traffic to the Coding Plan
+          endpoint burns that plan's 5-hour quota (and Z.AI limits the plan to supported coding
+          tools), while the general endpoint bills the pay-as-you-go balance. Nothing in the key
+          itself reveals the choice, so it has to be made here. */}
+      {provider.id === "zai" && (
+        <div style={{ marginBottom: "10px" }}>
+          <select
+            value={endpoint}
+            onChange={e => {
+              const v = e.target.value;
+              setEndpoint(v);
+              if (v) localStorage.setItem("aiBaseUrl_zai", v); else localStorage.removeItem("aiBaseUrl_zai");
+            }}
+            style={{ width: "100%", padding: "7px 10px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "12px" }}
+          >
+            <option value="">{t("zaiEndpointGeneral" as never)}</option>
+            <option value="https://api.z.ai/api/anthropic">{t("zaiEndpointCoding" as never)}</option>
+          </select>
+          <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginTop: "5px", lineHeight: 1.5 }}>
+            {t("zaiEndpointHint" as never)}
+          </div>
+        </div>
+      )}
+
       {/* Hint + link */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{provider.hint}</span>
@@ -1267,6 +1506,7 @@ function AIProviderCard({ provider }: { provider: typeof AI_PROVIDERS[number] })
 }
 
 function AIConfigSection() {
+  const { t } = useLanguage();
   return (
     <SectionCard>
       <SectionTitle
@@ -1278,7 +1518,7 @@ function AIConfigSection() {
         {AI_PROVIDERS.map(p => <AIProviderCard key={p.id} provider={p} />)}
       </div>
       <div style={{ marginTop: "14px", padding: "11px 14px", borderRadius: "8px", background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.18)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
-        💡 Keys are stored in your browser only and sent directly to the AI provider when running One Click Setup. They are never stored on the server.
+        💡 {t("aiKeysHint")}
       </div>
     </SectionCard>
   );
@@ -1625,22 +1865,6 @@ function IndexApiSection() {
         </div>
       </SectionCard>
 
-      {/* ── Ahrefs API (Link Monitor + paid endpoints) ── */}
-      <SectionCard>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <div style={{ width: 28, height: 28, borderRadius: "6px", background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 800, color: "#8B5CF6" }}>AH</div>
-            <div>
-              <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>Ahrefs API</span>
-              <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("ahrefsDesc")}</p>
-            </div>
-          </div>
-          <AhrefsKeyField />
-        </div>
-      </SectionCard>
-
-
-
       {/* ── IndexNow key ── */}
       <SectionCard>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
@@ -1689,6 +1913,7 @@ const HEALTH_PROVIDERS = [
     name: "Google Safe Browsing",
     placeholder: "AIzaSy...",
     hint: "Detects malware, phishing, and harmful content on your site.",
+    stepsKey: "healthSbSteps",
     docsUrl: "https://developers.google.com/safe-browsing/v4/get-started",
     color: "#4285F4",
     logo: "SB",
@@ -1698,7 +1923,8 @@ const HEALTH_PROVIDERS = [
     id: "google",
     name: "PageSpeed Insights (Core Web Vitals)",
     placeholder: "AIzaSy...",
-    hint: "Fetches LCP, CLS, TTFB and overall Performance score via PageSpeed Insights API.",
+    hint: "Fetches LCP, INP, CLS, TTFB and overall Performance score via PageSpeed Insights API.",
+    stepsKey: "healthPsSteps",
     docsUrl: "https://developers.google.com/speed/docs/insights/v5/get-started",
     color: "#34A853",
     logo: "PS",
@@ -1709,6 +1935,7 @@ const HEALTH_PROVIDERS = [
     name: "VirusTotal",
     placeholder: "abc123...",
     hint: "Scans domain against 70+ antivirus engines and URL scanners.",
+    stepsKey: "healthVtSteps",
     docsUrl: "https://www.virustotal.com/gui/my-apikey",
     color: "#1565C0",
     logo: "VT",
@@ -1772,6 +1999,9 @@ function HealthKeyCard({ provider }: { provider: typeof HEALTH_PROVIDERS[number]
           {saved ? <><CheckCircle size={12} /> {t("apiKeySaved") || "✓ Saved"}</> : (t("apiKeySave") || "Save")}
         </button>
       </div>
+      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.55, padding: "9px 11px", marginBottom: "8px", borderRadius: "8px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--color-border)", whiteSpace: "pre-line" }}>
+        {t(provider.stepsKey)}
+      </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{provider.hint}</span>
         <a href={provider.docsUrl} target="_blank" rel="noreferrer" style={{ fontSize: "11px", color: "var(--color-accent-blue)", display: "flex", alignItems: "center", gap: "3px", textDecoration: "none", flexShrink: 0 }}>{t("healthGetKey") || "Get key ↗"}</a>
@@ -1792,8 +2022,12 @@ function HealthApiKeysSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {HEALTH_PROVIDERS.map(p => <HealthKeyCard key={p.id} provider={p} />)}
       </div>
-      <div style={{ marginTop: "14px", padding: "11px 14px", borderRadius: "8px", background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.18)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
-        {t("healthApiKeysHint") || "💡 Keys are stored in your browser only and sent to the respective APIs when you run a health check. They are never stored on the server."}
+      <div style={{ marginTop: "14px", padding: "11px 14px", borderRadius: "8px", background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.28)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
+        {t("healthApiKeysServerSide")}
+      </div>
+      <div style={{ marginTop: "10px", padding: "11px 14px", borderRadius: "8px", background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.18)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+        <span>{t("healthApiKeysHint")}</span>
+        <a href="https://github.com/fenjo26/OpenGSC/blob/main/docs/HEALTH-CHECK-SETUP.md" target="_blank" rel="noreferrer" style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-accent-blue)", textDecoration: "none", flexShrink: 0 }}>{t("healthApiKeysGuide")}</a>
       </div>
     </SectionCard>
   );
@@ -1956,7 +2190,7 @@ function SuperSitesSection() {
                   onMouseOver={e => (e.currentTarget.style.background = "rgba(245,158,11,0.07)")}
                   onMouseOut={e => (e.currentTarget.style.background = "transparent")}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  { }
                   <img src={`/api/favicon?domain=${cleanDomain(site.url)}`} width={14} height={14} alt="" style={{ borderRadius: "3px", flexShrink: 0 }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
                   <span style={{ fontSize: "13px", color: "var(--color-text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {cleanDomain(site.url)}
@@ -1990,7 +2224,7 @@ function SuperSitesSection() {
                 border: "1px solid rgba(245,158,11,0.15)",
                 borderRadius: "8px",
               }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
+                { }
                 <img src={`/api/favicon?domain=${cleanDomain(site)}`} width={16} height={16} alt="" style={{ borderRadius: "3px" }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
                 <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", flex: 1 }}>{cleanDomain(site)}</span>
                 <Star size={12} color="#F59E0B" />
@@ -2033,7 +2267,12 @@ export default function SettingsPage() {
   // render with no SSR/hydration mismatch and no Suspense-boundary requirement.
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    const valid: NavItem[] = ["accounts", "bing", "yandex", "teams", "api", "api-keys", "indexing-api", "seo-tools", "notifications", "members", "preferences", "supersites"];
+    const valid: NavItem[] = [
+      "accounts", "bing", "yandex", "api", "api-keys", "indexing-api", "metrics",
+      "seo-tools", "provider-log", "notifications", "preferences",
+      "members",
+      ...(EXPERIMENTAL_TEAM_UI ? ["teams", "supersites"] as NavItem[] : []),
+    ];
     if (tab && (valid as string[]).includes(tab)) setNav(tab as NavItem);
   }, []);
 
@@ -2055,22 +2294,6 @@ export default function SettingsPage() {
     setRemoving(null);
   };
 
-  const NavBtn = ({ id, icon, label, badge }: { id: NavItem; icon: React.ReactNode; label: string; badge?: string }) => (
-    <button
-      onClick={() => setNav(id)}
-      className={nav === id ? "nav-btn active" : "nav-btn"}
-      style={{
-        display: "flex", alignItems: "center", gap: "10px",
-        padding: "8px 12px", borderRadius: "8px", width: "100%",
-        background: "transparent", color: nav === id ? "#fff" : "var(--color-text-secondary)",
-        fontSize: "13px", fontWeight: 400, border: "none", cursor: "pointer", textAlign: "left",
-      }}
-    >
-      {icon}
-      <span style={{ flex: 1 }}>{label}</span>
-      {badge && <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.07)", borderRadius: "10px", padding: "1px 7px" }}>{badge}</span>}
-    </button>
-  );
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -2091,21 +2314,25 @@ export default function SettingsPage() {
           <div style={{ marginBottom: "28px" }}>
             <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "2px" }}>{t("sidebarAccount")}</div>
             <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "10px" }}>{user?.email}</div>
-            <NavBtn id="accounts" icon={<GoogleIcon size={14} />} label={t("navMyGoogleAccounts")} />
-            <NavBtn id="bing" icon={<BingIcon size={14} />} label="Bing Webmaster" />
-            <NavBtn id="yandex" icon={<YandexIcon size={14} />} label="Яндекс.Вебмастер" />
-            <NavBtn id="teams" icon={<Users size={14} />} label={t("myTeams")} />
-            <NavBtn id="api-keys" icon={<KeyRound size={14} />} label={t("navApiKeys")} />
-            <NavBtn id="api" icon={<Key size={14} />} label={t("navApiMcpKeys")} />
-            <NavBtn id="indexing-api" icon={<Globe size={14} />} label={t("navIndexingApi")} />
-            <NavBtn id="seo-tools" icon={<Sparkles size={14} />} label={t("navSeoTools")} />
-            <NavBtn id="notifications" icon={<Zap size={14} />} label={t("navNotifications")} />
+            <NavBtn id="accounts" active={nav === "accounts"} onSelect={() => setNav("accounts")} icon={<GoogleIcon size={14} />} label={t("navMyGoogleAccounts")} />
+            <NavBtn id="bing" active={nav === "bing"} onSelect={() => setNav("bing")} icon={<BingIcon size={14} />} label="Bing Webmaster" />
+            <NavBtn id="yandex" active={nav === "yandex"} onSelect={() => setNav("yandex")} icon={<YandexIcon size={14} />} label="Яндекс.Вебмастер" />
+            {EXPERIMENTAL_TEAM_UI && <NavBtn id="teams" active={nav === "teams"} onSelect={() => setNav("teams")} icon={<Users size={14} />} label={t("myTeams")} />}
+            <NavBtn id="api-keys" active={nav === "api-keys"} onSelect={() => setNav("api-keys")} icon={<KeyRound size={14} />} label={t("navApiKeys")} />
+            <NavBtn id="api" active={nav === "api"} onSelect={() => setNav("api")} icon={<Key size={14} />} label={t("navApiMcpKeys")} />
+            <NavBtn id="indexing-api" active={nav === "indexing-api"} onSelect={() => setNav("indexing-api")} icon={<Globe size={14} />} label={t("navIndexingApi")} />
+            <NavBtn id="metrics" active={nav === "metrics"} onSelect={() => setNav("metrics")} icon={<BarChart3 size={14} />} label={t("navMetrics")} />
+            <NavBtn id="seo-tools" active={nav === "seo-tools"} onSelect={() => setNav("seo-tools")} icon={<Sparkles size={14} />} label={t("navSeoTools")} />
+            <NavBtn id="provider-log" active={nav === "provider-log"} onSelect={() => setNav("provider-log")} icon={<ScrollText size={14} />} label={t("navProviderLog")} />
+            <NavBtn id="notifications" active={nav === "notifications"} onSelect={() => setNav("notifications")} icon={<Zap size={14} />} label={t("navNotifications")} />
           </div>
 
           {/* Team */}
           <div>
-            <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "2px" }}>{t("sidebarTeam")}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "2px" }}>
+              {EXPERIMENTAL_TEAM_UI ? t("sidebarTeam") : t("sidebarInstance")}
+            </div>
+            {EXPERIMENTAL_TEAM_UI ? <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
               {editingTeam ? (
                 <input
                   autoFocus value={teamName || defaultTeamName}
@@ -2118,10 +2345,14 @@ export default function SettingsPage() {
                 <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{teamName || defaultTeamName}</span>
               )}
               <Edit2 size={11} style={{ color: "var(--color-text-secondary)", cursor: "pointer", flexShrink: 0 }} onClick={() => setEditingTeam(true)} />
-            </div>
-            <NavBtn id="members" icon={<Users size={14} />} label={t("navTeamMembers")} badge="1" />
-            <NavBtn id="preferences" icon={<Settings size={14} />} label={t("navPreferences")} />
-            <NavBtn id="supersites" icon={<Star size={14} />} label={t("navSuperSites")} />
+            </div> : (
+              <div style={{ fontSize: "11px", lineHeight: 1.45, color: "var(--color-text-secondary)", marginBottom: "10px" }}>
+                {t("workspaceSidebarHint")}
+              </div>
+            )}
+            <NavBtn id="members" active={nav === "members"} onSelect={() => setNav("members")} icon={<Users size={14} />} label={t("navTeamMembers")} />
+            <NavBtn id="preferences" active={nav === "preferences"} onSelect={() => setNav("preferences")} icon={<Settings size={14} />} label={t("navPreferences")} />
+            {EXPERIMENTAL_TEAM_UI && <NavBtn id="supersites" active={nav === "supersites"} onSelect={() => setNav("supersites")} icon={<Star size={14} />} label={t("navSuperSites")} />}
           </div>
         </div>
 
@@ -2162,15 +2393,17 @@ export default function SettingsPage() {
               <YandexAccountsManager />
             </SectionCard>
           )}
-          {nav === "teams"        && <TeamsSection user={user} />}
+          {EXPERIMENTAL_TEAM_UI && nav === "teams" && <TeamsSection user={user} />}
           {nav === "api-keys"     && <ApiKeysSection />}
           {nav === "api"          && <ApiSection />}
           {nav === "indexing-api" && <IndexApiSection />}
+          {nav === "metrics"      && <MetricsSettingsSection />}
           {nav === "seo-tools"    && <SeoToolsSettings />}
+          {nav === "provider-log" && <SectionCard><ProviderLogSection /></SectionCard>}
           {nav === "notifications" && <NotificationsSection />}
-          {nav === "members"      && <MembersSection user={user} />}
+          {nav === "members" && <TeamMembersPanel />}
           {nav === "preferences"  && <PreferencesSection user={user} />}
-          {nav === "supersites"   && <SuperSitesSection />}
+          {EXPERIMENTAL_TEAM_UI && nav === "supersites" && <SuperSitesSection />}
         </div>
       </div>
 

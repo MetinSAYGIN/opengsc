@@ -1,7 +1,7 @@
 "use client";
 
 // Digest tab — build a Markdown summary over all sites or one tag (a site network),
-// preview it on screen, send it to Telegram, and configure the recurring schedule.
+// preview it on screen, send it to any notification channel, and configure the recurring schedule.
 // Building happens server-side from the local metric store; the optional AI paragraph
 // uses the user's own AI key (server-side backup).
 
@@ -9,12 +9,31 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Loader2, Send, Eye, Trash2, AlertTriangle, Newspaper, Save, Calendar, Clock, Tag, ChevronRight, Sparkles } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import { usePersistedState } from "@/lib/usePersistedState";
 import { markdownToHtml } from "@/lib/seo/outlineFormat";
 import DigestView from "@/components/DigestView";
-import type { DigestData } from "@/lib/digest";
+import type { DigestData, DigestSettings } from "@/lib/digest";
+
+type TKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
+/** One saved digest row from GET /api/digest — the fields the history list reads. */
+interface DigestHistoryRow {
+  id: string;
+  content: string;
+  createdAt: string | Date;
+  tag: string | null;
+  days: number;
+  sentTo?: string | null;
+}
+
+/**
+ * The schedule form's client-side copy: same fields as DigestSettings, but the selects write
+ * plain strings, so `frequency` is not narrowed to the API's union until save.
+ */
+type DigestSettingsForm = Omit<Partial<DigestSettings>, "frequency"> & { frequency?: string };
 
 // Period options — labels resolved via i18n at render (see PERIOD_LABEL keys).
-const PERIODS: { value: number; key: string }[] = [
+const PERIODS: { value: number; key: TKey }[] = [
   { value: 7,   key: "digestPeriod7" },
   { value: 14,  key: "digestPeriod14" },
   { value: 30,  key: "digestPeriod30" },
@@ -24,15 +43,25 @@ const PERIODS: { value: number; key: string }[] = [
   { value: 0,   key: "digestPeriodAll" },
 ];
 
+// History badge: sentTo is "telegram", "email", "telegram, email", … (issue #25).
+const CHANNEL_LABEL: Record<string, string> = {
+  telegram: "Telegram", slack: "Slack", email: "E-mail", discord: "Discord",
+  teams: "Teams", webhook: "Webhook", webpush: "Push",
+};
+
 export default function DigestPage() {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   const [tags, setTags] = useState<string[]>([]);
   const [telegram, setTelegram] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
-  const [settings, setSettings] = useState<any>(null);
+  const [history, setHistory] = useState<DigestHistoryRow[]>([]);
+  const [settings, setSettings] = useState<DigestSettingsForm | null>(null);
 
   const [tag, setTag] = useState("");
-  const [days, setDays] = useState(7);
+  // Digest days is saved automation config (the settings load below restores it), but the
+  // pill you clicked should still survive a refresh before you save, and ?days= on the URL
+  // shares a digest at a specific window. URL wins over the saved settings; the reload below
+  // skips its restore when a param is present.
+  const [days, setDays] = usePersistedState<number>("gsc_digest_days", 7, v => typeof v === "number" && [0, 7, 14, 30, 90, 180, 365].includes(v), "days");
   const [ai, setAi] = useState(false);
   const [preview, setPreview] = useState("");      // markdown (for history items)
   const [data, setData] = useState<DigestData | null>(null); // structured (rich view)
@@ -61,7 +90,15 @@ export default function DigestPage() {
       setSettings(d.settings || null);
       setEngines(d.engines || { bing: false, yandex: false });
       // AI summary defaults ON when any AI key is configured (user can still turn it off).
-      if (d.settings) { setTag(d.settings.tag ?? ""); setDays(d.settings.days ?? 7); setAi(!!d.settings.ai || hasAiKey()); }
+      // The saved days restore is skipped when the URL pins a window (?days=) — a shared
+      // digest link must not snap back to the owner's saved schedule.
+      if (d.settings) {
+        setTag(d.settings.tag ?? "");
+        setAi(!!d.settings.ai || hasAiKey());
+        if (!(typeof window !== "undefined" && new URLSearchParams(window.location.search).get("days") !== null)) {
+          setDays(d.settings.days ?? 7);
+        }
+      }
     } catch {}
   };
   useEffect(() => { reload(); }, []);
@@ -79,7 +116,7 @@ export default function DigestPage() {
         setMsg(d.sent ? t("digestSentOk") : t("digestSentFail"));
         reload();
       }
-    } catch (e: any) { setMsg(String(e?.message ?? e)); }
+    } catch (e) { setMsg(String((e as Error)?.message ?? e)); }
     setBusy("");
   };
 
@@ -92,7 +129,7 @@ export default function DigestPage() {
     return { sites: d.sites || [] };
   };
 
-  const saveSchedule = async (patch: any) => {
+  const saveSchedule = async (patch: Partial<DigestSettingsForm>) => {
     const next = { ...settings, ...patch, lang: language };
     setSettings(next);
     setBusy("save");
@@ -177,7 +214,7 @@ export default function DigestPage() {
           <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
             {PERIODS.map(p => (
               <button key={p.value} onClick={() => setDays(p.value)} style={pillBtn(days === p.value)}>
-                {t(p.key as any)}
+                {t(p.key)}
               </button>
             ))}
           </div>
@@ -273,7 +310,7 @@ export default function DigestPage() {
 
               <select value={settings.days ?? 7} onChange={e => saveSchedule({ days: parseInt(e.target.value) })}
                 style={{ padding: "7px 10px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-primary)", fontSize: "12px" }}>
-                {PERIODS.map(p => <option key={p.value} value={p.value}>{t(p.key as any)}</option>)}
+                {PERIODS.map(p => <option key={p.value} value={p.value}>{t(p.key)}</option>)}
               </select>
 
               <label style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--color-text-secondary)", cursor: "pointer" }}>
@@ -308,7 +345,7 @@ export default function DigestPage() {
                 <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", padding: "2px 8px", borderRadius: "4px" }}>
                   {d.days === 0 ? t("digestPeriodAllShort") : `${d.days}${t("digestDaysShort")}`}
                 </span>
-                {d.sentTo === "telegram" && <span style={{ fontSize: "10px", color: "#34c759", fontWeight: 600 }}>✓ Telegram</span>}
+                {d.sentTo && <span style={{ fontSize: "10px", color: "#34c759", fontWeight: 600 }}>✓ {String(d.sentTo).split(",").map((c: string) => CHANNEL_LABEL[c.trim()] ?? c.trim()).join(", ")}</span>}
                 <span style={{ flex: 1 }} />
                 <ChevronRight size={14} style={{ color: "var(--color-text-secondary)", opacity: 0.4 }} />
                 <button onClick={e => { e.stopPropagation(); removeDigest(d.id); }}

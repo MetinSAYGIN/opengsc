@@ -13,7 +13,17 @@ import type { DigestData } from "@/lib/digest";
 
 // The engine tab now reuses the full engine portfolio (per-site summary with period-over-period
 // change), so it can show the same gainers/losers/attention sections as Google.
-type EnginePayload = { sites: any[] };
+/** One site row of /api/gsc/portfolio-engine — opaque JSON, read defensively in EngineTab. */
+type EngineSite = {
+  url: string;
+  hasData?: boolean;
+  summary?: {
+    clicks?: { value?: number; change?: number };
+    impressions?: { value?: number };
+    position?: { value?: number };
+  };
+};
+type EnginePayload = { sites: EngineSite[] };
 const cleanUrl = (u: string) => String(u || "").replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/\/.*$/, "");
 
 const fmt = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : String(Math.round(n)));
@@ -30,7 +40,6 @@ const BingIcon = ({ s = 15 }) => (<svg width={s} height={s} viewBox="0 0 512 512
 const YandexIcon = ({ s = 15 }) => (<svg width={s} height={s} viewBox="0 0 32 32"><path d="M21.88,2h-4c-4,0-8.07,3-8.07,9.62a8.33,8.33,0,0,0,4.14,7.66L9,28.13A1.25,1.25,0,0,0,9,29.4a1.21,1.21,0,0,0,1,.6h2.49a1.24,1.24,0,0,0,1.2-.75l4.59-9h.34v8.62A1.14,1.14,0,0,0,19.82,30H22a1.12,1.12,0,0,0,1.16-1.06V3.22A1.19,1.19,0,0,0,22,2ZM18.7,16.28h-.59c-2.3,0-3.66-1.87-3.66-5,0-3.9,1.73-5.29,3.34-5.29h.94Z" fill="#d61e3b"/></svg>);
 
 const card: React.CSSProperties = { background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", overflow: "hidden" };
-const th: React.CSSProperties = { padding: "8px 14px", fontWeight: 600, textAlign: "right", color: "var(--color-text-secondary)", whiteSpace: "nowrap" };
 const td: React.CSSProperties = { padding: "6px 14px", textAlign: "right", color: "var(--color-text-secondary)" };
 
 function Delta({ n, invert = false }: { n: number; invert?: boolean }) {
@@ -234,7 +243,7 @@ function EngineTab({ payload, name }: { payload: EnginePayload | "loading" | und
     return <div style={{ ...card, padding: "32px", textAlign: "center", color: "var(--color-text-secondary)", fontSize: "13px" }}><Loader2 size={16} className="spin" /> {t("digestEngineLoading")}</div>;
   }
   const sites = payload.sites || [];
-  const rows = sites.map((s: any) => ({
+  const rows = sites.map(s => ({
     name: cleanUrl(s.url),
     clicks: s.summary?.clicks?.value ?? 0,
     impr: s.summary?.impressions?.value ?? 0,

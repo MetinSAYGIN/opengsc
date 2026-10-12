@@ -14,11 +14,19 @@ import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { severityMeta, problemLabel } from "@/lib/yandexDiagnostics";
 import { resolveEngineKey } from "@/lib/engineKeys";
 import { withShare, isGuestView } from "@/lib/shareParam";
+import { buildCandleRows } from "@/lib/chartCandles";
+import { CandlePanes, useChartTypePref } from "@/components/CandleChartParts";
 
 export type AltEngine = "bing" | "yandex";
 export type EngineMetric = "clicks" | "impressions" | "ctr" | "position";
 
 const card: React.CSSProperties = { background: "var(--color-card)", borderRadius: "12px", padding: "16px", border: "1px solid var(--color-border)" };
+
+const Th = ({ k, label, align = "right", sort, onSort }: { k: SortKey; label: string; align?: "left" | "right"; sort: { key: SortKey; dir: "asc" | "desc" }; onSort: (k: SortKey) => void }) => (
+  <th onClick={() => onSort(k)} style={{ padding: align === "left" ? "8px 16px" : "8px 8px", fontWeight: 600, textAlign: align, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", color: sort.key === k ? "var(--color-accent-blue)" : "var(--color-text-secondary)" }}>
+    {label}{sort.key === k ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}
+  </th>
+);
 
 interface Row { key: string; clicks: number; impressions: number; position?: number }
 interface Point { date: string; clicks: number; impressions: number; ctr: number; position: number | null }
@@ -32,17 +40,30 @@ export interface EngineSummary {
 }
 
 // Chart tooltip that shows only the current period (hides the dashed comparison series).
-function EngTooltip({ active, payload, label, t }: any) {
+// Reads the whole datum rather than payload dataKeys: the position series use function dataKeys
+// whose stringification is not a field name.
+function EngTooltip({ active, payload, label, t }: {
+  active?: boolean;
+  payload?: { payload?: { clicks?: number; impressions?: number; ctr?: number; position?: number } }[];
+  label?: string | number;
+  t: (k: string) => string;
+}) {
   if (!active || !payload?.length) return null;
-  const rows = payload.filter((p: any) => !String(p.dataKey).endsWith("C"));
+  const d = payload[0]?.payload ?? {};
+  const rows = [
+    { key: "clicks", v: d.clicks },
+    { key: "impressions", v: d.impressions },
+    { key: "ctr", v: d.ctr },
+    { key: "position", v: d.position },
+  ].filter(r => r.v != null);
   if (!rows.length) return null;
   const nm = (k: string) => k === "ctr" ? "CTR" : k === "position" ? t("avgPosition") : k === "clicks" ? t("clicks") : t("impressions");
-  const fmt = (k: string, v: any) => k === "ctr" ? `${v}%` : k === "position" ? (v == null ? "—" : Number(v).toFixed(1)) : Number(v).toLocaleString();
+  const fmt = (k: string, v: number) => k === "ctr" ? `${v}%` : k === "position" ? Number(v).toFixed(1) : Number(v).toLocaleString();
   return (
     <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "8px", fontSize: "12px", padding: "8px 10px" }}>
       <div style={{ fontWeight: 600, marginBottom: "4px", color: "var(--color-text-primary)" }}>{label}</div>
-      {rows.map((p: any) => (
-        <div key={p.dataKey} style={{ color: p.color }}>{nm(p.dataKey)}: {fmt(p.dataKey, p.value)}</div>
+      {rows.map(r => (
+        <div key={r.key} style={{ color: "var(--color-text-primary)" }}>{nm(r.key)}: {fmt(r.key, r.v as number)}</div>
       ))}
     </div>
   );
@@ -50,9 +71,9 @@ function EngTooltip({ active, payload, label, t }: any) {
 
 // Bing's OData JSON dates arrive as "/Date(1610000000000)/" OR with a timezone offset
 // "/Date(1760166000000-0700)/" — parse the millisecond epoch, ignore the offset suffix.
-function parseBingDate(v: any): string {
+function parseBingDate(v: unknown): string {
   const m = String(v ?? "").match(/\/Date\((\d+)(?:[+-]\d+)?\)\//);
-  const d = m ? new Date(parseInt(m[1], 10)) : new Date(v);
+  const d = m ? new Date(parseInt(m[1], 10)) : new Date(v as string | number);
   return isNaN(d.getTime()) ? String(v).slice(0, 10) : d.toISOString().slice(0, 10);
 }
 
@@ -92,12 +113,12 @@ function StatCard({ val, label, hint }: { val: string | number; label: string; h
 
 const PER_PAGE = 10;
 
-function RowsTable({ title, rows, keyLabel, t, csvName }: { title: string; rows: Row[]; keyLabel: string; t: any; csvName: string }) {
+function RowsTable({ title, rows, keyLabel, t, csvName }: { title: string; rows: Row[]; keyLabel: string; t: (k: string) => string; csvName: string }) {
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "clicks", dir: "desc" });
   const [page, setPage] = useState(0);
 
   const sorted = useMemo(() => {
-    const val = (r: Row, k: SortKey) => k === "key" ? r.key.toLowerCase() : k === "ctr" ? (r.impressions ? r.clicks / r.impressions : 0) : k === "position" ? (r.position ?? 999) : (r as any)[k] ?? 0;
+    const val = (r: Row, k: SortKey) => k === "key" ? r.key.toLowerCase() : k === "ctr" ? (r.impressions ? r.clicks / r.impressions : 0) : k === "position" ? (r.position ?? 999) : (r[k as "clicks" | "impressions"]) ?? 0;
     return [...rows].sort((a, b) => {
       const va = val(a, sort.key), vb = val(b, sort.key);
       const cmp = typeof va === "string" ? va.localeCompare(vb as string) : (va as number) - (vb as number);
@@ -111,11 +132,6 @@ function RowsTable({ title, rows, keyLabel, t, csvName }: { title: string; rows:
 
   if (!rows.length) return null;
 
-  const Th = ({ k, label, align = "right" }: { k: SortKey; label: string; align?: "left" | "right" }) => (
-    <th onClick={() => setSortKey(k)} style={{ padding: align === "left" ? "8px 16px" : "8px 8px", fontWeight: 600, textAlign: align, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", color: sort.key === k ? "var(--color-accent-blue)" : "var(--color-text-secondary)" }}>
-      {label}{sort.key === k ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}
-    </th>
-  );
 
   return (
     <div style={{ ...card, padding: 0, overflow: "hidden" }}>
@@ -132,11 +148,11 @@ function RowsTable({ title, rows, keyLabel, t, csvName }: { title: string; rows:
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
         <thead>
           <tr style={{ textAlign: "left" }}>
-            <Th k="key" label={keyLabel} align="left" />
-            <Th k="clicks" label={t("clicks")} />
-            <Th k="impressions" label={t("impressions")} />
-            <Th k="ctr" label="CTR" />
-            <Th k="position" label={t("avgPosition")} />
+            <Th k="key" sort={sort} onSort={setSortKey} label={keyLabel} align="left" />
+            <Th k="clicks" sort={sort} onSort={setSortKey} label={t("clicks")} />
+            <Th k="impressions" sort={sort} onSort={setSortKey} label={t("impressions")} />
+            <Th k="ctr" sort={sort} onSort={setSortKey} label="CTR" />
+            <Th k="position" sort={sort} onSort={setSortKey} label={t("avgPosition")} />
           </tr>
         </thead>
         <tbody>
@@ -163,7 +179,7 @@ function RowsTable({ title, rows, keyLabel, t, csvName }: { title: string; rows:
 }
 
 export default function EngineView({ engine, domain, siteDbId, refreshKey, metrics, days, onSummary }: { engine: AltEngine; domain: string; siteDbId: string; refreshKey: number; metrics?: Set<string>; days?: number; onSummary?: (s: EngineSummary | null) => void }) {
-  const { t, language } = useLanguage() as any;
+  const { t, language } = useLanguage();
   const lang = (language === "ru" || language === "uk" ? language : "en") as "en" | "ru" | "uk";
   // Which metric lines to draw — driven by the shared toolbar toggles; default: all on.
   const active = metrics ?? new Set<string>(["clicks", "impressions", "ctr", "position"]);
@@ -172,7 +188,7 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
   const [series, setSeries] = useState<Point[]>([]);
   const [queries, setQueries] = useState<Row[]>([]);
   const [pages, setPages] = useState<Row[]>([]);
-  const [meta, setMeta] = useState<Record<string, any>>({});
+  const [meta, setMeta] = useState<{ sqi?: number; inSearch?: number; excluded?: number; inIndex?: number; crawlErrors?: number; blockedByRobots?: number }>({});
   const [problems, setProblems] = useState<{ code: string; severity: string }[]>([]);
   const [tab, setTab] = useState<"queries" | "pages">("queries");
 
@@ -196,18 +212,18 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
           else {
             // Bing's JSON keys are PascalCase but casing/shape has drifted across API
             // versions — read defensively (any-case) so a renamed field never blanks the view.
-            const g = (o: any, ...keys: string[]) => { for (const k of keys) { if (o?.[k] != null) return o[k]; const lk = Object.keys(o ?? {}).find(x => x.toLowerCase() === k.toLowerCase()); if (lk != null && o[lk] != null) return o[lk]; } return undefined; };
-            const num = (v: any) => { const n = Number(v); return isFinite(n) ? n : 0; };
-            setSeries((d.traffic ?? []).map((r: any) => {
+            const g = (o: unknown, ...keys: string[]): unknown => { const rec = (o ?? {}) as Record<string, unknown>; for (const k of keys) { if (rec[k] != null) return rec[k]; const lk = Object.keys(rec).find(x => x.toLowerCase() === k.toLowerCase()); if (lk != null && rec[lk] != null) return rec[lk]; } return undefined; };
+            const num = (v: unknown) => { const n = Number(v); return isFinite(n) ? n : 0; };
+            setSeries((d.traffic ?? []).map((r: Record<string, unknown>) => {
               const clicks = num(g(r, "Clicks")), impressions = num(g(r, "Impressions"));
               const posv = Number(g(r, "AvgImpressionPosition", "AvgClickPosition", "Position"));
               return { date: parseBingDate(g(r, "Date")), clicks, impressions, ctr: impressions ? Math.round((clicks / impressions) * 1000) / 10 : 0, position: isFinite(posv) && posv > 0 ? Math.round(posv * 10) / 10 : null };
             }));
-            setQueries((d.queries ?? []).slice(0, 25).map((q: any) => ({ key: String(g(q, "Query") ?? ""), clicks: num(g(q, "Clicks")), impressions: num(g(q, "Impressions")), position: g(q, "AvgImpressionPosition", "AvgClickPosition", "Position") })));
-            setPages((d.pages ?? []).slice(0, 25).map((p: any) => ({ key: String(g(p, "Query", "Page", "Url") ?? "").replace(/^https?:\/\/[^/]+/, "") || "/", clicks: num(g(p, "Clicks")), impressions: num(g(p, "Impressions")), position: g(p, "AvgImpressionPosition", "Position") })));
+            setQueries((d.queries ?? []).slice(0, 25).map((q: Record<string, unknown>) => ({ key: String(g(q, "Query") ?? ""), clicks: num(g(q, "Clicks")), impressions: num(g(q, "Impressions")), position: g(q, "AvgImpressionPosition", "AvgClickPosition", "Position") as number | undefined })));
+            setPages((d.pages ?? []).slice(0, 25).map((p: Record<string, unknown>) => ({ key: String(g(p, "Query", "Page", "Url") ?? "").replace(/^https?:\/\/[^/]+/, "") || "/", clicks: num(g(p, "Clicks")), impressions: num(g(p, "Impressions")), position: g(p, "AvgImpressionPosition", "Position") as number | undefined })));
             const cr = d.crawl;
-            const crawlErrors = cr ? num(g(cr, "Code4xx", "Code400")) + num(g(cr, "Code5xx", "Code500")) || g(cr, "CrawlErrors") : undefined;
-            setMeta({ inIndex: cr ? g(cr, "InIndex") : undefined, crawlErrors, blockedByRobots: cr ? g(cr, "BlockedByRobotsTxt") : undefined });
+            const crawlErrors = cr ? num(g(cr, "Code4xx", "Code400")) + num(g(cr, "Code5xx", "Code500")) || g(cr, "CrawlErrors") as number : undefined;
+            setMeta({ inIndex: cr ? g(cr, "InIndex") as number | undefined : undefined, crawlErrors, blockedByRobots: cr ? (g(cr, "BlockedByRobotsTxt") as number | undefined) : undefined });
             setProblems([]);
           }
         } else {
@@ -218,17 +234,17 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
           if (cancelled) return;
           if (d.error) { setErr(d.error === "host_not_found" ? t("seYandexHostNotFound") : d.error === "host_not_verified" ? t("seYandexHostNotVerified") : String(d.error)); }
           else {
-            setSeries((d.series ?? []).map((r: any) => {
+            setSeries((d.series ?? []).map((r: { clicks?: unknown; impressions?: unknown; date?: unknown; position?: unknown }) => {
               const clicks = Number(r.clicks) || 0, impressions = Number(r.impressions) || 0;
               return { date: String(r.date).slice(0, 10), clicks, impressions, ctr: impressions ? Math.round((clicks / impressions) * 1000) / 10 : 0, position: r.position != null ? Number(r.position) : null };
             }));
-            setQueries((d.queries ?? []).map((q: any) => ({ key: q.query_text, clicks: q.indicators?.TOTAL_CLICKS ?? 0, impressions: q.indicators?.TOTAL_SHOWS ?? 0, position: q.indicators?.AVG_SHOW_POSITION ?? undefined })));
+            setQueries((d.queries ?? []).map((q: { query_text?: string; indicators?: Record<string, number> }) => ({ key: q.query_text, clicks: q.indicators?.TOTAL_CLICKS ?? 0, impressions: q.indicators?.TOTAL_SHOWS ?? 0, position: q.indicators?.AVG_SHOW_POSITION ?? undefined })));
             setPages([]);
             setMeta({ sqi: d.summary?.sqi, inSearch: d.summary?.searchable_pages_count, excluded: d.summary?.excluded_pages_count });
             setProblems(d.problems ?? []);
           }
         }
-      } catch (e: any) { if (!cancelled) setErr(String(e?.message ?? e)); }
+      } catch (e) { if (!cancelled) setErr(String((e as Error)?.message ?? e)); }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -255,6 +271,22 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
       return { ...p, clicksC: c?.clicks ?? null, impressionsC: c?.impressions ?? null, ctrC: c?.ctr ?? null, positionC: c?.position ?? null };
     });
   }, [curArr, prevArr]);
+
+  // Candlestick view (Settings → Preferences), same as the Google chart. Engine dates are already
+  // ISO strings, so the label and the snap date are the same field.
+  const chartTypePref = useChartTypePref();
+  const candleMode = chartTypePref === "candle";
+  const candleData = useMemo(() => buildCandleRows(
+    view,
+    [
+      { key: "clicks",      value: r => r.clicks,      prev: r => r.clicksC },
+      { key: "impressions", value: r => r.impressions, prev: r => r.impressionsC },
+      { key: "ctr",         value: r => r.ctr,         prev: r => r.ctrC },
+      { key: "position",    value: r => r.position,    prev: r => r.positionC },
+    ],
+    r => r.date,
+    r => r.date,
+  ), [view]);
 
   const sumK = (arr: Point[], k: "clicks" | "impressions") => arr.reduce((s, r) => s + (r[k] || 0), 0);
   const totClicks = sumK(curArr, "clicks"), totImpr = sumK(curArr, "impressions");
@@ -335,12 +367,28 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
       )}
 
       {/* Chart — identical to the GSC view: clicks + impressions as filled areas, CTR &
-          average position as lines. Which metrics show is driven by the shared toolbar
-          toggles (same 4 icon buttons as Google), so the two views behave the same. */}
+          average position as lines; candles when the operator picked them in Preferences.
+          Which metrics show is driven by the shared toolbar toggles (same 4 icon buttons
+          as Google), so the two views behave the same. */}
       {view.length > 0 && (
         <div style={card}>
+          {candleMode ? (
+            <CandlePanes
+              rows={candleData}
+              metrics={(["clicks", "impressions", "ctr", "position"] as EngineMetric[])
+                .filter(m => active.has(m) && (m !== "position" || anyPos))
+                .map(m => ({
+                  key: m,
+                  color: EC[m],
+                  kind: m === "ctr" ? "pct" as const : m === "position" ? "pos" as const : "count" as const,
+                  label: m === "ctr" ? "CTR" : m === "position" ? t("avgPosition") : m === "clicks" ? t("clicks") : t("impressions"),
+                }))}
+              showPrev={anyCmp}
+              height={active.size > 2 ? 340 : 260}
+            />
+          ) : (
           <ResponsiveContainer width="100%" height={260}>
-            <ComposedChart data={view} margin={{ top: 8, right: 4, bottom: 0, left: -8 }}>
+            <ComposedChart data={view as unknown as Record<string, unknown>[]} margin={{ top: 8, right: 4, bottom: 0, left: -8 }}>
               <defs>
                 {(["clicks", "impressions"] as EngineMetric[]).map(m => (
                   <linearGradient key={m} id={`eng-${m}`} x1="0" y1="0" x2="0" y2="1">
@@ -353,18 +401,26 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }} axisLine={false} tickLine={false} minTickGap={24} />
               <YAxis yAxisId="left" tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }} axisLine={false} tickLine={false} width={40} />
               <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: "var(--color-text-secondary)" }} axisLine={false} tickLine={false} width={44} />
-              <Tooltip content={<EngTooltip t={t} />} />
+              {/* Position's own hidden axis, reversed so rank 1 sits at the top (same as the
+                  Google view). */}
+              <YAxis yAxisId="pos" reversed hide domain={[1, "dataMax"]} />
+              <Tooltip
+                content={<EngTooltip t={t as unknown as (k: string) => string} />}
+              />
+              <>
               {/* Previous-period comparison (dashed, thin, same colors) — drawn underneath. */}
               {anyCmp && active.has("clicks") && <Line yAxisId="left" type="monotone" dataKey="clicksC" stroke={EC.clicks} strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls legendType="none" />}
               {anyCmp && active.has("impressions") && <Line yAxisId="right" type="monotone" dataKey="impressionsC" stroke={EC.impressions} strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls legendType="none" />}
               {anyCmp && active.has("ctr") && <Line yAxisId="left" type="monotone" dataKey="ctrC" stroke={EC.ctr} strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls legendType="none" />}
-              {anyCmp && active.has("position") && anyPos && <Line yAxisId="left" type="monotone" dataKey="positionC" stroke={EC.position} strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls legendType="none" />}
+              {anyCmp && active.has("position") && anyPos && <Line yAxisId="pos" type="monotone" dataKey={(d: CmpPoint) => d.positionC ?? null} stroke={EC.position} strokeWidth={1} strokeDasharray="4 3" dot={false} connectNulls legendType="none" />}
               {active.has("clicks") && <Area yAxisId="left" type="monotone" dataKey="clicks" name={t("clicks")} stroke={EC.clicks} strokeWidth={2} fill="url(#eng-clicks)" dot={false} />}
               {active.has("impressions") && <Area yAxisId="right" type="monotone" dataKey="impressions" name={t("impressions")} stroke={EC.impressions} strokeWidth={2} fill="url(#eng-impressions)" dot={false} />}
               {active.has("ctr") && <Line yAxisId="left" type="monotone" dataKey="ctr" name="CTR" stroke={EC.ctr} strokeWidth={1.5} dot={false} />}
-              {active.has("position") && anyPos && <Line yAxisId="left" type="monotone" dataKey="position" name={t("avgPosition")} stroke={EC.position} strokeWidth={1.5} dot={false} connectNulls />}
+              {active.has("position") && anyPos && <Line yAxisId="pos" type="monotone" dataKey={(d: CmpPoint) => d.position ?? null} name={t("avgPosition")} stroke={EC.position} strokeWidth={1.5} dot={false} connectNulls />}
+              </>
             </ComposedChart>
           </ResponsiveContainer>
+          )}
         </div>
       )}
 
@@ -380,8 +436,8 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
         </div>
       )}
       {tab === "queries" || !pages.length
-        ? <RowsTable title={`${t("seTopQueries")} — ${engine === "bing" ? "Bing" : t("seEngineYandex")}`} rows={queries} keyLabel={t("seQuery")} t={t} csvName={`${engine}-queries-${cleanDomain}.csv`} />
-        : <RowsTable title={`${t("seTopPages")} — Bing`} rows={pages} keyLabel="URL" t={t} csvName={`${engine}-pages-${cleanDomain}.csv`} />}
+        ? <RowsTable title={`${t("seTopQueries")} — ${engine === "bing" ? "Bing" : t("seEngineYandex")}`} rows={queries} keyLabel={t("seQuery")} t={t as unknown as (k: string) => string} csvName={`${engine}-queries-${cleanDomain}.csv`} />
+        : <RowsTable title={`${t("seTopPages")} — Bing`} rows={pages} keyLabel="URL" t={t as unknown as (k: string) => string} csvName={`${engine}-pages-${cleanDomain}.csv`} />}
     </div>
   );
 }

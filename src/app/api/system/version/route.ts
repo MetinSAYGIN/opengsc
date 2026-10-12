@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { promisify } from "util";
 import { exec as execCb } from "child_process";
 import { readFileSync } from "fs";
@@ -33,8 +32,8 @@ async function localCommit(): Promise<string | null> {
 }
 
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!(session?.user as any)?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const workspaceId = await workspaceUserId();
+  if (!workspaceId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const local = await localCommit();
   if (!local) {
@@ -65,13 +64,13 @@ export async function GET() {
         changelog = (cmp.commits ?? [])
           .slice(-30)
           .reverse()
-          .map((c: any) => ({
+          .map((c: { sha?: unknown; commit?: { message?: unknown; author?: { date?: string } } }) => ({
             sha: String(c.sha ?? "").slice(0, 7),
             message: String(c.commit?.message ?? "").split("\n")[0],
             date: c.commit?.author?.date ?? "",
           }))
           // Hide noise
-          .filter((c: any) => c.message && !/^merge /i.test(c.message));
+          .filter((c: { message: string }) => c.message && !/^merge /i.test(c.message));
       }
     } catch { /* compare is best-effort — the update flag still works without it */ }
 
@@ -81,10 +80,12 @@ export async function GET() {
       local: local.slice(0, 7),
       remote: remote.slice(0, 7),
       behind,
-      updateAvailable: true,
+      // behind, not remote !== local: an install parked on a newer branch (testing ahead of main)
+      // must not see the update bar — its "Update now" would reset it backwards.
+      updateAvailable: behind > 0,
       changelog,
     });
-  } catch (e: any) {
-    return NextResponse.json({ isGit: true, local: local.slice(0, 7), updateAvailable: false, error: String(e?.message ?? e) });
+  } catch (e) {
+    return NextResponse.json({ isGit: true, local: local.slice(0, 7), updateAvailable: false, error: String((e as Error)?.message ?? e) });
   }
 }

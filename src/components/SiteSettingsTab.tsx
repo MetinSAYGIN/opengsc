@@ -3,6 +3,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { Settings, Sparkles, Plus, X, Copy, Check, Trash2 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
+import MetricsImport from "@/components/MetricsImport";
+import SiteContextCard from "@/components/SiteContextCard";
+import { getTaskCreds } from "@/lib/seo/keys";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Cluster { id: string; name: string; rules: string; }
@@ -90,8 +93,8 @@ function BrandedSection({ siteDbId, domain }: { siteDbId: string; domain: string
   const oneClick = async () => {
     setAiStatus('loading');
     try {
-      const provider = localStorage.getItem('aiProvider') || 'anthropic';
-      const apiKey   = localStorage.getItem(`aiKey_${provider}`) || localStorage.getItem('aiApiKey') || '';
+      // `utility` task — a short mechanical pass, resolved the same way as everywhere else.
+      const { provider, apiKey, model, baseUrl } = getTaskCreds('utility');
 
       if (!apiKey) {
         // No AI key: just add domain brand term
@@ -101,7 +104,10 @@ function BrandedSection({ siteDbId, domain }: { siteDbId: string; domain: string
         return;
       }
 
-      const res = await fetch(`/api/gsc/branded?siteId=${siteDbId}&aiProvider=${provider}&aiApiKey=${encodeURIComponent(apiKey)}`);
+      const qs = new URLSearchParams({ siteId: siteDbId, aiProvider: provider, aiApiKey: apiKey });
+      if (model) qs.set('aiModel', model);
+      if (baseUrl) qs.set('aiBaseUrl', baseUrl);
+      const res = await fetch(`/api/gsc/branded?${qs.toString()}`);
       if (!res.ok) throw new Error('API error');
       const data = await res.json();
       persist([...new Set([...kws, ...(data.branded ?? [])])]);
@@ -231,15 +237,18 @@ function ClustersSection({ siteDbId }: { siteDbId: string }) {
   const oneClick = async () => {
     setAiStatus('loading');
     try {
-      const provider = localStorage.getItem('aiProvider') || 'anthropic';
-      const apiKey   = localStorage.getItem(`aiKey_${provider}`) || localStorage.getItem('aiApiKey') || '';
+      // `utility` task — a short mechanical pass, resolved the same way as everywhere else.
+      const { provider, apiKey, model, baseUrl } = getTaskCreds('utility');
 
       if (!apiKey) { setAiStatus('nokey'); return; }
 
       const res = await fetch('/api/gsc/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: siteDbId, aiProvider: provider, aiApiKey: apiKey }),
+        body: JSON.stringify({
+          siteId: siteDbId, aiProvider: provider, aiApiKey: apiKey,
+          aiModel: model || undefined, aiBaseUrl: baseUrl || undefined,
+        }),
       });
       if (!res.ok) throw new Error('Setup error');
       const data = await res.json();
@@ -248,7 +257,7 @@ function ClustersSection({ siteDbId }: { siteDbId: string }) {
         await fetch('/api/gsc/clusters', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ siteId: siteDbId, clusters: data.clusters.map((c: any) => ({ name: c.name, rules: c.rules })) }),
+          body: JSON.stringify({ siteId: siteDbId, clusters: data.clusters.map((c: { name: string; rules: string }) => ({ name: c.name, rules: c.rules })) }),
         });
         load();
         setAiStatus('ok');
@@ -393,15 +402,18 @@ function GroupsSection({ siteDbId }: { siteDbId: string }) {
   const oneClick = async () => {
     setAiStatus('loading');
     try {
-      const provider = localStorage.getItem('aiProvider') || 'anthropic';
-      const apiKey   = localStorage.getItem(`aiKey_${provider}`) || localStorage.getItem('aiApiKey') || '';
+      // `utility` task — a short mechanical pass, resolved the same way as everywhere else.
+      const { provider, apiKey, model, baseUrl } = getTaskCreds('utility');
 
       if (!apiKey) { setAiStatus('nokey'); return; }
 
       const res = await fetch('/api/gsc/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: siteDbId, aiProvider: provider, aiApiKey: apiKey }),
+        body: JSON.stringify({
+          siteId: siteDbId, aiProvider: provider, aiApiKey: apiKey,
+          aiModel: model || undefined, aiBaseUrl: baseUrl || undefined,
+        }),
       });
       if (!res.ok) throw new Error('Setup error');
       const data = await res.json();
@@ -410,7 +422,7 @@ function GroupsSection({ siteDbId }: { siteDbId: string }) {
         await fetch('/api/gsc/groups', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ siteId: siteDbId, groups: data.groups.map((g: any) => ({ name: g.name, rules: g.rules })) }),
+          body: JSON.stringify({ siteId: siteDbId, groups: data.groups.map((g: { name: string; rules: string }) => ({ name: g.name, rules: g.rules })) }),
         });
         load();
         setAiStatus('ok');
@@ -513,6 +525,7 @@ function SharedLinkSection({ siteDbId, domain }: { siteDbId: string; domain: str
   const [enabled, setEnabled] = useState(false);
   const [token, setToken]     = useState<string | null>(null);
   const [copied, setCopied]   = useState(false);
+  const [copiedTab, setCopiedTab] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -546,6 +559,25 @@ function SharedLinkSection({ siteDbId, domain }: { siteDbId: string; domain: str
   };
 
   const shareUrl = token ? `${typeof window !== 'undefined' ? window.location.origin : ''}/share/${siteDbId}/${token}` : '';
+
+  // The guest view shows a fixed subset of the site page's tabs (its readOnly TABS list —
+  // dashboard, positions, ga4, backlinks profile, health, audit). One copy button per tab, so
+  // a share link can point straight at Health or Audit instead of always the dashboard; the
+  // site page validates ?tab= against the same list, so a stale key falls back to the dashboard.
+  const GUEST_TABS = [
+    { key: "dashboard", label: t("tabDashboard") },
+    { key: "positions", label: t("tabPositions") },
+    { key: "ga4",       label: t("tabGA4") },
+    { key: "backlinks", label: t("shareLinkProfile") },
+    { key: "health",    label: t("tabHealth") },
+    { key: "audit",     label: t("tabAudit") },
+  ];
+
+  const copyTab = async (key: string) => {
+    await navigator.clipboard.writeText(`${shareUrl}?tab=${key}`);
+    setCopiedTab(key);
+    setTimeout(() => setCopiedTab(null), 2000);
+  };
 
   const copy = async () => {
     await navigator.clipboard.writeText(shareUrl);
@@ -600,6 +632,23 @@ function SharedLinkSection({ siteDbId, domain }: { siteDbId: string; domain: str
                 {copied ? <Check size={12} /> : <Copy size={12} />}
                 {copied ? t("setCopied") : t("setCopy")}
               </button>
+            </div>
+          )}
+
+          {/* One copy button per guest-visible tab of the site page (its readOnly TABS list):
+              the link opens the shared dashboard straight on that tab, and the site page
+              validates ?tab= against the same list, so a stale key falls back to the dashboard. */}
+          {enabled && (
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+              {t("shareTabHint") || "Copy a link that opens the shared dashboard on a specific tab:"}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "6px" }}>
+                {GUEST_TABS.map(gt => (
+                  <button key={gt.key} onClick={() => copyTab(gt.key)}
+                    style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: copiedTab === gt.key ? "rgba(16,185,129,0.1)" : "transparent", color: copiedTab === gt.key ? "#10B981" : "var(--color-text-secondary)", fontSize: "12px", cursor: "pointer" }}>
+                    {copiedTab === gt.key ? t("setCopied") : gt.label}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -674,10 +723,19 @@ export default function SiteSettingsTab({ domain, siteDbId }: { domain: string; 
       </div>
 
       {/* Sections */}
+      {/* Context first: it is what every AI surface reads before touching the site, and the
+          card doubles as the "what does the AI believe about this site" inspector. */}
+      <SiteContextCard siteDbId={siteDbId} />
       <BrandedSection siteDbId={siteDbId} domain={domain} />
       <ClustersSection siteDbId={siteDbId} />
       <GroupsSection siteDbId={siteDbId} />
       <SharedLinkSection siteDbId={siteDbId} domain={domain} />
+
+      {/* The same import panel as Settings → SEO Metrics, with the target already known.
+          Referring-domain exports belong to one site, and being on that site's page is the
+          moment you have the file — sending people to a global screen to pick the site they
+          just came from is the long way round. */}
+      <MetricsImport siteId={siteDbId} />
 
     </div>
   );

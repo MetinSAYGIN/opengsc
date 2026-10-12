@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { workspaceUserId } from "@/lib/team/workspace";
 import { runSerp, heuristicSiteType, heuristicIntent, SerpEngine } from "@/lib/seo/serp";
 
 // POST /api/seo/serp
-// body: { keyword, provider, apiKey, gl?, hl?, location?, num?, engine? }
+// body: { keyword, provider, apiKey, baseUrl?, gl?, hl?, location?, num?, engine? }
 export async function POST(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!(session?.user as any)?.id) {
+  const workspaceId = await workspaceUserId("spend");
+  if (!workspaceId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -21,6 +20,7 @@ export async function POST(req: Request) {
 
   const serp = await runSerp(provider, apiKey, keyword, {
     gl: b.gl, hl: b.hl, location: b.location, num: b.num ?? 10, engine,
+    baseUrl: b.baseUrl ? String(b.baseUrl) : undefined,
   });
 
   if (serp.error) {
