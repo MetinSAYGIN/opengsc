@@ -222,8 +222,8 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
             setQueries((d.queries ?? []).slice(0, 25).map((q: Record<string, unknown>) => ({ key: String(g(q, "Query") ?? ""), clicks: num(g(q, "Clicks")), impressions: num(g(q, "Impressions")), position: g(q, "AvgImpressionPosition", "AvgClickPosition", "Position") as number | undefined })));
             setPages((d.pages ?? []).slice(0, 25).map((p: Record<string, unknown>) => ({ key: String(g(p, "Query", "Page", "Url") ?? "").replace(/^https?:\/\/[^/]+/, "") || "/", clicks: num(g(p, "Clicks")), impressions: num(g(p, "Impressions")), position: g(p, "AvgImpressionPosition", "Position") as number | undefined })));
             const cr = d.crawl;
-            const crawlErrors = cr ? num(g(cr, "Code4xx", "Code400")) + num(g(cr, "Code5xx", "Code500")) || g(cr, "CrawlErrors") : undefined;
-            setMeta({ inIndex: cr ? g(cr, "InIndex") as number | undefined : undefined, crawlErrors, blockedByRobots: cr ? g(cr, "BlockedByRobotsTxt") as number | undefined : undefined });
+            const crawlErrors = cr ? num(g(cr, "Code4xx", "Code400")) + num(g(cr, "Code5xx", "Code500")) || g(cr, "CrawlErrors") as number : undefined;
+            setMeta({ inIndex: cr ? g(cr, "InIndex") as number | undefined : undefined, crawlErrors, blockedByRobots: cr ? (g(cr, "BlockedByRobotsTxt") as number | undefined) : undefined });
             setProblems([]);
           }
         } else {
@@ -436,8 +436,8 @@ export default function EngineView({ engine, domain, siteDbId, refreshKey, metri
         </div>
       )}
       {tab === "queries" || !pages.length
-        ? <RowsTable title={`${t("seTopQueries")} — ${engine === "bing" ? "Bing" : t("seEngineYandex")}`} rows={queries} keyLabel={t("seQuery")} t={t} csvName={`${engine}-queries-${cleanDomain}.csv`} />
-        : <RowsTable title={`${t("seTopPages")} — Bing`} rows={pages} keyLabel="URL" t={t} csvName={`${engine}-pages-${cleanDomain}.csv`} />}
+        ? <RowsTable title={`${t("seTopQueries")} — ${engine === "bing" ? "Bing" : t("seEngineYandex")}`} rows={queries} keyLabel={t("seQuery")} t={t as unknown as (k: string) => string} csvName={`${engine}-queries-${cleanDomain}.csv`} />
+        : <RowsTable title={`${t("seTopPages")} — Bing`} rows={pages} keyLabel="URL" t={t as unknown as (k: string) => string} csvName={`${engine}-pages-${cleanDomain}.csv`} />}
     </div>
   );
 }
