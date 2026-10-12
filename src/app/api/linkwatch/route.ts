@@ -15,15 +15,24 @@ async function uid(capability: Capability = "read"): Promise<string | null> {
 return workspaceUserId(capability);
 }
 
+// Row shapes the three GET queries return (all columns TEXT/REAL per the Prisma models,
+// dates as ISO strings) — kept local because they only live between rawQuery and the JSON body.
+interface BrandRow { id: string; domain: string; createdAt: string }
+interface MentionRow {
+  brand: string; urlFrom: string; domainFrom: string; title: string; anchor: string;
+  drFrom: number; firstSeen: string; dofollow: boolean; fetchedAt: string;
+}
+interface TopDomainRow { domainFrom: string; brandsLinked: number; links: number; maxDr: number }
+
 export async function GET() {
   const userId = await uid();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const brands: any[] = await rawQuery(`SELECT id, domain, createdAt FROM "LinkWatchBrand" WHERE userId = ? ORDER BY domain`, userId);
-    const mentions: any[] = await rawQuery(
+    const brands = await rawQuery<BrandRow[]>(`SELECT id, domain, createdAt FROM "LinkWatchBrand" WHERE userId = ? ORDER BY domain`, userId);
+    const mentions = await rawQuery<MentionRow[]>(
       `SELECT brand, urlFrom, domainFrom, title, anchor, drFrom, firstSeen, dofollow, fetchedAt
        FROM "LinkMention" WHERE userId = ? ORDER BY firstSeen DESC LIMIT 1000`, userId);
-    const topDomains: any[] = await rawQuery(
+    const topDomains = await rawQuery<TopDomainRow[]>(
       `SELECT domainFrom, COUNT(DISTINCT brand) as brandsLinked, COUNT(*) as links, MAX(drFrom) as maxDr
        FROM "LinkMention" WHERE userId = ? GROUP BY domainFrom ORDER BY brandsLinked DESC, links DESC LIMIT 100`, userId);
     return NextResponse.json({ brands, mentions, topDomains });
@@ -36,7 +45,7 @@ export async function POST(req: Request) {
   const userId = await uid("write");
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const b = await req.json().catch(() => ({}));
-  const domains: string[] = ([...new Set((Array.isArray(b.domains) ? b.domains : []).map((d: any) => norm(String(d))).filter((d: string) => d.includes(".")))] as string[]).slice(0, 200);
+  const domains: string[] = ([...new Set((Array.isArray(b.domains) ? b.domains : []).map((d: unknown) => norm(String(d))).filter((d: string) => d.includes(".")))] as string[]).slice(0, 200);
   if (!domains.length) return NextResponse.json({ error: "no_domains" }, { status: 400 });
   let added = 0;
   // `INSERT OR IGNORE` is SQLite's "skip the duplicate" spelling; MySQL writes it `INSERT IGNORE`.

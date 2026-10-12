@@ -106,8 +106,9 @@ test("FieldLinkClient refuses to follow a redirect with the token attached", asy
 test("FieldLinkClient sends the expected-credits header on submit", async () => {
   const orig = globalThis.fetch;
   let seen: { url: string; headers: Record<string, string> } | null = null;
-  globalThis.fetch = (async (input: any, init?: any) => {
-    seen = { url: String(input), headers: init.headers };
+  globalThis.fetch = (async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+    // fieldlink.ts always builds its headers as a plain string record and always passes init.
+    seen = { url: String(input), headers: init!.headers as Record<string, string> };
     return res(200, { order: { id: "o1", rowCount: 5, completedCount: 0, failedCount: 0, status: "queued" } });
   }) as typeof fetch;
   try {

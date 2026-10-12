@@ -13,7 +13,17 @@ import type { DigestData } from "@/lib/digest";
 
 // The engine tab now reuses the full engine portfolio (per-site summary with period-over-period
 // change), so it can show the same gainers/losers/attention sections as Google.
-type EnginePayload = { sites: any[] };
+/** One site row of /api/gsc/portfolio-engine — opaque JSON, read defensively in EngineTab. */
+type EngineSite = {
+  url: string;
+  hasData?: boolean;
+  summary?: {
+    clicks?: { value?: number; change?: number };
+    impressions?: { value?: number };
+    position?: { value?: number };
+  };
+};
+type EnginePayload = { sites: EngineSite[] };
 const cleanUrl = (u: string) => String(u || "").replace(/^https?:\/\//, "").replace(/^sc-domain:/, "").replace(/\/.*$/, "");
 
 const fmt = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : String(Math.round(n)));
@@ -234,7 +244,7 @@ function EngineTab({ payload, name }: { payload: EnginePayload | "loading" | und
     return <div style={{ ...card, padding: "32px", textAlign: "center", color: "var(--color-text-secondary)", fontSize: "13px" }}><Loader2 size={16} className="spin" /> {t("digestEngineLoading")}</div>;
   }
   const sites = payload.sites || [];
-  const rows = sites.map((s: any) => ({
+  const rows = sites.map(s => ({
     name: cleanUrl(s.url),
     clicks: s.summary?.clicks?.value ?? 0,
     impr: s.summary?.impressions?.value ?? 0,

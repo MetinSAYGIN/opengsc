@@ -5,6 +5,7 @@
 // POST /api/audit creates the SiteAudit row and calls runAudit() without awaiting it.
 
 import { prisma, dbAny } from "@/lib/prisma";
+import type { SiteAudit } from "@/generated/prisma";
 import { checkAiCrawlability, fetchRobots } from "@/lib/audit/aiCrawl";
 import { safeFetch } from "@/lib/security/safeFetch";
 import { extractAuditHtml, missingSecurityHeaders, robotsDirectivesConflict, type AuditHtmlSignals } from "@/lib/audit/pageSignals";
@@ -140,7 +141,7 @@ export function storedOptions(value?: string | null): AuditOptions | undefined {
 export async function recoverStaleAudits(siteId?: string): Promise<number> {
   const store = dbAny.siteAudit;
   const cutoff = new Date(Date.now() - AUDIT_STALE_MS);
-  let stale: any[] = [];
+  let stale: SiteAudit[] = [];
   try {
     stale = await store.findMany({
       where: {
@@ -230,6 +231,32 @@ async function loadSitemapHreflangs(root: URL): Promise<Map<string, HreflangEntr
   return out;
 }
 
+/** What fetchPage produces plus the crawl bookkeeping attached in the BFS loop. */
+type CrawledPage = PageResult & { depth: number; ex?: AuditHtmlSignals; internalTargets?: string[] };
+
+/** One SiteAuditPage row as held in memory — arrays stay arrays until the storage boundary. */
+type AuditPageRow = {
+  auditId: string;
+  url: string;
+  httpStatus: number;
+  redirectTo: string | null;
+  contentType: string;
+  title: string;
+  metaDescription: string;
+  h1Count: number;
+  canonical: string | null;
+  noindex: boolean;
+  internalLinks: number;
+  externalLinks: number;
+  imagesNoAlt: number;
+  wordCount: number;
+  loadMs: number;
+  depth: number;
+  issues: string[];
+  evidence: Record<string, string>;
+  brokenLinks: string[];
+};
+
 export async function runAudit(auditId: string, opts?: AuditOptions): Promise<void> {
   if (activeAudits.has(auditId)) return;
   activeAudits.add(auditId);
@@ -285,7 +312,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         queue.push({ url: seed.href, depth: 1 });
       }
     }
-    const results = new Map<string, PageResult & { depth: number; ex?: AuditHtmlSignals; internalTargets?: string[] }>();
+    const results = new Map<string, CrawledPage>();
 
     let crawled = 0;
     const workers = Array.from({ length: CONCURRENCY }, async () => {
@@ -294,7 +321,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         if (!item) break;
         crawled++;
         const page = await fetchPage(item.url);
-        const entry: any = { ...page, depth: item.depth };
+        const entry: CrawledPage = { ...page, depth: item.depth };
         if (page.html) {
           const ex = extractAuditHtml(page.html);
           entry.ex = ex;
@@ -440,7 +467,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
       }
     }
 
-    const rows: any[] = [];
+    const rows: AuditPageRow[] = [];
     for (const [url, r] of results) {
       const broken: string[] = [];
       const redirectLinks: string[] = [];
@@ -635,9 +662,9 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     // The catch above already nulls a failed check, so a network error here never fails the audit.
     const aiCrawlability = await aiCrawlPromise;
     let verification = null;
-    if ((audit as any).baselineAuditId) {
+    if (audit.baselineAuditId) {
       const baseline = await prisma.siteAudit.findFirst({
-        where: { id: (audit as any).baselineAuditId, siteId: audit.siteId, status: "completed" },
+        where: { id: audit.baselineAuditId, siteId: audit.siteId, status: "completed" },
         select: { id: true, summary: true },
       });
       if (baseline) {

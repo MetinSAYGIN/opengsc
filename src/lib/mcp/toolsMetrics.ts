@@ -214,7 +214,8 @@ export const METRICS_TOOLS: McpTool[] = [
       const country = String(args.country ?? "us").toLowerCase();
       const limit = lim(args.limit, 100, 500);
 
-      let stored: any[] = [];
+      // CompetitorKeyword columns as the SELECT above shapes them (nullable Ints stay nullable).
+      let stored: { competitor: string; keyword: string; position: number | null; volume: number | null; difficulty: number | null; url: string }[] = [];
       try {
         stored = await rawQuery(
           `SELECT competitor, keyword, position, volume, difficulty, url
@@ -310,7 +311,8 @@ export const METRICS_TOOLS: McpTool[] = [
       const domains = asStrings(args.domains).map(normDomain).filter(d => d.includes(".")).slice(0, 50);
       if (!domains.length) throw new Error("Missing required argument: domains");
 
-      let rows: any[] = [];
+      // TrafficCache rows: payload is the provider's JSON, parsed below.
+      let rows: { domain: string; provider: string; payload: string; checkedAt: string }[] = [];
       try {
         rows = await rawQuery(
           `SELECT domain, provider, payload, checkedAt FROM "TrafficCache" WHERE domain IN (${domains.map(() => "?").join(",")})
@@ -321,9 +323,9 @@ export const METRICS_TOOLS: McpTool[] = [
 
       // One row per (domain, provider) since the cache learned Semrush TA; ASC order makes the
       // latest write per domain win the map, so an agent sees the freshest estimate either way.
-      const found = rows.map(r => {
+      const found = rows.map((r): Record<string, unknown> | null => {
         try {
-          const payload = JSON.parse(r.payload);
+          const payload = JSON.parse(r.payload) as Record<string, unknown>;
           return {
             ...payload,
             // Rows written before the field existed can only be GoAnyAPI's.
@@ -331,9 +333,9 @@ export const METRICS_TOOLS: McpTool[] = [
             checkedAt: r.checkedAt,
           };
         } catch { return null; }
-      }).filter(Boolean);
+      }).filter((x): x is Record<string, unknown> => !!x);
 
-      const have = new Set(found.map((f: any) => f.domain));
+      const have = new Set(found.map(f => f.domain));
       return {
         domains: found,
         notLoaded: domains.filter(d => !have.has(d)),
@@ -367,7 +369,7 @@ export const METRICS_TOOLS: McpTool[] = [
       const sections: Record<string, unknown> = {};
       const loaded: string[] = [];
       try {
-        const rows: any[] = await rawQuery(
+        const rows = await rawQuery<{ section: string; key: string; payload: string; checkedAt: string }[]>(
           `SELECT section, key, payload, checkedAt FROM "AdIntelCache" WHERE domain = ? ORDER BY checkedAt ASC`,
           domain,
         );

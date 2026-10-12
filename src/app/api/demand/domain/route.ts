@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
-import { domainOverview, estimateDomainCost, providerFor, normDomain } from "@/lib/seo/demand";
+import { domainOverview, estimateDomainCost, providerFor, normDomain, type DomainKeyword } from "@/lib/seo/demand";
 import { defaultLanguageFor } from "@/lib/seo/regions";
 import {
   writeDomainCache, readDomainCache, writeKeywordCache,
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
    * `ourPosition: null` there means Search Console has never shown us for it — the same reading
    * as everywhere else in Demand.
    */
-  const decorate = async (keywords: any[]) => {
+  const decorate = async (keywords: DomainKeyword[]) => {
     const ours = await ourQueries();
     if (!ours.size) return keywords.map(k => ({ ...k, ourPosition: null, ourUrl: null, verdict: null }));
     return keywords.map(k => {
@@ -110,7 +110,7 @@ export async function POST(req: Request) {
 
   const readCache = async () => {
     try {
-      const rows: any[] = await rawQuery(
+      const rows = await rawQuery<{ rows: string; createdAt: string | Date }[]>(
         `SELECT rows, createdAt FROM "DemandSearch" WHERE userId = ? AND cacheKey = ?`,
         userId, `domain:${cacheKey}`,
       );

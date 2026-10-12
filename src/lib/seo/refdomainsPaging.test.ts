@@ -38,7 +38,7 @@ function installGateway(g: Gateway): string {
     dofollow_links: i % 2,
     first_seen: "2025-01-01",
   }));
-  globalThis.fetch = (async (input: any) => {
+  globalThis.fetch = (async (input: Parameters<typeof globalThis.fetch>[0]) => {
     const url = new URL(String(input));
     calls.push(url);
     const q = url.searchParams;
@@ -60,7 +60,7 @@ function installGateway(g: Gateway): string {
     const select = (q.get("select") ?? "").split(",");
     const out = rows.map(r => Object.fromEntries(Object.entries(r).filter(([k]) => select.includes(k))));
     return new Response(JSON.stringify({ refdomains: out }), { status: 200, headers: { "content-type": "application/json" } });
-  }) as any;
+  });
   return base;
 }
 
@@ -167,7 +167,7 @@ test("a failing page after the first keeps what was paid for and is not an end",
       return new Response(JSON.stringify({ refdomains: rows }), { status: 200 });
     }
     return new Response("nope", { status: 400 });
-  }) as any;
+  });
   const r = await pull(base, 648);
   assert.equal(r.items[0].refDomains.length, 12);
   assert.equal(r.sawEnd, false);

@@ -11,13 +11,14 @@ import { withCallContext } from "./context";
 import { flushProviderLog, __rows, __setWriterForTests } from "./log";
 import { fetchLLMDetailed, fetchLLMVision } from "../llm";
 
-function stubFetch(impl: (url: string, init: any) => Promise<Response>) {
+function stubFetch(impl: (url: string, init: RequestInit | undefined) => Promise<Response>) {
   const original = globalThis.fetch;
-  const seen: { url: string; init: any }[] = [];
-  globalThis.fetch = (async (url: any, init: any) => {
+  const seen: { url: string; init: RequestInit | undefined }[] = [];
+  const stub: typeof globalThis.fetch = async (url, init) => {
     seen.push({ url: String(url), init });
     return impl(String(url), init);
-  }) as any;
+  };
+  globalThis.fetch = stub;
   return { seen, restore: () => { globalThis.fetch = original; } };
 }
 
@@ -208,17 +209,19 @@ test("a logging failure never fails the provider call", async (t) => {
   // lands in fetchLLMOnce's catch and comes back RETRYABLE: bookkeeping failing a call the
   // provider has already been paid for, and then paying for it twice more.
   __setWriterForTests();
-  const hostile: any = new Proxy({ choices: [{ message: { content: "hi" }, finish_reason: "stop" }] }, {
-    get(target: any, key) {
+  // The proxy target's real shape (an OpenAI-style completion); `usage` is only trapped, never read.
+  const hostile: Record<string, unknown> = new Proxy({ choices: [{ message: { content: "hi" }, finish_reason: "stop" }] } as Record<string, unknown>, {
+    get(target: Record<string, unknown>, key: string | symbol) {
       if (key === "usage") throw new Error("usage is a trap");
-      return target[key];
+      return target[key as string]; // JSON property access — a symbol key never reaches here
     },
   });
   const original = globalThis.fetch;
+  // A partial Response stand-in (ok/status/headers/json/text) — cast because it is not the full DOM type.
   globalThis.fetch = (async () => ({
     ok: true, status: 200, headers: new Headers(),
     json: async () => hostile, text: async () => "",
-  })) as any;
+  })) as unknown as typeof globalThis.fetch;
   try {
     const r = await settleOnFakeClock(t, () =>
       withCallContext({ userId: "u1", feature: "f", captureBodies: false }, () =>

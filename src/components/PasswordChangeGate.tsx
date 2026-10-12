@@ -7,6 +7,9 @@ import { useLanguage } from "@/lib/i18n/LanguageProvider";
 
 const DISMISS_KEY = "opengsc.passwordNoticeDismissed";
 
+/** A key the dictionary actually carries — the parameter type of useLanguage().t. */
+type TranslateKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
 /**
  * Two different prompts about passwords, deliberately not the same prompt.
  *
@@ -78,7 +81,7 @@ export default function PasswordChangeGate() {
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <KeyRound size={16} color="var(--color-text-primary)" />
         <h2 style={{ flex: 1, fontSize: 16, margin: 0, color: "var(--color-text-primary)" }}>
-          {t((forced ? "passwordChangeTitle" : "passwordSuggestTitle") as any)}
+          {t(forced ? "passwordChangeTitle" : "passwordSuggestTitle")}
         </h2>
         {!forced && <button type="button" onClick={dismiss} aria-label="close"
           style={{ background: "transparent", border: 0, color: "var(--color-text-tertiary)", cursor: "pointer", padding: 2 }}>
@@ -87,32 +90,32 @@ export default function PasswordChangeGate() {
       </div>
 
       <p style={{ fontSize: 12, lineHeight: 1.55, color: "var(--color-text-secondary)", margin: 0 }}>
-        {t((forced ? "passwordChangeHint" : "passwordSuggestHint") as any)}
+        {t(forced ? "passwordChangeHint" : "passwordSuggestHint")}
       </p>
 
-      {forced && <input className="tool-input" type="password" required autoComplete="current-password" placeholder={t("passwordChangeCurrent" as any)}
+      {forced && <input className="tool-input" type="password" required autoComplete="current-password" placeholder={t("passwordChangeCurrent")}
         value={form.currentPassword} onChange={e => setForm(f => ({ ...f, currentPassword: e.target.value }))} />}
-      <input className="tool-input" type="password" required autoComplete="new-password" placeholder={t("passwordChangeNew" as any)}
+      <input className="tool-input" type="password" required autoComplete="new-password" placeholder={t("passwordChangeNew")}
         value={form.newPassword} onChange={e => setForm(f => ({ ...f, newPassword: e.target.value }))} />
-      <input className="tool-input" type="password" required autoComplete="new-password" placeholder={t("joinConfirm" as any)}
+      <input className="tool-input" type="password" required autoComplete="new-password" placeholder={t("joinConfirm")}
         value={form.confirm} onChange={e => setForm(f => ({ ...f, confirm: e.target.value }))} />
 
       {error && <span style={{ fontSize: 12, color: "var(--color-accent-red)" }}>
-        {t(`teamError_${error}` as any) !== `teamError_${error}` ? t(`teamError_${error}` as any) : t("passwordChangeFailed" as any)}
+        {t(`teamError_${error}` as TranslateKey) !== `teamError_${error}` ? t(`teamError_${error}` as TranslateKey) : t("passwordChangeFailed")}
       </span>}
 
       <button type="submit" disabled={busy || form.newPassword.length < 12}
         style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "10px 14px", borderRadius: 9, border: 0, background: "var(--color-accent-blue)", color: "#fff", fontSize: 14, fontWeight: 650, cursor: "pointer" }}>
-        {busy ? <Loader2 className="spin" size={15} /> : null} {t("passwordChangeSubmit" as any)}
+        {busy ? <Loader2 className="spin" size={15} /> : null} {t("passwordChangeSubmit")}
       </button>
 
       {!forced && <>
         <button type="button" onClick={dismiss}
           style={{ background: "transparent", border: 0, color: "var(--color-text-secondary)", fontSize: 12, cursor: "pointer" }}>
-          {t("passwordSuggestLater" as any)}
+          {t("passwordSuggestLater")}
         </button>
         <div style={{ borderTop: "1px solid var(--color-border)", paddingTop: 10 }}>
-          <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{t("passwordSuggestSsh" as any)}</p>
+          <p style={{ fontSize: 11, lineHeight: 1.5, color: "var(--color-text-tertiary)", margin: "0 0 6px" }}>{t("passwordSuggestSsh")}</p>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <code style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere", fontSize: 11, padding: "6px 8px", borderRadius: 7, background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
               {command} you@example.com

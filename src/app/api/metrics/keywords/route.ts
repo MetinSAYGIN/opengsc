@@ -27,7 +27,7 @@ export async function POST(req: Request) {
 
   const b = await req.json().catch(() => ({}));
   const keywords: string[] = Array.isArray(b.keywords)
-    ? [...new Set<string>(b.keywords.map((k: any) => normalizeKeyword(String(k))))].filter(Boolean)
+    ? [...new Set<string>(b.keywords.map((k: unknown) => normalizeKeyword(String(k))))].filter(Boolean)
     : [];
   if (!keywords.length) return NextResponse.json({ metrics: {}, units: 0 });
 

@@ -10,11 +10,11 @@ export async function GET() {
 
   let slots = 0, casinos = 0;
   try {
-    const s: any[] = await rawQuery(`SELECT COUNT(*) as c FROM "RagSlot"`);
+    const s = await rawQuery<{ c: number | bigint }[]>(`SELECT COUNT(*) as c FROM "RagSlot"`);
     slots = Number(s?.[0]?.c ?? 0);
   } catch { /* table missing */ }
   try {
-    const c: any[] = await rawQuery(`SELECT COUNT(*) as c FROM "RagCasino"`);
+    const c = await rawQuery<{ c: number | bigint }[]>(`SELECT COUNT(*) as c FROM "RagCasino"`);
     casinos = Number(c?.[0]?.c ?? 0);
   } catch { /* table missing */ }
   return NextResponse.json({ slots, casinos });

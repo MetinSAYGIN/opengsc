@@ -24,6 +24,11 @@ import { FingerprintControls, useFingerprintControls } from "@/components/Finger
 const card = "panel";
 const inputStyle = "tool-input";
 
+/** A key the dictionary actually carries — the parameter type of useLanguage().t. */
+type TranslateKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+/** The outline record OutlineView renders (its prop type, kept in sync structurally). */
+type OutlineRecord = React.ComponentProps<typeof OutlineView>["outline"];
+
 function Field({ l, children }: { l: string; children: React.ReactNode }) {
   return <div><span className="tool-field-label">{l}</span>{children}</div>;
 }
@@ -42,12 +47,12 @@ function goalFromTone(toneValue: string): "informational" | "commercial" | "mixe
 const SITE_TYPE_COLOR: Record<string, string> = {
   official_store: "#10A37F", aggregator: "#ff9f0a", forum_ugc: "#34c759", editorial: "#2997ff", monobrand: "#bf5af2",
 };
-const SITE_TYPE_KEY: Record<string, string> = {
+const SITE_TYPE_KEY: Record<string, TranslateKey> = {
   official_store: "seoStOfficial", aggregator: "seoStAggregator", forum_ugc: "seoStForum", editorial: "seoStEditorial", monobrand: "seoStMonobrand",
 };
 // Cluster ordering for the grouped ("clusters") competitors view; unknown/manual → "other".
 const SITE_TYPE_ORDER = ["official_store", "monobrand", "editorial", "aggregator", "forum_ugc", "other"];
-const INTENT_KEY: Record<string, string> = {
+const INTENT_KEY: Record<string, TranslateKey> = {
   buy: "seoIntentBuy", info: "seoIntentInfo", review: "seoIntentReview", listicle: "seoIntentListicle", use_case: "seoIntentUseCase",
 };
 const INTENT_COLOR: Record<string, string> = {
@@ -100,7 +105,7 @@ export default function OutlinePage() {
   const [loading, setLoading] = useState<"" | "serp" | "outline" | "text" | "avg">("");
   const [err, setErr] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
-  const [outline, setOutline] = useState<any>(null);
+  const [outline, setOutline] = useState<OutlineRecord | null>(null);
   const [article, setArticle] = useState("");
 
   // localStorage-derived values must not differ between SSR and first client render
@@ -430,7 +435,7 @@ export default function OutlinePage() {
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: "12px", alignItems: "end" }}>
           <Field l={t("seoLocationOpt")}><input className={inputStyle} value={location} onChange={e => setLocation(e.target.value)} placeholder={t("seoLocationPh")} /></Field>
           <Field l={t("seoEngine")}>
-            <select className={inputStyle} value={engine} onChange={e => setEngine(e.target.value as any)}>
+            <select className={inputStyle} value={engine} onChange={e => setEngine(e.target.value as "google" | "bing")}>
               <option value="google">Google</option>
               <option value="bing">{t("seoEngineBing")}</option>
             </select>
@@ -503,7 +508,7 @@ export default function OutlinePage() {
                     background: i === 0 ? "rgba(41,151,255,0.1)" : "transparent",
                     border: `1px solid ${i === 0 ? "rgba(41,151,255,0.35)" : "var(--color-border)"}`,
                   }}>
-                    {t((INTENT_KEY[intent] || "seoIntentInfo") as any)}{sorted.length > 1 ? ` (${n})` : ""}
+                    {t(INTENT_KEY[intent] || "seoIntentInfo")}{sorted.length > 1 ? ` (${n})` : ""}
                   </span>
                 ))}
               </div>
@@ -544,7 +549,7 @@ export default function OutlinePage() {
                       <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 9px", borderRadius: "20px",
                         color: SITE_TYPE_COLOR[s.site_type] || "var(--color-text-secondary)",
                         background: `${SITE_TYPE_COLOR[s.site_type] || "#888"}1a` }}>
-                        {t((SITE_TYPE_KEY[s.site_type] || "") as any) || s.site_type}
+                        {t(SITE_TYPE_KEY[s.site_type] || ("" as TranslateKey)) || s.site_type}
                       </span>
                     )}
                   </span>
@@ -553,7 +558,7 @@ export default function OutlinePage() {
                       <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 9px", borderRadius: "20px",
                         color: INTENT_COLOR[s.intent] || "var(--color-text-secondary)",
                         background: `${INTENT_COLOR[s.intent] || "#888"}1a` }}>
-                        {t((INTENT_KEY[s.intent] || "seoIntentInfo") as any)}
+                        {t(INTENT_KEY[s.intent] || "seoIntentInfo")}
                       </span>
                     )}
                   </span>
@@ -592,7 +597,7 @@ export default function OutlinePage() {
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                         <span style={{ width: 8, height: 8, borderRadius: "50%", background: clr }} />
                         <span style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)" }}>
-                          {t((SITE_TYPE_KEY[gt] || "seoStOther") as any)}
+                          {t(SITE_TYPE_KEY[gt] || "seoStOther")}
                         </span>
                         <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>({items.length})</span>
                         <button onClick={() => setSelected(prev => {
@@ -708,7 +713,7 @@ export default function OutlinePage() {
               <Field l={t("seoCfgTone")}>
                 <select className={inputStyle} value={tone} onChange={e => setTone(e.target.value)}>
                   <option value="">{t("seoTonePolicyDefault")}</option>
-                  {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as any)}</option>)}
+                  {TONES.map(tn => <option key={tn.value} value={tn.value}>{t(tn.labelKey as TranslateKey)}</option>)}
                   <option value="custom">{t("seoToneCustom")}</option>
                 </select>
               </Field>
@@ -725,7 +730,7 @@ export default function OutlinePage() {
             )}
             <div style={{ marginTop: "12px" }}>
               <Field l={t("seoCfgNarration")}>
-                <select className={inputStyle} value={narration} onChange={e => setNarration(e.target.value as any)}>
+                <select className={inputStyle} value={narration} onChange={e => setNarration(e.target.value as "" | "first" | "third")}>
                   <option value="">{t("seoNarrationDefault")}</option>
                   <option value="first">{t("seoNarrationFirst")}</option>
                   <option value="third">{t("seoNarrationThird")}</option>
@@ -820,7 +825,7 @@ export default function OutlinePage() {
                 return (
                   <div key={g.id} style={{ marginBottom: "8px" }}>
                     <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "5px" }}>
-                      {t(g.labelKey as any)} <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}>({tpls.length})</span>
+                      {t(g.labelKey as TranslateKey)} <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}>({tpls.length})</span>
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                       {tpls.map(tpl => {
@@ -836,7 +841,7 @@ export default function OutlinePage() {
                               background: active ? "var(--color-text-primary)" : "var(--color-bg)",
                               color: active ? "var(--color-bg)" : "var(--color-text-secondary)",
                               borderColor: active ? "var(--color-text-primary)" : "var(--color-border)" }}>
-                            {t(tpl.labelKey as any)}
+                            {t(tpl.labelKey as TranslateKey)}
                           </button>
                         );
                       })}
@@ -846,7 +851,7 @@ export default function OutlinePage() {
               })}
               {selectedTplId && (
                 <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", margin: "2px 0 6px" }}>
-                  {t("seoTplSelected")}: <span style={{ fontWeight: 600, color: "var(--color-text-secondary)" }}>{t(OUTLINE_TEMPLATES.find(x => x.id === selectedTplId)?.labelKey as any)}</span>
+                  {t("seoTplSelected")}: <span style={{ fontWeight: 600, color: "var(--color-text-secondary)" }}>{t(OUTLINE_TEMPLATES.find(x => x.id === selectedTplId)?.labelKey as TranslateKey)}</span>
                 </div>
               )}
               {customTemplate && (
@@ -894,7 +899,7 @@ export default function OutlinePage() {
 }
 
 // ─── Stepper ──────────────────────────────────────────────────────────────────
-function Stepper({ step, t }: { step: number; t: any }) {
+function Stepper({ step, t }: { step: number; t: (key: TranslateKey) => string }) {
   const steps = [t("seoStepParams"), t("seoStepCompetitors"), t("seoStepResults")];
   return (
     <div className="panel" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

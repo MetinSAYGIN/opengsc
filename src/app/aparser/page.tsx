@@ -30,6 +30,9 @@ interface Info {
   tasksInQueue: number; activeProxyCheckerThreads: number; availableParsers: string[];
 }
 
+/** A key the dictionary actually carries — the parameter type of useLanguage().t. */
+type TranslateKey = Parameters<ReturnType<typeof useLanguage>["t"]>[0];
+
 const POLL_MS = 15_000;
 
 export default function AparserPage() {
@@ -46,9 +49,9 @@ export default function AparserPage() {
   const [parser, setParser] = useState("SE::Google");
   const [query, setQuery] = useState("");
   const [testBusy, setTestBusy] = useState(false);
-  const [testOut, setTestOut] = useState<{ results: any[]; resultStringPreview: string } | null>(null);
+  const [testOut, setTestOut] = useState<{ results: unknown[]; resultStringPreview: string } | null>(null);
   const [testErr, setTestErr] = useState("");
-  const [preset, setPreset] = useState<Record<string, any> | null>(null);
+  const [preset, setPreset] = useState<Record<string, unknown> | null>(null);
   // Batch task + proxy detail — the console's answer to "and what else can this instance do
   // for me": long runs belong in the instance's own queue, not in a synchronous call.
   const [proxyDetail, setProxyDetail] = useState<Record<string, string[]> | null>(null);
@@ -264,7 +267,7 @@ export default function AparserPage() {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.parser}</div>
                   <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
-                    {t(c.useKey as any)}{c.wired ? "" : ` · ${t("aparserNotWired")}`}
+                    {t(c.useKey as TranslateKey)}{c.wired ? "" : ` · ${t("aparserNotWired")}`}
                   </div>
                 </div>
               </div>
@@ -383,7 +386,7 @@ const pre: React.CSSProperties = {
   wordBreak: "break-all",
 };
 
-function Header({ t, host, fromEnv }: { t: (k: any) => string; host: string; fromEnv: boolean }) {
+function Header({ t, host, fromEnv }: { t: (k: TranslateKey) => string; host: string; fromEnv: boolean }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
       <Server size={20} color="#e8452c" />

@@ -78,6 +78,32 @@ interface Row {
 
 interface Snapshot { date: string; refDomains: number | null; backlinks: number | null; dofollowPct: number | null }
 
+/**
+ * One referring-domain row as /api/metrics/backlinks answers it — the merged view sends
+ * per-provider columns plus `providers`; a single-provider view sends that provider's number
+ * in the generic `dr` slot. Everything is optional because providers omit what they lack.
+ */
+interface ApiRefDomainRow {
+  providers?: string[];
+  provider?: BlProvider;
+  refDomain?: string;
+  dr?: number | null;
+  tf?: number | null;
+  as?: number | null;
+  ks?: number | null;
+  dfs?: number | null;
+  cf?: number | null;
+  links?: number | null;
+  linksToTarget?: number | null;
+  dofollow?: boolean;
+  firstSeen?: string;
+  topic?: string;
+  ip?: string;
+  lost?: boolean;
+  lostAt?: string;
+  source?: string;
+}
+
 /** DataForSEO's extras for the site, as /api/metrics/backlinks returns them (a free local read). */
 interface DfsExtras {
   rank: number | null;
@@ -291,9 +317,11 @@ export default function BacklinkProfile({ siteDbId, dropDomain }: { siteDbId?: s
       // The merged view answers with per-provider columns already split (dr/tf/as); a
       // single-provider view answers with that provider's number in the generic `dr` slot,
       // so the column it belongs to follows from the view.
-      setRows((d.refDomains as any[]).map(r => {
+      setRows((d.refDomains as ApiRefDomainRow[]).map(r => {
         const merged = Array.isArray(r.providers);
-        const prov: BlProvider = merged ? "ahrefs" : (r.provider ?? view);
+        // "all" is only reachable in the merged view, where the row carries its own providers —
+        // in a single-provider view `view` is always a concrete BlProvider here.
+        const prov: BlProvider = merged ? "ahrefs" : (r.provider ?? (view as BlProvider));
         return {
           refDomain: String(r.refDomain ?? ""),
           dr: merged ? (r.dr ?? null) : view === "ahrefs" ? (r.dr ?? null) : null,
@@ -307,7 +335,7 @@ export default function BacklinkProfile({ siteDbId, dropDomain }: { siteDbId?: s
           firstSeen: r.firstSeen ?? "",
           topic: r.topic ?? "",
           ip: r.ip ?? "",
-          providers: merged ? r.providers : [prov],
+          providers: merged ? r.providers! : [prov],
           lost: !!r.lost,
           lostAt: r.lostAt ?? "",
           source: r.source === "csv" ? "csv" : "api",

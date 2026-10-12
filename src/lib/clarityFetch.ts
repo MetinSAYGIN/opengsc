@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 const CLARITY_API = 'https://www.clarity.ms/export-data/api/v1/project-live-insights';
 
 export type ClarityFetchResult =
-  | { ok: true; snapshot: { fetchedAt: Date; periodDays: number; data: any } }
+  | { ok: true; snapshot: { fetchedAt: Date; periodDays: number; data: unknown } }
   | { ok: false; error: string; status: number; message?: string };
 
 // Fetch fresh Clarity data for a site and store a snapshot. Shared by the API

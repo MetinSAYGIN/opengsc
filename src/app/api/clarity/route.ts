@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     clarityToken: site.clarityToken ? "••••••" : null,
     clarityProjectId: site.clarityProjectId ?? null,
-    clarityInterval: (site as any).clarityInterval ?? "disabled",
+    clarityInterval: site.clarityInterval ?? "disabled",
     configured: !!(site.clarityToken && site.clarityProjectId),
     snapshot: latest
       ? { fetchedAt: latest.fetchedAt, periodDays: latest.periodDays, data: JSON.parse(latest.data) }

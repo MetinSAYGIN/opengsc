@@ -10,7 +10,7 @@ return workspaceUserId(capability);
 
 async function readRow(userId: string): Promise<string> {
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<{ slackWebhook: string | null }[]>(
       `SELECT slackWebhook FROM "User" WHERE id = ?`, userId);
     return rows?.[0]?.slackWebhook ?? "";
   } catch {

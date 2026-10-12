@@ -144,7 +144,8 @@ export async function GET(req: Request) {
     groupDefs.length   > 0 ? queryGSC(accounts, site.siteId, fmt(prevStart), fmt(prevEnd),  'page',  500) : Promise.resolve([]),
   ]);
 
-  const toRow = (r: any) => ({
+  // A GSC searchanalytics row exactly as queryGSC above returns it.
+  const toRow = (r: Awaited<ReturnType<typeof queryGSC>>[number]) => ({
     label:  r.keys?.[0] ?? '',
     clicks: r.clicks ?? 0,
     impr:   r.impressions ?? 0,

@@ -30,7 +30,7 @@ let running = false;
 /** YYYY-MM-DD of this instance's last own DataForSEO pull for a target ("" = never). */
 async function lastPull(target: string): Promise<string> {
   try {
-    const rows: any[] = await rawQuery(
+    const rows = await rawQuery<{ d: string | Date | null }[]>(
       `SELECT MAX(date) AS d FROM "BacklinkSnapshot" WHERE target = ? AND provider = 'dataforseo' AND source = 'api'`,
       target,
     );

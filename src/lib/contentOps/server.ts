@@ -2,6 +2,13 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { workspaceUserId } from "@/lib/team/workspace";
 import type { Capability } from "@/lib/team/roles";
+import type { ContentOperation, ContentOperationEvent, ContentRepository } from "@/generated/prisma";
+
+/** An operation row with the relations the DTO reads — present whenever the query included them. */
+type OperationRow = ContentOperation & {
+  repository?: ContentRepository | null;
+  events?: ContentOperationEvent[];
+};
 
 /**
  * The workspace this request acts on, or null when the caller may not do `capability`.
@@ -11,7 +18,7 @@ import type { Capability } from "@/lib/team/roles";
 export async function contentOpsUserId(capability: Capability = "read"): Promise<string | null> {
   return workspaceUserId(capability);
 }
-export function repositoryDto(repo: any) {
+export function repositoryDto(repo: ContentRepository | null | undefined) {
   if (!repo) return null;
   return {
     id: repo.id, name: repo.name, owner: repo.owner, repo: repo.repo,
@@ -25,38 +32,41 @@ function json(value: unknown) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
-export function operationDto(operation: any) {
+export function operationDto(operation: OperationRow | null) {
+  // Callers re-fetch the row right before passing it in and 404 on null themselves; the reads
+  // below stay unguarded exactly as they were, so the non-null assertion only restates that.
+  const op = operation!;
   return {
-    id: operation.id,
-    title: operation.title,
-    keyword: operation.keyword,
-    operationType: operation.operationType,
-    sourceType: operation.sourceType,
-    sourceRef: operation.sourceRef,
-    targetUrl: operation.targetUrl,
-    filePath: operation.filePath,
-    content: operation.content,
-    status: operation.status,
-    gates: json(operation.gates),
-    prNumber: operation.prNumber,
-    prUrl: operation.prUrl,
-    branchName: operation.branchName,
-    commitSha: operation.commitSha,
-    error: operation.error,
-    approvedAt: operation.approvedAt,
-    prCreatedAt: operation.prCreatedAt,
-    mergedAt: operation.mergedAt,
-    liveAt: operation.liveAt,
-    siteId: operation.siteId ?? null,
-    trackedKeywordId: operation.trackedKeywordId ?? null,
-    indexingLinkedAt: operation.indexingLinkedAt ?? null,
-    measurementStartedAt: operation.measurementStartedAt ?? null,
-    lastMeasuredAt: operation.lastMeasuredAt ?? null,
-    outcome: json(operation.outcomeJson),
-    createdAt: operation.createdAt,
-    updatedAt: operation.updatedAt,
-    repository: repositoryDto(operation.repository),
-    events: Array.isArray(operation.events) ? operation.events.map((event: any) => ({
+    id: op.id,
+    title: op.title,
+    keyword: op.keyword,
+    operationType: op.operationType,
+    sourceType: op.sourceType,
+    sourceRef: op.sourceRef,
+    targetUrl: op.targetUrl,
+    filePath: op.filePath,
+    content: op.content,
+    status: op.status,
+    gates: json(op.gates),
+    prNumber: op.prNumber,
+    prUrl: op.prUrl,
+    branchName: op.branchName,
+    commitSha: op.commitSha,
+    error: op.error,
+    approvedAt: op.approvedAt,
+    prCreatedAt: op.prCreatedAt,
+    mergedAt: op.mergedAt,
+    liveAt: op.liveAt,
+    siteId: op.siteId ?? null,
+    trackedKeywordId: op.trackedKeywordId ?? null,
+    indexingLinkedAt: op.indexingLinkedAt ?? null,
+    measurementStartedAt: op.measurementStartedAt ?? null,
+    lastMeasuredAt: op.lastMeasuredAt ?? null,
+    outcome: json(op.outcomeJson),
+    createdAt: op.createdAt,
+    updatedAt: op.updatedAt,
+    repository: repositoryDto(op.repository),
+    events: Array.isArray(op.events) ? op.events.map((event: ContentOperationEvent) => ({
       id: event.id, fromStatus: event.fromStatus, toStatus: event.toStatus,
       note: event.note, meta: json(event.meta), createdAt: event.createdAt,
     })) : [],
