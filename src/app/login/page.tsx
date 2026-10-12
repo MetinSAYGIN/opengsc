@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
-import Link from "next/link";
 import { TrendingUp, Globe, Shield, Moon, Sun, Eye, EyeOff } from "lucide-react";
 import { useTheme } from "@/lib/ThemeContext";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
@@ -272,7 +271,7 @@ export default function LoginPage() {
 
         {/* Logo */}
         <div style={{ marginBottom: "56px" }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
+          { }
           <img src="/logo.svg" alt="OpenGSC" height={36} style={{ display: "block" }} />
         </div>
 
@@ -413,7 +412,7 @@ function MemberSignIn({ t, passwordOnly }: { t: (key: string) => string; passwor
     const result = await signIn("credentials", { ...form, redirect: false });
     setBusy(false);
     if (result?.error) { setError("invalid"); return; }
-    window.location.assign("/");
+    window.location.assign(`${window.location.origin}/`);
   }
 
   const notice = reason === "use_password" ? t("loginErrorUsePassword")

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
-import crypto from "crypto";
 
 export async function GET(req: Request) {
   try {

@@ -215,7 +215,7 @@ function WidgetInner() {
     <div ref={rootRef} className="ogsc-w" style={{ ["--ogsc-accent" as string]: accent }}>
       <style dangerouslySetInnerHTML={{ __html: CONTROLS }} />
       {config.logoUrl
-        // eslint-disable-next-line @next/next/no-img-element -- the owner's arbitrary logo URL inside an iframe outside the app shell; next/image brings nothing here
+         
         ? <img src={config.logoUrl} alt="" style={{ maxHeight: 40, maxWidth: 160, objectFit: "contain", marginBottom: 6 }} />
         : null}
       <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 4 }}>{title}</div>

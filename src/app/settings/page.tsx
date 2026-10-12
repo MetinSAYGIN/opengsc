@@ -60,7 +60,7 @@ function LocalKeyField({ storageKey, placeholder }: { storageKey: string; placeh
         placeholder={placeholder}
         style={{ width: "260px", padding: "8px 11px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text-primary)", fontSize: "13px", outline: "none" }}
       />
-      <button onClick={() => { val.trim() ? localStorage.setItem(storageKey, val.trim()) : localStorage.removeItem(storageKey); setSaved(true); }}
+      <button onClick={() => { if (val.trim()) localStorage.setItem(storageKey, val.trim()); else localStorage.removeItem(storageKey); setSaved(true); }}
         style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: saved ? "rgba(52,199,89,0.12)" : "var(--color-bg)", color: saved ? "var(--color-accent-green)" : "var(--color-text-primary)", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
         {saved ? "✓" : "Save"}
       </button>
@@ -101,7 +101,7 @@ function EngineHowTo({ color, steps, note, docHref, linkHref, linkLabel }: { col
   );
 }
 
-const NavBtn = ({ id, icon, label, badge, active, onSelect }: { id: NavItem; icon: React.ReactNode; label: string; badge?: string; active: boolean; onSelect: () => void }) => (
+const NavBtn = ({ icon, label, badge, active, onSelect }: { id: NavItem; icon: React.ReactNode; label: string; badge?: string; active: boolean; onSelect: () => void }) => (
     <button
       onClick={onSelect}
       className={active ? "nav-btn active" : "nav-btn"}
@@ -729,34 +729,6 @@ http_headers = { "Authorization" = "Bearer ${shownToken}" }`,
 }
 
 // ─── Section: Team Members ────────────────────────────────────────────────────
-function MembersSection({ user }: { user?: SessionUser }) {
-  const { t } = useLanguage();
-  return (
-    <SectionCard>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("members")}</h2>
-          <span style={{ fontSize: "11px", color: "var(--color-text-secondary)", background: "rgba(255,255,255,0.06)", borderRadius: "20px", padding: "2px 8px" }}>{t("membersCount")}</span>
-        </div>
-        <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "7px 16px", borderRadius: "8px", background: "rgba(59,130,246,0.12)", color: "#3B82F6", border: "1px solid rgba(59,130,246,0.25)", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
-          <Plus size={14} /> {t("invite")}
-        </button>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 0", borderTop: "1px solid var(--color-border)" }}>
-        <UserAvatar email={user?.email ?? "a"} picture={user?.image} size={36} />
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)" }}>{user?.name ?? t("yourAccount")}</div>
-          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{user?.email}</div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "20px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.2)" }}>
-          <Crown size={12} color="#F59E0B" />
-          <span style={{ fontSize: "12px", color: "#F59E0B", fontWeight: 600 }}>{t("owner")}</span>
-        </div>
-      </div>
-    </SectionCard>
-  );
-}
-
 // ─── Section: Preferences ─────────────────────────────────────────────────────
 function PreferencesSection({ user }: { user?: SessionUser }) {
   const { t, language, setLanguage } = useLanguage();
@@ -2218,7 +2190,7 @@ function SuperSitesSection() {
                   onMouseOver={e => (e.currentTarget.style.background = "rgba(245,158,11,0.07)")}
                   onMouseOut={e => (e.currentTarget.style.background = "transparent")}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  { }
                   <img src={`/api/favicon?domain=${cleanDomain(site.url)}`} width={14} height={14} alt="" style={{ borderRadius: "3px", flexShrink: 0 }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
                   <span style={{ fontSize: "13px", color: "var(--color-text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {cleanDomain(site.url)}
@@ -2252,7 +2224,7 @@ function SuperSitesSection() {
                 border: "1px solid rgba(245,158,11,0.15)",
                 borderRadius: "8px",
               }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
+                { }
                 <img src={`/api/favicon?domain=${cleanDomain(site)}`} width={16} height={16} alt="" style={{ borderRadius: "3px" }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
                 <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", flex: 1 }}>{cleanDomain(site)}</span>
                 <Star size={12} color="#F59E0B" />

@@ -237,15 +237,6 @@ function iso3ToName(code: string, locale?: string): string {
 }
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
-function rnd(lo: number, hi: number) { return lo + Math.random() * (hi - lo); }
-function rndInt(lo: number, hi: number) { return Math.round(rnd(lo, hi)); }
-
-const COUNTRIES = [
-  { name: "Greece", flag: "🇬🇷" },{ name: "Cyprus", flag: "🇨🇾" },
-  { name: "Türkiye", flag: "🇹🇷" },{ name: "North Macedonia", flag: "🇲🇰" },
-  { name: "Sweden", flag: "🇸🇪" },{ name: "Italy", flag: "🇮🇹" },
-  { name: "Serbia", flag: "🇷🇸" },{ name: "Ireland", flag: "🇮🇪" },
-];
 
 // ─── Shared components ────────────────────────────────────────────────────────
 function Change({ pct, invert = false }: { pct: number; invert?: boolean }) {
@@ -1922,7 +1913,7 @@ function GA4Tab({ domain, period, setPeriod, periodOptions, customDays }: {
   };
 
   const toggleMetric = (m: GA4Metric) => setActiveMetrics(p => {
-    const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n;
+    const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n;
   });
 
   return (
@@ -2482,7 +2473,7 @@ function BacklinksTab({ siteDbId }: { siteDbId: string }) {
   };
 
   const toggleSel = (id: string) => setSelected(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
   });
   const toggleAll = () => setSelected(prev => {
     const pageIds = rows.map(r => r.id);
@@ -3345,7 +3336,7 @@ function IndexingTab({ siteDbId, domain }: { siteDbId: string; domain: string })
 
   // ── Selection helpers ──
   const toggleSelect = (url: string) => setSelected(prev => {
-    const n = new Set(prev); n.has(url) ? n.delete(url) : n.add(url); return n;
+    const n = new Set(prev); if (n.has(url)) n.delete(url); else n.add(url); return n;
   });
 
   // The list API caps `limit` at 200 per call, so "everything" means paging through. The 20k
@@ -4470,7 +4461,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
     setOnboarding(notes.length === 0 && !unavailable);
   }, [loading, notes.length, unavailable]);
 
-  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
 
   const displayNotes = notes;
 
@@ -5025,7 +5016,7 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
   data?: WlData; blur: boolean;
   onTrack?: (label: string) => void; tracked?: Set<string>;
 }) {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const [dim, setDim] = useState<"queries" | "pages">("queries");
   const d = data?.[dim];
   return (
@@ -5130,8 +5121,7 @@ export default function SitePage({
   }, [domain, shareToken]);
 
   // Use index so tab state doesn't break on language change
-  const TAB_KEYS = ["dashboard", "positions", "aeo", "ga4", "indexing", "backlinks", "annotations", "optimize", "health", "audit", "ux", "settings"] as const;
-  type TabKey = typeof TAB_KEYS[number];
+  type TabKey = "dashboard" | "positions" | "aeo" | "ga4" | "indexing" | "backlinks" | "annotations" | "optimize" | "health" | "audit" | "ux" | "settings";
   const [activeTab, setActiveTab] = useState<TabKey>("dashboard");
   // Same window vocabulary as the dashboard, same stored value (gsc_period): the dashboard
   // hands its window over in the ?period= it appends when opening a site, a refresh or a
@@ -5242,7 +5232,7 @@ export default function SitePage({
   const [clusterMetrics, setClusterMetrics] = useState<{ clusters: ClusterRow[]; groups: ClusterRow[] } | null>(null);
   const [clusterLoading, setClusterLoading] = useState(false);
   const siteDbId = propSiteDbId || siteData?.siteDbId || '';
-  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
 
   const fetchClusterMetrics = (p = period) => {
     if (!siteDbId) return;
@@ -5611,7 +5601,7 @@ export default function SitePage({
           </button>
           <span style={{ color: "var(--color-text-secondary)", margin: "0 8px" }}>/</span>
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
+            { }
             <img src={`/api/favicon?domain=${domain}`} width={14} height={14} alt="" style={{ borderRadius: "2px" }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
             <span style={{ fontSize: "14px", fontWeight: 600, ...blurStyle }}>{domain}</span>
             <a href={`https://${domain}`} target="_blank" rel="noreferrer" title={t("openSite") || "Open site"}

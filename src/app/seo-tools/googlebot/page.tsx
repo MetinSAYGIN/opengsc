@@ -513,7 +513,7 @@ export default function GooglebotViewPage() {
                 ) : mode === "preview" ? (
                   sel.screenshot ? (
                     <>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      { }
                       <img src={sel.screenshot} alt={t("gbvScreenshot")} style={{ width: "100%", borderRadius: "8px", border: "1px solid var(--color-border)", background: "#fff", display: "block" }} />
                       <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)", marginTop: "6px", lineHeight: 1.4 }}>{t("gbvScreenshot")} · {UA_LABEL[sel.ua] || sel.ua}</div>
                     </>

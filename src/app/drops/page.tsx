@@ -1715,7 +1715,7 @@ export default function DropsPage() {
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <button onClick={() => {
           const qs = new URLSearchParams({ format: "list", stage: "no_registry", orderBy, order: orderDir });
-          window.location.assign(`/api/drops/export?${qs.toString()}`);
+          window.location.assign(`${window.location.origin}/api/drops/export?${qs.toString()}`);
         }} disabled={(counts.no_registry ?? 0) === 0} style={pagerBtn((counts.no_registry ?? 0) === 0)}>
           {tr("dropsManualExport").replace("{n}", (counts.no_registry ?? 0).toLocaleString())}
         </button>
@@ -1957,7 +1957,7 @@ export default function DropsPage() {
             ...Object.fromEntries(Object.entries(filterPayload()).map(([k, v]) => [k, String(v)])),
             orderBy, order: orderDir,
           });
-          window.location.assign(`/api/drops/export?${qs.toString()}`);
+          window.location.assign(`${window.location.origin}/api/drops/export?${qs.toString()}`);
         }} disabled={total === 0} style={pagerBtn(total === 0)}>
           {tr("dropsExportCsv")}
         </button>

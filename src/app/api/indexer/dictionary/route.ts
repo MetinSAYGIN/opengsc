@@ -3,7 +3,7 @@ import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import { fetchLLM } from "@/lib/llm";
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
     const userId = await workspaceUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -108,7 +108,7 @@ export async function POST(req: Request) {
   }
 }
 
-export async function DELETE(req: Request) {
+export async function DELETE() {
   try {
     const userId = await workspaceUserId("write");
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -88,7 +88,7 @@ export default function ClientReportSharePage() {
       <div style={{ width: "100%", maxWidth: 640 }}>
         <div className="card" style={{ padding: 22, display: "flex", alignItems: "flex-start", gap: 14, borderTop: `3px solid ${accent}` }}>
           {data.branding.logoDataUrl && (
-            // eslint-disable-next-line @next/next/no-img-element -- a client-supplied data-URL, not a Next image
+             
             <img src={data.branding.logoDataUrl} alt={data.branding.companyName || "logo"} style={{ maxHeight: 44, maxWidth: 170, objectFit: "contain" }} />
           )}
           <div style={{ flex: 1 }}>

@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import { Prisma, Site } from "@/generated/prisma";
-import { verifyAuthOrShare } from "@/lib/authShare";
 import { getUserSerpCreds } from "@/lib/rank";
 import { getUserGoogleAccounts, queryGsc, isoDaysAgo } from "@/lib/gscQuery";
 import { validateLocation } from "@/lib/seo/localPack";

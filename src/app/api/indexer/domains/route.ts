@@ -3,7 +3,7 @@ import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
 import crypto from "crypto";
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
     const userId = await workspaceUserId();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

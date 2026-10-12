@@ -237,7 +237,6 @@ export function parseSeoSignals(url: string, html: string): SeoSignals {
   const jsLoc = [...html.matchAll(/(?:window\.location(?:\.href)?|location\.href|location\.replace\s*\()\s*=?\s*["']([^"']+)["']/gi)];
   for (const m of jsLoc) jsRedirects.push(resolveUrl(url, m[1]));
 
-  const bodyText = stripTags(html);
 
   // Indexability
   const indexableReasons: string[] = [];

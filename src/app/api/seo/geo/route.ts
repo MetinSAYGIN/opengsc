@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { OPENAI_FALLBACK_MODELS } from "@/lib/seo/models";
-import { prisma, dbAny } from "@/lib/prisma";
+import { dbAny } from "@/lib/prisma";
 import { runGeoAudit, type GeoEngine, type GeoAnalysisCreds } from "@/lib/seo/geo";
 import { GEO_APARSER_PARSER } from "@/lib/seo/geoAparser";
 import { defaultLanguageFor } from "@/lib/seo/regions";

@@ -38,7 +38,6 @@ const SEARCH_TTL_DAYS = 14;
 const GSC_LOOKBACK_DAYS = 90;
 const REACH_POSITION = 30;
 const UNITS_PER_USD = 1000;
-const PROVIDER = "dataforseo";
 
 type Verdict = "reach" | "wrong_page" | "none";
 

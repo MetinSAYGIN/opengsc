@@ -145,7 +145,7 @@ export default function ReportBrandingCard() {
                 </button>
                 {branding.logoDataUrl && (
                   <>
-                    {/* eslint-disable-next-line @next/next/no-img-element -- a data-URL preview, not a Next image */}
+                    { }
                     <img src={branding.logoDataUrl} alt="" style={{ maxHeight: 28, maxWidth: 90, objectFit: "contain" }} />
                     <button
                       type="button" className="btn" onClick={() => set({ logoDataUrl: "" })}

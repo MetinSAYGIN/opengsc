@@ -6,7 +6,7 @@ import {
   Search, EyeOff, Star, ExternalLink,
   ArrowUpDown, SlidersHorizontal, 
   Globe, Monitor, FileText, ChevronDown, Check,
-  Image, Video, Newspaper, Compass,
+  Image as ImageIcon, Video, Newspaper, Compass,
   Download, Tag, X, Loader2, 
 } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from "recharts";
@@ -83,11 +83,6 @@ type SiteRow = {
 };
 // A Google account chip in the accounts bar.
 type GscAccount = { id: string; picture?: string | null; email: string };
-
-function norm(arr: number[]): number[] {
-  const lo = Math.min(...arr), hi = Math.max(...arr);
-  return hi === lo ? arr.map(() => 50) : arr.map(v => Math.round(((v - lo) / (hi - lo)) * 85 + 5));
-}
 
 function periodToDays(period: string): number {
   const today = new Date();
@@ -209,7 +204,7 @@ function ExportModal({ domain, onClose }: { domain: string; onClose: () => void 
   };
 
   const toggle = (k: ExportCol) => setSelected(p => {
-    const n = new Set(p); n.has(k) ? n.delete(k) : n.add(k); return n;
+    const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n;
   });
 
   return (
@@ -1200,7 +1195,7 @@ function PortfolioPageContent() {
     finally { setArchiveBusy(null); }
   };
 
-  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
   // One optimistic flip + one PATCH per toggle. The server row is the source of truth, so a
   // failed request un-flips the card instead of leaving UI state the next load would contradict.
   const toggleSiteFlag = (id: string, flag: "pinned" | "hidden") => {
@@ -1568,7 +1563,7 @@ function PortfolioPageContent() {
                   {l: t("searchTypeWeb"),      v:"web",      i:<Globe size={13}/>},
                   {l: t("searchTypeDiscover"), v:"discover", i:<Compass size={13}/>},
                   {l: t("searchTypeNews"),     v:"news",     i:<Newspaper size={13}/>},
-                  {l: t("searchTypeImage"),    v:"image",    i:<Image size={13}/>},
+                  {l: t("searchTypeImage"),    v:"image",    i:<ImageIcon size={13}/>},
                   {l: t("searchTypeVideo"),    v:"video",    i:<Video size={13}/>},
                 ] as {l:string;v:SearchType;i:React.ReactNode}[]).map(({l,v,i}) => (
                   <button key={v} style={{...mi(searchType===v),opacity:stOff?0.4:1,cursor:stOff?"default":"pointer"}} onClick={()=>{ if (!stOff) setSearchType(v); }}>{i} {l}{searchType===v&&<Check size={12} style={{marginLeft:"auto"}}/>}</button>
@@ -1638,7 +1633,7 @@ function PortfolioPageContent() {
           {/* Domain (name row + DR line underneath — the badge no longer squeezes the name) */}
           <div style={{display:"flex",flexDirection:"column",gap:"3px",minWidth:0}}>
             <div style={{display:"flex",alignItems:"center",gap:"6px",minWidth:0}}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              { }
               <img src={`/api/favicon?domain=${domain}`} width={16} height={16} alt=""
                 style={{borderRadius:"3px",flexShrink:0,filter:blur?"blur(5px)":"none",transition:"filter 0.25s"}} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
               {/* Uptime status lives in the footer chips now — an online/offline tag next
