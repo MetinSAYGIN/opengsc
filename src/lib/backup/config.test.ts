@@ -91,7 +91,19 @@ test("the view masks secrets into booleans and never carries them out", () => {
   assert.ok(!json.includes("secret-1"));
 });
 
-test("fingerprint input is normalized (colons stripped, lowercased)", () => {
-  const merged = mergeBackupConfig({ sftp: { hostKeyFingerprint: "AA:BB:01" } }, WITH_SFTP);
-  assert.equal(merged.sftp?.hostKeyFingerprint, "aabb01");
+test("fingerprints canonicalize to SHA256:base64 (the ssh-keygen -lf form)", () => {
+  // lowercase prefix normalized, kept as-is otherwise
+  assert.equal(
+    mergeBackupConfig({ sftp: { hostKeyFingerprint: "sha256:cGqP0fa7s86qf14sP5gMZuKkNTHlfJT6zutqyFjqjbU" } }, WITH_SFTP).sftp?.hostKeyFingerprint,
+    "SHA256:cGqP0fa7s86qf14sP5gMZuKkNTHlfJT6zutqyFjqjbU",
+  );
+  // bare base64 gets the prefix — a paste straight off `ssh-keygen -lf` minus the prefix
+  assert.equal(
+    mergeBackupConfig({ sftp: { hostKeyFingerprint: "cGqP0fa7s86qf14sP5gMZuKkNTHlfJT6zutqyFjqjbU" } }, WITH_SFTP).sftp?.hostKeyFingerprint,
+    "SHA256:cGqP0fa7s86qf14sP5gMZuKkNTHlfJT6zutqyFjqjbU",
+  );
+  // md5 hex and other junk are refused rather than stored as an unpinnable value
+  for (const bad of ["AA:BB:01", "MD5:aabb01", "not base64!!", "SHA256:short?"]) {
+    assert.throws(() => mergeBackupConfig({ sftp: { hostKeyFingerprint: bad } }, WITH_SFTP), BackupConfigError, bad);
+  }
 });

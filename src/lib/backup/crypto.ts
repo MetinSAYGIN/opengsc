@@ -4,8 +4,9 @@
 // the README restores on any OpenSSL ≥ 1.1.1 regardless of that version's defaults:
 //
 //   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
-//     -in opengsc-scheduled-….db.gz.enc -pass pass:PASSPHRASE | gunzip > dev.db
+//     -in opengsc-scheduled-….db.gz.enc -pass stdin | gunzip > dev.db
 //
+// `-pass stdin` (openssl prompts for the passphrase) keeps it out of the shell history.
 // The salt is random per file, so identical databases encrypt to different ciphertexts and the
 // passphrase never appears anywhere in the artifact.
 

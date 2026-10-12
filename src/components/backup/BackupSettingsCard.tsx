@@ -82,7 +82,7 @@ export default function BackupSettingsCard() {
 
   const [busy, setBusy] = useState<"" | "save" | "run" | "test">("");
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
-  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string; fingerprint?: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string; fingerprint?: string; pinned?: boolean } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const applyStatus = (d: StatusResp) => {
@@ -196,7 +196,9 @@ export default function BackupSettingsCard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sftp: { host: sftpHost, port: sftpPort, user: sftpUser, remoteDir: sftpDir, password: sftpPassword, privateKey: sftpKey, passphrase: sftpKeyPass } }),
       });
-      setTestResult(await res.json());
+      const d = await res.json();
+      setTestResult(d);
+      if (d.ok && d.pinned) load(); // the server pinned the host key — refresh the stored view
     } catch { setTestResult({ ok: false, error: "network" }); }
     setBusy("");
   };
@@ -325,7 +327,9 @@ export default function BackupSettingsCard() {
                   </button>
                   {testResult && (
                     <span style={{ ...hint, color: testResult.ok ? "#10B981" : "#f87171" }}>
-                      {testResult.ok ? t("backupSftpTestOk") : `${t("backupSftpTestFail")}: ${testResult.error}`}
+                      {testResult.ok
+                        ? `${t("backupSftpTestOk")}${testResult.pinned ? " · " + t("backupPinned") : ""}`
+                        : `${t("backupSftpTestFail")}: ${testResult.error}`}
                     </span>
                   )}
                 </div>

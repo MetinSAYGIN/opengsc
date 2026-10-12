@@ -4,18 +4,26 @@
 // scripts/backup-sqlite.mjs writes, but under disjoint name prefixes (artifacts.ts) so
 // neither's retention ever touches the other's files.
 //
+// Blocking work stays out of the Next server thread: VACUUM INTO and integrity_check are
+// synchronous in better-sqlite3, and on a few-hundred-MB production database they freeze the
+// web app and every scheduler for their whole runtime — so they run inside a worker thread
+// (the update script enjoys the same isolation by being its own process). The gzip/encrypt
+// stage was already streamed; the worker finishes the job.
+//
 // The consistent-copy mechanics are the same ones the update script documents at length:
 // better-sqlite3's .backup() restarts whenever the source is written to, which on a live
 // instance (rank/AEO/Clarity schedulers writing constantly) can loop forever — VACUUM INTO
-// takes one read snapshot instead. better-sqlite3 is opened through createRequire like
+// takes one read snapshot instead. better-sqlite3 is resolved through createRequire like
 // prisma.ts does, keeping the native module out of the bundler's graph.
 
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
+import { Worker } from "node:worker_threads";
 import type { Readable, Transform } from "node:stream";
 
 import { prisma } from "@/lib/prisma";
@@ -29,18 +37,91 @@ import { workspaceOwner } from "@/lib/team/owner";
 import { notifyUserDetailed } from "@/lib/notify";
 
 const KEEP_RUN_ROWS = 100;
+/** Same hard ceiling the update script gives its backup step. Applies per sqlite operation. */
+const SQLITE_OP_TIMEOUT_MS = 600_000;
 
-type SqliteDatabase = {
-  exec: (sql: string) => void;
-  pragma: (source: string, options?: { simple?: boolean }) => unknown;
-  close: () => void;
-};
+// ─── SQLite work, off the server thread ──────────────────────────────────────
 
-function openSqlite(file: string, readonly: boolean): SqliteDatabase {
-  const Database = createRequire(import.meta.url)("better-sqlite3");
-  return new Database(file, readonly
-    ? { readonly: true, fileMustExist: true, timeout: 15_000 }
-    : { fileMustExist: true, timeout: 15_000 }) as SqliteDatabase;
+type SqliteOp = "vacuum" | "verify" | "checkpoint";
+
+/**
+ * Eval'd worker source. Runs as CommonJS, so `require` resolves the absolutely-passed
+ * better-sqlite3 (resolved by the parent — an eval worker has no meaningful module dir).
+ * Three operations, one thread:
+ *   vacuum     — VACUUM INTO a fresh rawPath from the live database (read snapshot)
+ *   verify     — integrity_check on a finished copy; a copy that cannot be opened is not a backup
+ *   checkpoint — replay a copied -wal into a copied .db so it is a standalone file
+ */
+const WORKER_SOURCE = `
+const { parentPort, workerData } = require("node:worker_threads");
+const Database = require(workerData.betterSqlitePath);
+try {
+  if (workerData.op === "vacuum") {
+    const src = new Database(workerData.dbPath, { fileMustExist: true, timeout: 15000 });
+    try { src.exec(workerData.sql); } finally { src.close(); }
+  } else if (workerData.op === "verify") {
+    const copy = new Database(workerData.rawPath, { readonly: true, fileMustExist: true, timeout: 15000 });
+    try {
+      const result = copy.pragma("integrity_check", { simple: true });
+      if (result !== "ok") throw new Error("integrity_check returned " + result);
+    } finally { copy.close(); }
+  } else if (workerData.op === "checkpoint") {
+    const db = new Database(workerData.rawPath, { fileMustExist: true, timeout: 15000 });
+    try { db.pragma("wal_checkpoint(TRUNCATE)"); } finally { db.close(); }
+  } else {
+    throw new Error("unknown op " + workerData.op);
+  }
+  parentPort.postMessage({ ok: true });
+} catch (e) {
+  parentPort.postMessage({ ok: false, error: String((e && e.message) || e) });
+}
+`;
+
+function betterSqlitePath(): string {
+  return createRequire(import.meta.url).resolve("better-sqlite3");
+}
+
+function runSqliteOp(op: SqliteOp, data: { dbPath?: string; rawPath?: string; sql?: string }): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(WORKER_SOURCE, {
+        eval: true,
+        workerData: { op, betterSqlitePath: betterSqlitePath(), ...data },
+      });
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      void worker.terminate();
+      reject(new Error(`${op}: timed out after ${SQLITE_OP_TIMEOUT_MS / 1000}s`));
+    }, SQLITE_OP_TIMEOUT_MS);
+    worker.on("message", (m: { ok: boolean; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      void worker.terminate();
+      if (m.ok) resolve();
+      else reject(new Error(`${op}: ${m.error}`));
+    });
+    worker.on("error", e => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e instanceof Error ? e : new Error(String(e)));
+    });
+    // A crash exit without a message (OOM-kill of the thread, abort) must not hang us.
+    worker.on("exit", code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`${op}: worker exited with code ${code}`));
+    });
+  });
 }
 
 // ─── The runner ───────────────────────────────────────────────────────────────
@@ -58,6 +139,16 @@ export interface RunBackupResult {
 
 let inFlight: Promise<RunBackupResult> | null = null;
 export function isBackupRunning(): boolean { return inFlight !== null; }
+
+/** Free bytes on the volume holding `dir`, or null where statfs is unavailable. */
+function freeBytes(dir: string): number | null {
+  try {
+    const stats = fs.statfsSync(dir);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Streamed gzip/encryption pipeline. Everything before it (VACUUM INTO) already wrote a raw
@@ -129,6 +220,20 @@ async function notifyOwner(kind: "failed" | "upload_failed", error: string, file
   } catch { /* see above */ }
 }
 
+/** Remove this run's half-written artifacts — and only this run's: the filter is the module's
+ *  own prefixes plus this stamp, so a pre-update backup written in the same second survives. */
+function cleanupFailedRun(backupsDir: string, stamp: string, rawPath: string): void {
+  fs.rmSync(rawPath, { force: true });
+  for (const suffix of ["-wal", "-shm", "-journal"]) fs.rmSync(rawPath + suffix, { force: true });
+  try {
+    for (const name of fs.readdirSync(backupsDir)) {
+      if (/^opengsc-(scheduled|manual|env)-/.test(name) && name.includes(stamp)) {
+        fs.rmSync(path.join(backupsDir, name), { force: true });
+      }
+    }
+  } catch { /* nothing to sweep */ }
+}
+
 /**
  * Run one backup now. Single-flight: the scheduled tick and the manual button share this entry
  * point, and two concurrent VACUUM INTO copies of the same database are twice the disk for
@@ -167,49 +272,46 @@ export function runBackup(kind: "scheduled" | "manual"): Promise<RunBackupResult
     try {
       fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
 
-      // 1 — consistent copy of the live database (see the module comment for why VACUUM INTO).
-      //    If it cannot run, the fallback is the update script's last resort: copy the file
-      //    together with its WAL sidecars, main file first — the pair replays to a consistent
-      //    state on open. Slower than useless on a busy base, but VACUUM INTO failing at all
-      //    is the exotic case, and no daily backups at all is the alternative.
+      // 0 — room first, learned the hard way (2026-09-22: ~50 kept backups filled a 33 GB
+      //     disk and the next update could not back up at all). The raw dump and the
+      //     transformed artifact coexist mid-run, so the need is roughly 2× the database.
+      //     Not enough → prune everything of ours past the newest per kind and re-check;
+      //     still not enough → fail before writing anything, database untouched.
+      const dbSize = fs.statSync(dbPath).size;
+      const walSize = fs.existsSync(dbPath + "-wal") ? fs.statSync(dbPath + "-wal").size : 0;
+      const needed = (dbSize + walSize) * 2;
+      let free = freeBytes(backupsDir);
+      if (free !== null && free < needed) {
+        for (const name of pickPrunable(listLocalBackups(backupsDir), Date.now(), 0)) {
+          fs.rmSync(path.join(backupsDir, name), { force: true });
+        }
+        free = freeBytes(backupsDir);
+        if (free !== null && free < needed) {
+          throw new Error(`not enough disk space: ${Math.round(free / 1048576)} MB free after pruning, ${Math.round(needed / 1048576)} MB needed (database + artifact) — free space on the volume`);
+        }
+      }
+
+      // 1 — consistent copy of the live database (see the module comment for why VACUUM INTO),
+      //     in the worker. If it cannot run, the fallback is the update script's last resort:
+      //     copy the file together with its WAL sidecars (async — copyFile runs on the
+      //     threadpool) and checkpoint the replay in the worker, which makes the copy a
+      //     standalone database.
       let method = "vacuum";
       try {
-        const source = openSqlite(dbPath, false);
-        try {
-          source.exec(`VACUUM INTO '${rawPath.replace(/'/g, "''")}'`);
-        } finally {
-          source.close();
-        }
+        await runSqliteOp("vacuum", { dbPath, sql: `VACUUM INTO '${rawPath.replace(/'/g, "''")}'` });
       } catch (vacuumError) {
         console.warn(`[backup] VACUUM INTO failed (${(vacuumError as Error)?.message ?? vacuumError}) — falling back to a file copy`);
         fs.rmSync(rawPath, { force: true });
         method = "copy";
-        fs.copyFileSync(dbPath, rawPath);
+        await fsp.copyFile(dbPath, rawPath);
         for (const suffix of ["-wal", "-shm"]) {
-          if (fs.existsSync(dbPath + suffix)) fs.copyFileSync(dbPath + suffix, rawPath + suffix);
+          if (fs.existsSync(dbPath + suffix)) await fsp.copyFile(dbPath + suffix, rawPath + suffix);
         }
-        // Replay the copied WAL into the copy: a checkpoint on this private file turns the
-        // main .db into a complete standalone database, so dropping the sidecars below loses
-        // nothing and the verification opens a finished file, not a pair.
-        const checkpoint = openSqlite(rawPath, false);
-        try {
-          checkpoint.pragma("wal_checkpoint(TRUNCATE)");
-        } finally {
-          checkpoint.close();
-        }
+        await runSqliteOp("checkpoint", { rawPath });
       }
 
-      // 2 — a copy that cannot be opened is not a backup. On a copy-method artifact the WAL
-      //    sidecars replay during this open; integrity_check then sees the same database the
-      //    app sees. The sidecars are dropped after the transform (step 3), which produces a
-      //    single standalone file.
-      const verify = openSqlite(rawPath, true);
-      try {
-        const result = verify.pragma("integrity_check", { simple: true });
-        if (result !== "ok") throw new Error(`integrity_check returned ${String(result)}`);
-      } finally {
-        verify.close();
-      }
+      // 2 — a copy that cannot be opened is not a backup.
+      await runSqliteOp("verify", { rawPath });
 
       // 3 — compress/encrypt into the final name and drop the raw intermediate (and the copy
       //     method's WAL sidecars — the transformed artifact is one standalone file).
@@ -237,19 +339,32 @@ export function runBackup(kind: "scheduled" | "manual"): Promise<RunBackupResult
         fs.rmSync(path.join(backupsDir, name), { force: true });
       }
 
-      // 6 — offsite copy. A local success with a failed upload is a success the operator must
-      // hear about, not a failed run — the row records it separately from the status.
+      // 6 — offsite copy. Two gates before any byte leaves the server, both review findings:
+      //     the destination's host key must be pinned (Test connection does it — an unpinned
+      //     nightly upload would hand the SFTP password to any man in the middle), and the
+      //     artifact must be encrypted (the database stores SMTP passwords, provider keys and
+      //     this very SFTP config — it is at least as sensitive as the .env). A local success
+      //     with a skipped/failed upload is a success the operator must hear about, not a
+      //     failed run — the row records it separately from the status.
       let uploaded = false;
       let uploadError = "";
       if (cfg.sftp && cfg.sftp.host) {
-        try {
-          await sftpUpload(cfg.sftp, finalPath, finalName);
-          if (envName && cfg.passphrase) await sftpUpload(cfg.sftp, path.join(backupsDir, envName), envName);
-          uploaded = true;
-          const cutoff = Date.now() - cfg.retentionDays * 24 * 60 * 60_000;
-          await sftpPrune(cfg.sftp, cutoff, ["opengsc-scheduled-", "opengsc-manual-"]);
-        } catch (e) {
-          uploadError = String((e as Error)?.message ?? e).slice(0, 500);
+        if (!cfg.sftp.hostKeyFingerprint) {
+          uploadError = "host key not pinned — open Settings → Backups, run Test connection and let it pin the server's fingerprint";
+        } else if (!cfg.passphrase) {
+          uploadError = "backups are uploaded only when encrypted — set a passphrase in Settings → Backups (the database holds every secret of this instance)";
+        } else {
+          try {
+            await sftpUpload(cfg.sftp, finalPath, finalName, sizeBytes);
+            if (envName && cfg.passphrase) {
+              await sftpUpload(cfg.sftp, path.join(backupsDir, envName), envName, fs.statSync(path.join(backupsDir, envName)).size);
+            }
+            uploaded = true;
+            const cutoff = Date.now() - cfg.retentionDays * 24 * 60 * 60_000;
+            await sftpPrune(cfg.sftp, cutoff, ["opengsc-scheduled-", "opengsc-manual-"]);
+          } catch (e) {
+            uploadError = String((e as Error)?.message ?? e).slice(0, 500);
+          }
         }
       }
 
@@ -264,10 +379,7 @@ export function runBackup(kind: "scheduled" | "manual"): Promise<RunBackupResult
       return { status: "success", runId, fileName: finalName, sizeBytes, uploaded, uploadError: uploadError || undefined };
     } catch (e) {
       const error = String((e as Error)?.message ?? e).slice(0, 500);
-      // A half-written artifact is disk for nothing; the raw .db too if the transform died.
-      for (const name of fs.existsSync(backupsDir) ? fs.readdirSync(backupsDir) : []) {
-        if (name.includes(stamp)) fs.rmSync(path.join(backupsDir, name), { force: true });
-      }
+      cleanupFailedRun(backupsDir, stamp, rawPath);
       await finishRow({ status: "failed", error });
       if (kind === "scheduled") {
         await notifyOwner("failed", error);

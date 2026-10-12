@@ -140,8 +140,17 @@ export function mergeBackupConfig(raw: Record<string, unknown>, current: BackupC
     if (s.user !== undefined) next.user = cleanLine(s.user, 64);
     if (s.remoteDir !== undefined) next.remoteDir = sanitizeRemoteDir(s.remoteDir);
     if (s.hostKeyFingerprint !== undefined) {
-      // md5 hex pairs ("aa:bb:…") or bare hex; stored lowercase without separators is fine too.
-      next.hostKeyFingerprint = cleanLine(s.hostKeyFingerprint, 64).replace(/:/g, "").toLowerCase();
+      // Canonical form: "SHA256:" + unpadded base64 — byte-identical to `ssh-keygen -lf`,
+      // so an operator can read a fingerprint off their server and paste it as-is. The
+      // prefix is added when missing; anything that isn't base64 (old MD5 hex, junk) is
+      // refused rather than silently stored as an unpinnable value.
+      let fp = cleanLine(s.hostKeyFingerprint, 100);
+      if (fp) {
+        fp = fp.replace(/^sha256:/i, "SHA256:");
+        if (!/^SHA256:/.test(fp)) fp = `SHA256:${fp}`;
+        if (!/^SHA256:[A-Za-z0-9+/]+$/.test(fp)) throw new BackupConfigError("bad_fingerprint");
+      }
+      next.hostKeyFingerprint = fp;
     }
     if (s.port !== undefined) {
       const port = Number(s.port);
