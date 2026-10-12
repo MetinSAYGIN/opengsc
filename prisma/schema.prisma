@@ -2685,3 +2685,25 @@ model PublishedPost {
 
   @@index([siteId, createdAt])
 }
+
+// ─── Scheduled backups (issue #32) ────────────────────────────────────────────
+// History of backup runs — scheduled and manual. The backup artifacts themselves are
+// files next to the database (backups/), not rows; this table exists because a failed
+// run leaves no file, and "the last three nights silently failed" is exactly what the
+// notification needs to say. Retention: the runner keeps the newest 100 rows.
+model BackupRun {
+  id          String    @id @default(cuid())
+  kind        String    // scheduled | manual
+  status      String    // running | success | failed
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  durationMs  Int?
+  method      String    @default("") // vacuum | copy — how the database was copied
+  sizeBytes   Int       @default(0)  // final artifact size (after gzip/encryption)
+  fileName    String    @default("") // basename in backups/, "" when nothing was produced
+  uploaded    Boolean   @default(false)
+  uploadError String    @default("") // set when the local backup is fine but SFTP was not
+  error       String    @default("") // why a run failed, "" on success
+
+  @@index([startedAt])
+}

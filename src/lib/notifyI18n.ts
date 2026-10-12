@@ -121,6 +121,12 @@ type Tpl = {
   leadNewTitle: (domain: string) => string;
   leadNewMsg: (domain: string, email: string, score: number, top: string) => string;
   reportSentMsg: (title: string, to: string) => string;
+  // Issue #32 — scheduled backups (event "backup"): failures of the scheduled run, and a
+  // local success whose SFTP upload failed (the offsite copy is the point of the feature).
+  backupFailedTitle: string;
+  backupFailedMsg: (when: string, error: string) => string;
+  backupUploadFailedTitle: string;
+  backupUploadFailedMsg: (when: string, file: string, error: string) => string;
 };
 
 // Downtime formatting for push messages: the two most significant non-zero units of
@@ -264,6 +270,10 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} New lead: ${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nScore ${score}/100\nTop issues: ${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} Report \u201C${title}\u201D sent to ${to}.`,
+    backupFailedTitle: "\u{1F4BE} OpenGSC backup failed",
+    backupFailedMsg: (when, error) => `OpenGSC scheduled backup failed at ${when} UTC.\n\nError: ${error}\n\nThe next attempt runs at the next fire of the backup schedule; "Back up now" in Settings \u2192 Backups retries immediately.`,
+    backupUploadFailedTitle: "\u{1F4BE} Backup saved \u2014 upload failed",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC saved the local backup (${file}) at ${when} UTC, but the SFTP upload failed.\n\nError: ${error}\n\nThe backup is in this server's backups/ directory; fix the SFTP settings and use "Back up now" to retry.`,
   },
   ru: {
     rankDropTitle: kw => `📉 Падение позиции: ${kw}`,
@@ -376,6 +386,10 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} Новый лид: ${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nОценка ${score}/100\nГлавные проблемы: ${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} Отчёт «${title}» отправлен: ${to}.`,
+    backupFailedTitle: "\u{1F4BE} Бэкап OpenGSC не удался",
+    backupFailedMsg: (when, error) => `Плановый бэкап OpenGSC не удался (${when} UTC).\n\nОшибка: ${error}\n\nСледующая попытка — по расписанию бэкапов; «Back up now» в Settings \u2192 Backups повторяет сразу.`,
+    backupUploadFailedTitle: "\u{1F4BE} Бэкап сохранён — выгрузка не удалась",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC сохранил локальный бэкап (${file}) в ${when} UTC, но выгрузка по SFTP не удалась.\n\nОшибка: ${error}\n\nБэкап лежит в backups/ на этом сервере; исправьте настройки SFTP и нажмите «Back up now».`,
   },
   uk: {
     rankDropTitle: kw => `📉 Падіння позиції: ${kw}`,
@@ -488,6 +502,10 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} Новий лід: ${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nОцінка ${score}/100\nГоловні проблеми: ${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} Звіт «${title}» надіслано: ${to}.`,
+    backupFailedTitle: "\u{1F4BE} Бекап OpenGSC не вдався",
+    backupFailedMsg: (when, error) => `Плановий бекап OpenGSC не вдався (${when} UTC).\n\nПомилка: ${error}\n\nНаступна спроба — за розкладом бекапів; «Back up now» у Settings \u2192 Backups повторює одразу.`,
+    backupUploadFailedTitle: "\u{1F4BE} Бекап збережено — вивантаження не вдалася",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC зберіг локальний бекап (${file}) о ${when} UTC, але вивантаження по SFTP не вдалася.\n\nПомилка: ${error}\n\nБекап лежить у backups/ на цьому сервері; виправте налаштування SFTP і натисніть «Back up now».`,
   },
   fr: {
     rankDropTitle: kw => `📉 Chute de position : ${kw}`,
@@ -600,6 +618,10 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} Nouveau lead : ${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nScore ${score}/100\nPrincipaux problèmes : ${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} Rapport \u00AB ${title} \u00BB envoyé à ${to}.`,
+    backupFailedTitle: "\u{1F4BE} Échec de la sauvegarde OpenGSC",
+    backupFailedMsg: (when, error) => `La sauvegarde planifiée d'OpenGSC a échoué à ${when} UTC.\n\nErreur : ${error}\n\nLa prochaine tentative aura lieu au prochain déclenchement du planning ; « Back up now » dans Settings \u2192 Backups relance immédiatement.`,
+    backupUploadFailedTitle: "\u{1F4BE} Sauvegarde créée \u2014 envoi échoué",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC a créé la sauvegarde locale (${file}) à ${when} UTC, mais l'envoi SFTP a échoué.\n\nErreur : ${error}\n\nLa sauvegarde est dans backups/ sur ce serveur ; corrigez les réglages SFTP puis utilisez « Back up now ».`,
   },
   es: {
     rankDropTitle: kw => `📉 Caída de posición: ${kw}`,
@@ -712,6 +734,10 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} Nuevo lead: ${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nPuntuación ${score}/100\nProblemas principales: ${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} Informe \u00AB${title}\u00BB enviado a ${to}.`,
+    backupFailedTitle: "\u{1F4BE} Falló la copia de seguridad de OpenGSC",
+    backupFailedMsg: (when, error) => `La copia programada de OpenGSC falló a las ${when} UTC.\n\nError: ${error}\n\nEl próximo intento ocurrirá en la siguiente ejecución del horario; «Back up now» en Settings \u2192 Backups reintenta de inmediato.`,
+    backupUploadFailedTitle: "\u{1F4BE} Copia creada \u2014 falló la subida",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC guardó la copia local (${file}) a las ${when} UTC, pero la subida SFTP falló.\n\nError: ${error}\n\nLa copia está en backups/ de este servidor; corrige los ajustes SFTP y usa «Back up now».`,
   },
   de: {
     rankDropTitle: kw => `📉 Positionsverlust: ${kw}`,
@@ -824,6 +850,10 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} Neuer Lead: ${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nScore ${score}/100\nTop-Probleme: ${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} Bericht \u201E${title}\u201C wurde an ${to} gesendet.`,
+    backupFailedTitle: "\u{1F4BE} OpenGSC-Backup fehlgeschlagen",
+    backupFailedMsg: (when, error) => `Das geplante OpenGSC-Backup ist am ${when} UTC fehlgeschlagen.\n\nFehler: ${error}\n\nDer nächste Versuch erfolgt beim nächsten Termin des Backup-Plans; „Back up now\u201C unter Settings \u2192 Backups startet sofort erneut.`,
+    backupUploadFailedTitle: "\u{1F4BE} Backup erstellt \u2014 Upload fehlgeschlagen",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC hat das lokale Backup (${file}) um ${when} UTC erstellt, aber der SFTP-Upload ist fehlgeschlagen.\n\nFehler: ${error}\n\nDas Backup liegt in backups/ auf diesem Server; SFTP-Einstellungen korrigieren und „Back up now\u201C verwenden.`,
   },
   zh: {
     rankDropTitle: kw => `📉 排名下降：${kw}`,
@@ -936,5 +966,9 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     leadNewTitle: domain => `\u{1F4E5} 新线索：${domain}`,
     leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\n评分 ${score}/100\n主要问题：${top}`,
     reportSentMsg: (title, to) => `\u{1F4C4} 报告「${title}」已发送给 ${to}。`,
+    backupFailedTitle: "\u{1F4BE} OpenGSC 备份失败",
+    backupFailedMsg: (when, error) => `OpenGSC 计划备份于 ${when} UTC 失败。\n\n错误：${error}\n\n下一次尝试按备份计划进行；在 Settings \u2192 Backups 里点「Back up now」可立即重试。`,
+    backupUploadFailedTitle: "\u{1F4BE} 备份已保存 — 上传失败",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC 于 ${when} UTC 保存了本地备份（${file}），但 SFTP 上传失败。\n\n错误：${error}\n\n备份在本服务器的 backups/ 目录中；修正 SFTP 设置后点「Back up now」重试。`,
   },
 };

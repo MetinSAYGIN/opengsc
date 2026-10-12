@@ -735,6 +735,25 @@ npm run build
 pm2 restart opengsc --update-env
 ```
 
+### Backups — scheduled, encrypted, offsite (Settings → Backups)
+
+Updates already back the database up before touching anything (see above); **Settings → Backups** adds the scheduled half of the story, for everything that happens *between* updates:
+
+- **Automatic backups on a cron** (UTC, e.g. `0 3 * * *`), plus a **Back up now** button. Each run takes one consistent snapshot of the live SQLite database (`VACUUM INTO`, then an `integrity_check` on the copy — the same mechanics the updater uses), optionally gzips and encrypts it, and records a row in the run history. One fire is one attempt: a failed night notifies you and the next fire retries; nothing back-fills in a burst.
+- **Retention by days** (7/14/30, or any 1–90). Both locally and on the SFTP destination, old copies are pruned after each successful run — but the newest database backup always survives the window, so an instance that was down for a month still finds its last backup when it comes back.
+- **SFTP upload to your own NAS/server.** After each backup the artifact is uploaded (mode 600) and the remote directory is pruned by the same retention. The **Test connection** button proves the destination is writable and shows the server's **host-key fingerprint**, which you can pin — with a fingerprint pinned, a different key (a wrong or intercepted host) is refused.
+- **Encryption** (optional, recommended together with SFTP): AES-256-CBC in the exact `openssl enc` envelope, PBKDF2-SHA256 with 200 000 iterations pinned in the format, random salt per file. Any OpenSSL ≥ 1.1.1 decrypts it:
+  ```bash
+  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
+    -in opengsc-scheduled-….db.gz.enc -pass pass:YOURPASSPHRASE | gunzip > restored.db
+  ```
+- **`.env` companion** (optional): a copy of `.env` travels with each backup — but it is only *uploaded offsite when encryption is on*, because a plaintext `.env` holds every secret of the instance.
+- **Failure notifications** go through the existing notification channels (Telegram / Slack / e-mail / webhook / push) under the new **Backups** event — add that event to a channel in Settings → Notifications, and a failed night reaches you wherever you already read alerts. Automatic backups are SQLite-only; MySQL/MariaDB instances are told to use their database's own tooling (`mysqldump`, snapshots).
+
+Backups land in the `backups/` directory next to the database (default `/root/opengsc/data/backups/`), named `opengsc-scheduled-<stamp>.db[.gz][.enc]` — the updater's `opengsc-before-update-*` files live there too, and neither's retention touches the other's.
+
+**Restoring** (the Settings card spells this out too): download the artifact or take it from the server, `pm2 stop opengsc`, decrypt/gunzip if needed (commands above), replace the database file, `pm2 start opengsc`. A running app never swaps its own database under itself — restore is deliberately an operator action, not a button.
+
 <br/>
 
 ## Connecting Google Analytics 4

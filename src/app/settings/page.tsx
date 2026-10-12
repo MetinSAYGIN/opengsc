@@ -16,6 +16,7 @@ import MetricsSettingsSection from "@/components/MetricsSettingsSection";
 import ProviderLogSection from "@/components/ProviderLogSection";
 import NotifyChannelsCard, { ChannelEventsRow } from "@/components/NotifyChannelsCard";
 import UptimeSettingsCard from "@/components/uptime/UptimeSettingsCard";
+import BackupSettingsCard from "@/components/backup/BackupSettingsCard";   // issue #32
 // wave-nov settings cards (CONTRACT.md §3) — each stub is replaced by its owning task.
 import PushSettingsCard from "@/components/PushSettingsCard";                       // N10
 import ReportBrandingCard from "@/components/reports/ReportBrandingCard";           // N8
@@ -1074,6 +1075,8 @@ function NotificationsSection() {
       {/* Wave-oct delivery channels (Discord/Teams/SMTP/webhook) and the uptime workspace settings */}
       <NotifyChannelsCard />
       <UptimeSettingsCard />
+      {/* Scheduled backups (issue #32) — owner-only card, null for members */}
+      <BackupSettingsCard />
 
       {/* Wave-nov settings cards (CONTRACT.md §3), after UptimeSettingsCard. Stub bodies from
           the foundation commit; N10/N8/N9/N11 replace their own card in place. */}
