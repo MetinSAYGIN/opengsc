@@ -13,10 +13,10 @@
 // The consistent-copy mechanics are the same ones the update script documents at length:
 // better-sqlite3's .backup() restarts whenever the source is written to, which on a live
 // instance (rank/AEO/Clarity schedulers writing constantly) can loop forever — VACUUM INTO
-// takes one read snapshot instead. better-sqlite3 is resolved through createRequire like
-// prisma.ts does, keeping the native module out of the bundler's graph.
+// takes one read snapshot instead. better-sqlite3 never enters the bundler's graph at all:
+// the worker below requires it at runtime (Next externalizes it by default), and nothing in
+// this module resolves it on the parent side.
 
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -45,16 +45,25 @@ const SQLITE_OP_TIMEOUT_MS = 600_000;
 type SqliteOp = "vacuum" | "verify" | "checkpoint";
 
 /**
- * Eval'd worker source. Runs as CommonJS, so `require` resolves the absolutely-passed
- * better-sqlite3 (resolved by the parent — an eval worker has no meaningful module dir).
- * Three operations, one thread:
+ * Eval'd worker source. Runs as CommonJS, so plain `require` works — and resolves
+ * better-sqlite3 ITSELF: in the production bundle Turbopack replaces the parent's
+ * `createRequire(...).resolve("better-sqlite3")` with its own module-id bookkeeping, so the
+ * path the parent would hand down arrives as a number (`require(785148)`) and the worker
+ * dies on load. An eval'd worker has no meaningful module dir of its own, but its module
+ * paths include `<cwd>/node_modules`, and cwd is the app root under pm2/update.sh — the
+ * explicit join is the belt to that suspenders. Three operations, one thread:
  *   vacuum     — VACUUM INTO a fresh rawPath from the live database (read snapshot)
  *   verify     — integrity_check on a finished copy; a copy that cannot be opened is not a backup
  *   checkpoint — replay a copied -wal into a copied .db so it is a standalone file
  */
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require("node:worker_threads");
-const Database = require(workerData.betterSqlitePath);
+let Database;
+try {
+  Database = require("better-sqlite3");
+} catch (e) {
+  Database = require(require("node:path").join(process.cwd(), "node_modules", "better-sqlite3"));
+}
 try {
   if (workerData.op === "vacuum") {
     const src = new Database(workerData.dbPath, { fileMustExist: true, timeout: 15000 });
@@ -77,17 +86,13 @@ try {
 }
 `;
 
-function betterSqlitePath(): string {
-  return createRequire(import.meta.url).resolve("better-sqlite3");
-}
-
 function runSqliteOp(op: SqliteOp, data: { dbPath?: string; rawPath?: string; sql?: string }): Promise<void> {
   return new Promise((resolve, reject) => {
     let worker: Worker;
     try {
       worker = new Worker(WORKER_SOURCE, {
         eval: true,
-        workerData: { op, betterSqlitePath: betterSqlitePath(), ...data },
+        workerData: { op, ...data },
       });
     } catch (e) {
       reject(e);
