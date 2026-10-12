@@ -5,6 +5,8 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-10-12
+
 ### Changed — Site Audit health score weighs findings by severity (#30)
 
 - **A site with only minor warnings no longer scores 0/100.** The old score was the share of pages with no scored finding at all, so one image without alt counted as much as a 404, and a 4-page WordPress site with a small warning on every template scored the same as a site that was down — tripping the "health score below 50" alert. Each page is now scored on its own: 100, minus 8 per distinct warning (never below 40), or 0 with any critical finding (HTTP error, failed fetch, broken links, noindex, redirect loop). The site score is the average.
@@ -62,6 +64,17 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 - The button was hard-wired to Ahrefs: with DataForSEO selected it still quoted an Ahrefs export (≈ $3.33 for ~1 660 links on the reporter's site) for a profile DataForSEO exports for a few cents. It now exports from the provider selected in Settings → SEO Metrics — Ahrefs, DataForSEO or Keys.so — and names it on the button, in the quote and in the result line. Semrush and Majestic have no per-link export, so with either selected it stays on Ahrefs and says "Ahrefs".
 - The quote is in the provider's own currency (dollars for DataForSEO, credits for Keys.so, units for Ahrefs), and the note names what the pricing read actually cost instead of a fixed "50 units". Key and balance errors are named per provider (401/402/403).
 - The separate «Links from DataForSEO» button on the Toxicity tab is gone — the main button covers it. The «Links from Keys.so» loader stays while another provider is selected (a second market, not a duplicate) and hides when Keys.so is the selected one.
+
+### Added — Audits overview: fleet sorting, honest statuses, shareable .md audit links, per-site run retention
+
+- The workspace-wide **/audits table sorts** by site, last audit, health, next run and status — each column opens in its natural direction and flips on the second click. A finished run reads "✓ Checked" instead of a dash, a failed one is finally visible on the Sites tab ("✗ Error" with the message in the tooltip — it used to render as "—"), never-audited sites say so; History tab icons gained words too.
+- **"Copy .md link"** in the Audit tab mints an HMAC-signed public URL (`/share/audit/<id>.<sig>.md`) serving the same Markdown export the download button produces — hand it to a client or an AI agent without a download/re-upload round trip. Served with `X-Robots-Tag: noindex, nofollow`; a link opens exactly one audit and guests cannot mint links.
+- **historyKeep** in the audit queue settings caps stored runs per site (0–200, 0 = keep everything — an upgrade never silently deletes). Only terminal runs (completed/error) are pruned: after each settled run, and workspace-wide the moment the number is lowered. No schema change.
+
+### Fixed — Self-hosted panels no longer outrank opengsc.org in search
+
+- Private installs served no robots.txt (it redirected to the login page) and carried no noindex, so panel domains of individual installs were ranking above the project's own site for its name. The root layout now emits `noindex,nofollow` and `next.config.ts` adds the `X-Robots-Tag` header (covers non-HTML responses too). robots.txt is served anonymously and deliberately allows crawl — a Disallow would hide the noindex from crawlers and leave URLs stuck as "Indexed, though blocked by robots.txt".
+- The release gate now accepts an `[Unreleased]` changelog section between releases, so work dockets before the release commit instead of failing `check:release`.
 
 ## [1.9.2] — 2026-10-10
 
