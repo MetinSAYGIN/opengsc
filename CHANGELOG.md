@@ -11,6 +11,7 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 - **A plain internal redirect is not a page.** A single 301/308 to the same site (http→https, www↔apex, trailing slash) is left out of the average; it is still listed as a finding. Redirect chains, loops and redirects off the site still count.
 - **History stays comparable.** Stored audits are rescored once at startup from their saved page findings, so the trend shows no jump on update day; the previous value is kept in the summary as `healthScoreV1`. The new score is never lower than the old one on the same audit, so rescoring cannot trigger a low-score alert. No schema change.
 - Hovering the score explains how it is calculated; the Markdown export says the same.
+- **Head metadata is read from the whole `<head>`, not the first 200 KB.** Divi-style themes ship megabytes of inline CSS before half of their meta tags: tantist.be printed its viewport at byte 266k of a 284k head, and the audit reported "no viewport" on pages that had one (viewport, but also hreflang, Open Graph and canonical signals were at risk). The window now follows the actual `</head>` boundary; 200 KB remains only as the fallback for markup with no closing tag (#30 follow-up).
 
 ### Added — Cannibalization: real "winner changes", a site picker in Related intent, MCP on the shared computation
 
