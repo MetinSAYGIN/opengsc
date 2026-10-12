@@ -1027,7 +1027,7 @@ function PortfolioPageContent() {
             if (!res.ok) continue;
             const d = await res.json();
             const add: Record<string, number> = {};
-            Object.entries(d.ratings || {}).forEach(([k, v]: [string, { dr?: number }]) => { add[k] = Number(v.dr); });
+            Object.entries((d.ratings || {}) as Record<string, { dr?: number }>).forEach(([k, v]) => { add[k] = Number(v.dr); });
             setDrMap(prev => ({ ...prev, ...add }));
           } catch { /* best-effort */ }
         }
@@ -1077,7 +1077,7 @@ function PortfolioPageContent() {
           if (!res.ok) continue;
           const d = await res.json();
           const add: Record<string, { refDomains: number | null; orgTraffic: number | null }> = {};
-          Object.entries(d.metrics || {}).forEach(([k, v]: [string, { refDomains?: number | null; orgTraffic?: number | null }]) => {
+          Object.entries((d.metrics || {}) as Record<string, { refDomains?: number | null; orgTraffic?: number | null }>).forEach(([k, v]) => {
             if (v?.refDomains != null || v?.orgTraffic != null) {
               add[k] = { refDomains: v.refDomains ?? null, orgTraffic: v.orgTraffic ?? null };
             }
