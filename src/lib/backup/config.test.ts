@@ -13,6 +13,12 @@ const WITH_SFTP = {
   },
 };
 
+const PIN = "SHA256:cGqP0fa7s86qf14sP5gMZuKkNTHlfJT6zutqyFjqjbU";
+const WITH_PINNED = {
+  ...WITH_SFTP,
+  sftp: { ...WITH_SFTP.sftp!, hostKeyFingerprint: PIN },
+};
+
 test("secrets: empty string keeps the stored value, null clears it", () => {
   const kept = mergeBackupConfig({ passphrase: "", sftp: { password: "" } }, WITH_SFTP);
   assert.equal(kept.passphrase, DEFAULT_BACKUP_CONFIG.passphrase);
@@ -89,6 +95,31 @@ test("the view masks secrets into booleans and never carries them out", () => {
   assert.equal(view.sftp?.passwordSet, true);
   assert.ok(!json.includes("hunter2"));
   assert.ok(!json.includes("secret-1"));
+});
+
+// The review bug on 7baf7b0: the test route used to "pin" by writing a fingerprint over a
+// stored config that had no SFTP section — merge correctly refuses to materialize a
+// destination from a fingerprint alone, so that write pinned nothing while reporting success.
+test("a fingerprint alone never materializes an SFTP destination", () => {
+  const merged = mergeBackupConfig({ sftp: { hostKeyFingerprint: PIN } }, DEFAULT_BACKUP_CONFIG);
+  assert.equal(merged.sftp, null);
+});
+
+test("a host or port change without a new fingerprint drops the stale one", () => {
+  const hostChanged = mergeBackupConfig({ sftp: { host: "nas2.example" } }, WITH_PINNED);
+  assert.equal(hostChanged.sftp?.host, "nas2.example");
+  assert.equal(hostChanged.sftp?.hostKeyFingerprint, "", "old host's fingerprint must not vouch for the new host");
+
+  const portChanged = mergeBackupConfig({ sftp: { port: 2222 } }, WITH_PINNED);
+  assert.equal(portChanged.sftp?.port, 2222);
+  assert.equal(portChanged.sftp?.hostKeyFingerprint, "");
+
+  // the fix's companion flows: a new host WITH its new fingerprint pins it, and an untouched
+  // host keeps the pin (later Tests verify the key against it — the MITM case)
+  const hostChangedWithFp = mergeBackupConfig({ sftp: { host: "nas2.example", hostKeyFingerprint: "SHA256:" + "B".repeat(43) } }, WITH_PINNED);
+  assert.equal(hostChangedWithFp.sftp?.hostKeyFingerprint, "SHA256:" + "B".repeat(43));
+  const untouched = mergeBackupConfig({ sftp: { user: "backup2" } }, WITH_PINNED);
+  assert.equal(untouched.sftp?.hostKeyFingerprint, PIN);
 });
 
 test("fingerprints canonicalize to SHA256:base64 (the ssh-keygen -lf form)", () => {

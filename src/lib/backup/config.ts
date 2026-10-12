@@ -152,11 +152,20 @@ export function mergeBackupConfig(raw: Record<string, unknown>, current: BackupC
       }
       next.hostKeyFingerprint = fp;
     }
+
+    // A fingerprint vouches for exactly one host:port. When either changes and the caller
+    // did not send a new fingerprint, the old one must not survive — it would refuse the new
+    // server on every later Test ("wrong host key") or, worse, be trusted to vouch for it.
+    // Evaluated after both assignments, so a port change is seen here too.
     if (s.port !== undefined) {
       const port = Number(s.port);
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new BackupConfigError("bad_port");
       next.port = port;
     }
+    const hostOrPortChanged =
+      (s.host !== undefined && next.host !== base.host) ||
+      (s.port !== undefined && next.port !== base.port);
+    if (hostOrPortChanged && s.hostKeyFingerprint === undefined) next.hostKeyFingerprint = "";
     // Nested secrets: "" / mask = keep, null = clear, other string = set (same contract as
     // the passphrase above).
     if (s.password !== undefined) {

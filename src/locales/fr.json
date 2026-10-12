@@ -5370,7 +5370,6 @@
   "backupSftpTestOk": "OK — connecté et accessible en écriture",
   "backupSftpTestFail": "échec",
   "backupSftpFingerprint": "Empreinte de la clé hôte (SHA256)",
-  "backupPin": "Épingler",
   "backupSave": "Enregistrer",
   "backupSaved": "Enregistré",
   "backupRunNow": "Sauvegarder maintenant",
@@ -5389,6 +5388,5 @@
   "backupSch12h": "Toutes les 12 heures (03:00, 15:00)",
   "backupSchWeekly": "Dimanches à 03:00",
   "backupSchCustom": "Cron personnalisé…",
-  "notifyEv_backup": "Sauvegardes",
-  "backupPinned": "clé hôte épinglée"
+  "notifyEv_backup": "Sauvegardes"
 }

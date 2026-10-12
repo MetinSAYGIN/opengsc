@@ -5370,7 +5370,6 @@
   "backupSftpTestOk": "OK — 已连接且可写",
   "backupSftpTestFail": "失败",
   "backupSftpFingerprint": "主机密钥指纹（SHA256）",
-  "backupPin": "固定",
   "backupSave": "保存",
   "backupSaved": "已保存",
   "backupRunNow": "立即备份",
@@ -5389,6 +5388,5 @@
   "backupSch12h": "每 12 小时（03:00、15:00）",
   "backupSchWeekly": "每周日 03:00",
   "backupSchCustom": "自定义 cron…",
-  "notifyEv_backup": "备份",
-  "backupPinned": "主机密钥已固定"
+  "notifyEv_backup": "备份"
 }

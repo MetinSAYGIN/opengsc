@@ -5370,7 +5370,6 @@
   "backupSftpTestOk": "ОК — з'єднання працює, запис можлива",
   "backupSftpTestFail": "помилка",
   "backupSftpFingerprint": "Відбиток ключа хоста (SHA256)",
-  "backupPin": "Закріпити",
   "backupSave": "Зберегти",
   "backupSaved": "Збережено",
   "backupRunNow": "Бекапити зараз",
@@ -5389,6 +5388,5 @@
   "backupSch12h": "Кожні 12 годин (03:00, 15:00)",
   "backupSchWeekly": "Неділям о 03:00",
   "backupSchCustom": "Свій cron…",
-  "notifyEv_backup": "Бекапи",
-  "backupPinned": "ключ хоста закріплено"
+  "notifyEv_backup": "Бекапи"
 }

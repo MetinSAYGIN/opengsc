@@ -5370,7 +5370,6 @@
   "backupSftpTestOk": "OK — verbunden und beschreibbar",
   "backupSftpTestFail": "fehlgeschlagen",
   "backupSftpFingerprint": "Host-Key-Fingerprint (SHA256)",
-  "backupPin": "Festlegen",
   "backupSave": "Speichern",
   "backupSaved": "Gespeichert",
   "backupRunNow": "Jetzt sichern",
@@ -5389,6 +5388,5 @@
   "backupSch12h": "Alle 12 Stunden (03:00, 15:00)",
   "backupSchWeekly": "Sonntags um 03:00",
   "backupSchCustom": "Eigenes Cron…",
-  "notifyEv_backup": "Backups",
-  "backupPinned": "Host-Key gepinnt"
+  "notifyEv_backup": "Backups"
 }

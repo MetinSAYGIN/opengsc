@@ -5370,7 +5370,6 @@
   "backupSftpTestOk": "ОК — подключение работает, запись возможна",
   "backupSftpTestFail": "ошибка",
   "backupSftpFingerprint": "Отпечаток ключа хоста (SHA256)",
-  "backupPin": "Закрепить",
   "backupSave": "Сохранить",
   "backupSaved": "Сохранено",
   "backupRunNow": "Бэкапировать сейчас",
@@ -5389,6 +5388,5 @@
   "backupSch12h": "Каждые 12 часов (03:00, 15:00)",
   "backupSchWeekly": "По воскресеньям в 03:00",
   "backupSchCustom": "Свой cron…",
-  "notifyEv_backup": "Бэкапы",
-  "backupPinned": "ключ хоста закреплён"
+  "notifyEv_backup": "Бэкапы"
 }

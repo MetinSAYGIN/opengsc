@@ -82,7 +82,7 @@ export default function BackupSettingsCard() {
 
   const [busy, setBusy] = useState<"" | "save" | "run" | "test">("");
   const [msg, setMsg] = useState<{ text: string; bad?: boolean } | null>(null);
-  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string; fingerprint?: string; pinned?: boolean } | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; error?: string; fingerprint?: string } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const applyStatus = (d: StatusResp) => {
@@ -198,7 +198,9 @@ export default function BackupSettingsCard() {
       });
       const d = await res.json();
       setTestResult(d);
-      if (d.ok && d.pinned) load(); // the server pinned the host key — refresh the stored view
+      // The route saves nothing: a successful test hands back the server's fingerprint, the
+      // card fills it into the form, and the next Save pins it together with the host.
+      if (d.ok && d.fingerprint) setSftpFingerprint(d.fingerprint);
     } catch { setTestResult({ ok: false, error: "network" }); }
     setBusy("");
   };
@@ -327,9 +329,7 @@ export default function BackupSettingsCard() {
                   </button>
                   {testResult && (
                     <span style={{ ...hint, color: testResult.ok ? "#10B981" : "#f87171" }}>
-                      {testResult.ok
-                        ? `${t("backupSftpTestOk")}${testResult.pinned ? " · " + t("backupPinned") : ""}`
-                        : `${t("backupSftpTestFail")}: ${testResult.error}`}
+                      {testResult.ok ? t("backupSftpTestOk") : `${t("backupSftpTestFail")}: ${testResult.error}`}
                     </span>
                   )}
                 </div>
@@ -337,10 +337,7 @@ export default function BackupSettingsCard() {
                   <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "6px", flexWrap: "wrap" }}>
                     <span style={hint}>{t("backupSftpFingerprint")}:</span>
                     <input value={sftpFingerprint} onChange={e => setSftpFingerprint(e.target.value)}
-                      placeholder={testResult?.fingerprint ?? "md5"} style={{ ...input, fontFamily: "monospace", fontSize: "11px", minWidth: "260px" }} />
-                    {testResult?.fingerprint && !sftpFingerprint && (
-                      <button onClick={() => setSftpFingerprint(testResult.fingerprint!)} style={btn}>{t("backupPin")}</button>
-                    )}
+                      placeholder="SHA256:…" style={{ ...input, fontFamily: "monospace", fontSize: "11px", minWidth: "260px" }} />
                   </div>
                 )}
               </div>

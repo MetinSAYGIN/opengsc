@@ -5370,7 +5370,6 @@
   "backupSftpTestOk": "OK — connected and writable",
   "backupSftpTestFail": "failed",
   "backupSftpFingerprint": "Host key fingerprint (SHA256)",
-  "backupPin": "Pin",
   "backupSave": "Save",
   "backupSaved": "Saved",
   "backupRunNow": "Back up now",
@@ -5389,6 +5388,5 @@
   "backupSch12h": "Every 12 hours (03:00, 15:00)",
   "backupSchWeekly": "Sundays at 03:00",
   "backupSchCustom": "Custom cron…",
-  "notifyEv_backup": "Backups",
-  "backupPinned": "host key pinned"
+  "notifyEv_backup": "Backups"
 }
