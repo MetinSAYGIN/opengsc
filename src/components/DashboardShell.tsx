@@ -97,12 +97,36 @@ const SUPPORT_PARTNERS = [
     imgStyle: { maxHeight: "30px" } as React.CSSProperties,
   },
   {
+    id: "Helodata",
+    name: "Helodata",
+    href: "https://helodata.com?ref=ruslan1",
+    logo: "/partners/helodata-logo.png",
+    tileBg: "#ffffff",
+    imgStyle: { maxHeight: "32px" } as React.CSSProperties,
+  },
+  {
+    id: "Accsly",
+    name: "Accsly.io",
+    href: "https://accsly.io/?utm_source=opengsc&utm_medium=referral",
+    logo: "/partners/accsly-logo.svg",
+    tileBg: "#ffffff",
+    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
+  },
+  {
     id: "Orbitra",
     name: "Orbitra.link",
     href: "https://orbitra.link/?utm_source=opengsc",
     logo: "/partners/orbitra-logo.svg",
     tileBg: "#ffffff",
     imgStyle: { maxHeight: "28px" } as React.CSSProperties,
+  },
+  {
+    id: "Novproxy",
+    name: "Novproxy",
+    href: "https://novproxy.com?kwd=tt-orb",
+    logo: "/partners/novproxy-logo.svg",
+    tileBg: "#ffffff",
+    imgStyle: { maxWidth: "84px", maxHeight: "18px" } as React.CSSProperties,
   },
 ] as const;
 
