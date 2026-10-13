@@ -5,9 +5,10 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma";
 import {
-  runAeoCheck, AEO_ENGINES, AEO_DEFAULT_MODEL, hostOf,
+  runAeoCheck, AEO_ENGINES, hostOf,
   type AeoEngine, type AeoCheckResult, type AeoRunOptions, type AeoStatus, type AioContext,
 } from "@/lib/seo/aeo";
+import { engineRunOptions } from "@/lib/aeoEngineOptions";
 import { classifyCitations, categoryCounts, redditCut, type ClassifiedCitation, type ExtraDomainLists } from "@/lib/seo/aeoCitationClassify";
 import { brandNamesFromHost } from "@/lib/seo/localPack";
 import { getAparserServerCreds } from "@/lib/seo/aparserServerCreds";
@@ -127,7 +128,9 @@ export function siteAeoConfig(site: {
     url: site.url,
     brandTerms: parseBrandTerms(site.brandedKeywords),
     options: {
-      model: site.aeoModel || AEO_DEFAULT_MODEL,
+      // ChatGPT-only override (see engineRunOptions). Left unset, each engine — ChatGPT
+      // included — uses the model from Settings or its own default.
+      model: site.aeoModel || undefined,
       country: site.aeoCountry || site.market || null,
       city: site.aeoCity || null,
       language: site.aeoLanguage || null,
@@ -232,26 +235,7 @@ export async function checkTrackedQuestion(
     if (engine === "ai_overview" && !creds.ai_overview) continue;
     const key = engine === "ai_overview" ? "aio" : creds[engine as Exclude<AeoEngine, "ai_overview">];
     if (!key) continue;
-    const engineOpts: AeoRunOptions = { ...cfg.options };
-    if (engine === "ai_overview") {
-      engineOpts.aio = creds.ai_overview ?? null;
-    } else if (engine === "claude") {
-      if (creds.claudeBaseUrl) engineOpts.baseUrl = creds.claudeBaseUrl;
-      if (creds.claudeModel) engineOpts.model = creds.claudeModel;
-    } else if (engine === "chatgpt") {
-      if (creds.chatgptBaseUrl) engineOpts.baseUrl = creds.chatgptBaseUrl;
-      if (cfg.options.model) engineOpts.model = cfg.options.model;
-      else if (creds.chatgptModel) engineOpts.model = creds.chatgptModel;
-    } else if (engine === "perplexity") {
-      if (creds.perplexityBaseUrl) engineOpts.baseUrl = creds.perplexityBaseUrl;
-      if (creds.perplexityModel) engineOpts.model = creds.perplexityModel;
-    } else if (engine === "grok") {
-      if (creds.grokBaseUrl) engineOpts.baseUrl = creds.grokBaseUrl;
-      if (creds.grokModel) engineOpts.model = creds.grokModel;
-    } else if (engine === "gemini") {
-      if (creds.geminiBaseUrl) engineOpts.baseUrl = creds.geminiBaseUrl;
-      if (creds.geminiModel) engineOpts.model = creds.geminiModel;
-    }
+    const engineOpts = engineRunOptions(engine, cfg, creds);
 
     const r = await runAeoCheck(engine, key, q.question, cfg.url, cfg.brandTerms, engineOpts);
     results[engine] = r;
