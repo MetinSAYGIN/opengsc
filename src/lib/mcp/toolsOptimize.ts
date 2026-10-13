@@ -37,17 +37,9 @@ import { failStaleSeoJobs, touchSeoJob, withSeoJobHeartbeat } from "@/lib/jobs/l
 import { coerceOutline } from "./outlineShape";
 import { saveJobToHistory } from "@/lib/seo/historyServer";
 import { pickLiveProvider } from "@/lib/seo/providerPing";
+import { pathOf, urlMatches, urlFragmentMatches } from "./urlMatch";
 
 const jobs = () => dbAny.seoJob;
-
-// Match a stored URL against what the agent passed: full URL, path, or a fragment of one.
-const pathOf = (u: string) => u.replace(/^https?:\/\/[^/]+/, "") || "/";
-function urlMatches(stored: string, wanted: string): boolean {
-  if (!stored) return false;
-  const a = stored.toLowerCase().replace(/\/+$/, "");
-  const b = wanted.toLowerCase().replace(/\/+$/, "");
-  return a === b || pathOf(a) === pathOf(b) || a.includes(b) || b.includes(a);
-}
 
 const CTR_BENCHMARKS: Record<number, number> = {
   1: 27.6, 2: 15.8, 3: 11.0, 4: 8.4, 5: 6.3, 6: 4.9, 7: 3.9, 8: 3.3, 9: 2.7, 10: 2.4,
@@ -137,13 +129,27 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
         where: { siteId: site.id, date: { gte: since } },
         select: { url: true, query: true, date: true, clicks: true, impressions: true, ctr: true, position: true },
       });
-      const mine = rows.filter(r => urlMatches(r.url, wanted));
+      // Exact page first; a fragment only when nothing matches exactly, and only if it names
+      // one page — guessing between several would brief the wrong one.
+      let mine = rows.filter(r => urlMatches(r.url, wanted));
+      if (!mine.length) {
+        mine = rows.filter(r => urlFragmentMatches(r.url, wanted));
+        const candidates = [...new Set(mine.map(r => pathOf(r.url)))];
+        if (candidates.length > 1) {
+          return {
+            site: site.url, url: wanted,
+            note: `"${wanted}" matches ${candidates.length} pages. Call again with one of them.`,
+            candidates: candidates.slice(0, 20),
+          };
+        }
+      }
       if (!mine.length) {
         return {
           site: site.url, url: wanted,
           note: `No metrics found for a page matching "${wanted}" in the last ${Math.round((Date.now() - since.getTime()) / 86_400_000)} days. Check the exact URL with get_search_performance (dimension=page), or widen the days argument.`,
         };
       }
+      const matched = new Set(mine.map(r => r.url));
       const fullUrl = mine.find(r => r.url.startsWith("http"))?.url ?? mine[0].url;
 
       // ── queries this page ranks for ──────────────────────────────────────────
@@ -186,7 +192,7 @@ export const OPTIMIZE_TOOLS: McpTool[] = [
       const ownQueries = new Set(queries.slice(0, take).map(q => q.query));
       const rivals = new Map<string, { url: string; clicks: number; impressions: number; posSum: number; n: number }>();
       for (const r of rows) {
-        if (!r.query || !r.url || !ownQueries.has(r.query) || urlMatches(r.url, wanted)) continue;
+        if (!r.query || !r.url || !ownQueries.has(r.query) || matched.has(r.url)) continue;
         const key = `${r.query}::${r.url}`;
         const cur = rivals.get(key) ?? { url: r.url, clicks: 0, impressions: 0, posSum: 0, n: 0 };
         cur.clicks += r.clicks; cur.impressions += r.impressions; cur.posSum += r.position; cur.n++;
