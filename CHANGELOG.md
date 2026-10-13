@@ -5,6 +5,16 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Fixed — AEO Tracker sent the OpenAI model to Claude, Gemini, Perplexity and Grok
+
+- **Claude and Gemini checks failed on every question.** The site's AEO model fell back to `AEO_DEFAULT_MODEL` (an OpenAI id) and was copied into every engine's options; only a per-engine model in Settings replaced it. With the default empty Settings, Claude and Gemini answered `404 model: gpt-…` on every check and dropped out of share of voice, and Perplexity and Grok took the same path. The site model now applies to ChatGPT only; every other engine uses its model from Settings or its own default (`sonar`, `grok-4-fast`, the Claude and Gemini defaults).
+- **The account OpenAI model (Settings → AI models) was ignored by AEO.** The always-filled site model sat in front of it. It now applies whenever the site has no model of its own.
+- Engine option assembly moved to `lib/aeoEngineOptions.ts` with unit tests.
+
+### Fixed — MCP `get_optimization_brief` briefed the homepage for every URL
+
+- **Any page on the site matched the homepage.** URL matching accepted the stored URL being a substring of the requested one, and `https://host` is a substring of every URL on the host. The brief came back with the homepage's queries, cannibalization rivals and live content. Pages now match on the normalized path (host, query string, fragment, case and trailing slash ignored); a fragment such as `pricing` is a fallback used only when nothing matches exactly, and when it names several pages the tool lists them instead of guessing.
+
 ## [1.10.0] — 2026-10-12
 
 ### Changed — Site Audit health score weighs findings by severity (#30)
