@@ -224,7 +224,7 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
               {providers && providers.length > 0 && providers.every(p => !p.configured) && (
                 <div style={{ padding: "12px 14px", borderRadius: "10px", border: "1px solid rgba(245,158,11,0.35)", background: "rgba(245,158,11,0.08)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
                   {t("mlNoProviders")}{" "}
-                  <a href="/settings?tab=seo-tools" style={{ color: "var(--color-accent-blue)" }}>{t("mlOpenSettings")}</a>
+                  <a href="/settings?tab=serp" style={{ color: "var(--color-accent-blue)" }}>{t("mlOpenSettings")}</a>
                 </div>
               )}
 

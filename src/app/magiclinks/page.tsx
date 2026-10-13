@@ -169,7 +169,7 @@ export default function MagicLinksPage() {
         <div style={{ padding: "14px 16px", borderRadius: "12px", border: "1px solid rgba(245,158,11,0.35)", background: "rgba(245,158,11,0.08)", marginBottom: "16px", fontSize: "13px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
           <div style={{ fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>{t("mlNoProviders")}</div>
           {t("mlNoProvidersDesc")}{" "}
-          <a href="/settings?tab=seo-tools" style={{ color: "var(--color-accent-blue)" }}>{t("mlOpenSettings")}</a>
+          <a href="/settings?tab=serp" style={{ color: "var(--color-accent-blue)" }}>{t("mlOpenSettings")}</a>
           {" · "}
           <a href="/striking" style={{ color: "var(--color-accent-blue)" }}>{t("mlFromStriking")}</a>
         </div>

@@ -1115,7 +1115,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
 
                     {!anyConfigured && (
                       <a
-                        href="/settings#ai"
+                        href="/settings?tab=ai"
                         target="_blank"
                         rel="noreferrer"
                         style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 600, color: '#F59E0B', textDecoration: 'none', padding: '6px 12px', borderRadius: '8px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)' }}

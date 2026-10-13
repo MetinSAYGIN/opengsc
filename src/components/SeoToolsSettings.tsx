@@ -1,12 +1,14 @@
 "use client";
 
-// Self-contained settings for the SEO Tools module — keys (SERP/scrape), model
-// selection, and fact-check/generation behavior. Lives inside the SEO Tools tab so
-// the tool is self-contained; no dependency on the main dashboard Settings page.
-// All values are localStorage-only (same keys/logic as before — just relocated).
+// Building blocks of Settings → "AI models", "SERP & scraping", "SEO metrics" and "Provider log".
+//
+// Each integration is configured in exactly ONE tab: the key and the choice of what to use it
+// for sit next to each other. They used to be split ("API Keys" held every key, "SEO Tools" held
+// the model and provider pickers), which meant you could not tell what was connected and active
+// without visiting both. All values are localStorage-only, mirrored to the server by SeoKeysSync.
 
 import { useEffect, useState } from "react";
-import { Globe, RefreshCw, CheckCircle, Eye, X, Sparkles } from "lucide-react";
+import { RefreshCw, CheckCircle, Eye, X, Sparkles } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { getConfiguredProviders, AI_PROVIDER_NAMES } from "@/lib/seo/keys";
 import { rankModels, type ModelOpt } from "@/lib/seo/models";
@@ -241,7 +243,7 @@ function AparserCard() {
  * the ordinary settings mirror (`seoKey_fieldlink` / `seoKey_magic369`), so server routes
  * resolve them through the same fallback chain as every other credential.
  */
-function MagicLinksCard() {
+export function MagicLinksCard() {
   const { t } = useLanguage();
   const [flToken, setFlToken] = useState("");
   const [mToken, setMToken] = useState("");
@@ -448,7 +450,7 @@ function ToggleRowSetting({ label, desc, on, onToggle }: { label: string; desc: 
  * `seoProviderLogBodies` rides SeoKeysSync's mirror to `User.seoSettings`, like the scheduled
  * warm-up before it, because the thing that reads it is a server process with no browser.
  */
-function BodyCaptureSetting() {
+export function BodyCaptureSetting() {
   const { t } = useLanguage();
   const [on, setOn] = useState(false);
   useEffect(() => { setOn((localStorage.getItem("seoProviderLogBodies") ?? "0") === "1"); }, []);
@@ -461,7 +463,7 @@ function BodyCaptureSetting() {
   };
 
   return (
-    <div style={{ marginBottom: "18px", paddingBottom: "16px", borderBottom: "1px solid var(--color-border)" }}>
+    <div>
       <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>🧾 {t("seoLogBodiesTitle")}</div>
       <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px" }}>{t("seoLogBodiesSub")}</div>
       <ToggleRowSetting label={t("seoLogBodiesLabel")} desc={t("seoLogBodiesDesc")} on={on} onToggle={toggle} />
@@ -728,23 +730,15 @@ function providerPillStyle(isActive: boolean): React.CSSProperties {
   };
 }
 
-// Exported so the unified "API Keys" settings section (Settings → API Keys) can render
-// these same key cards — keeping exactly one place in the UI where any provider key is
-// actually typed in, while this SEO Tools tab keeps only the non-key configuration
-// (model choice, active-provider pickers, fact-check behavior).
+// The SERP / scraping key cards (Settings → SERP & scraping). The tab supplies the heading;
+// the pickers that choose WHICH of these keys a feature uses sit above them in the same tab.
 export function SeoProviderKeysSection() {
   const { t } = useLanguage();
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-        <Globe size={17} color="#10A37F" />
-        <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>{t("seoSetTitle")}</h3>
-      </div>
-      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px" }}>{t("seoSetSub")}</p>
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {SEO_PROVIDERS.map(p => <SeoKeyCard key={p.id} provider={p} />)}
         <AparserCard />
-        <MagicLinksCard />
       </div>
       <div style={{ marginTop: "14px", padding: "11px 14px", borderRadius: "8px", background: "rgba(16,163,127,0.06)", border: "1px solid rgba(16,163,127,0.18)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
         💡 {t("seoSetTip")}
@@ -770,7 +764,24 @@ export function AeoProviderKeysSection() {
   );
 }
 
-export default function SeoToolsSettings() {
+/**
+ * Everything about how AI text is produced once a key exists: the default model, an
+ * OpenAI-compatible custom endpoint, per-task overrides and the fact-check pipeline.
+ * Rendered under the provider keys in Settings → AI models.
+ */
+export function AiGenerationSettings() {
+  return (
+    <>
+      <ModelSelector />
+      <CustomProviderCard />
+      <PerTaskProviders />
+      <FactCheckSettings />
+    </>
+  );
+}
+
+/** Which configured SERP key each feature uses — Settings → SERP & scraping, above the keys. */
+export function SerpProviderPicker() {
   const { t } = useLanguage();
   const [active, setActive] = useState("serper");
   // Rank Tracker can use its own SERP provider, independent from the one used for content
@@ -798,19 +809,7 @@ export default function SeoToolsSettings() {
   const activeName = SERP_PROVIDER_LIST.find(([id]) => id === active)?.[1] ?? active;
 
   return (
-    <div className="panel">
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-        <Globe size={17} color="#10A37F" />
-        <h2 style={{ fontSize: "16px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>{t("seoSetTitle")}</h2>
-      </div>
-      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 16px" }}>{t("seoSetSub")}</p>
-
-      <ModelSelector />
-      <CustomProviderCard />
-      <PerTaskProviders />
-      <FactCheckSettings />
-      <BodyCaptureSetting />
-
+    <div>
       <div style={{ marginBottom: "14px" }}>
         <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "7px" }}>{t("seoSetActiveProvider")}</div>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -820,7 +819,7 @@ export default function SeoToolsSettings() {
         </div>
       </div>
 
-      <div style={{ marginBottom: "14px", paddingBottom: "16px", borderBottom: "1px solid var(--color-border)" }}>
+      <div>
         <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px" }}>{t("seoSetRankProvider")}</div>
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 8px" }}>{t("seoSetRankProviderDesc")}</p>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>

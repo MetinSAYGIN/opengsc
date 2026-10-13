@@ -11,7 +11,7 @@ same as a 9-keyword check: proxy traffic. There is no per-request bill.
 
 ## Requirements
 
-- **A-Parser** with the `SE::Google` parser, configured in **Settings → API keys** (base URL +
+- **A-Parser** with the `SE::Google` parser, configured in **Settings → SERP & scraping** (base URL +
   password). The module reads the option ids from your live `SE::Google` preset; without
   A-Parser the projects page shows a banner instead of a broken table.
 - **Proxies** that hold up for the volume you configure. This module is far hungrier than rank

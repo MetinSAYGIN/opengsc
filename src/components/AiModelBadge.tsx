@@ -57,7 +57,7 @@ export default function AiModelBadge({ pathname }: { pathname: string }) {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open, onDocClick]);
 
-  const goSettings = () => router.push("/settings?tab=seo-tools");
+  const goSettings = () => router.push("/settings?tab=ai");
 
   // Pages with no AI task of their own (Citations, Googlebot, Demand, History…) keep the plain
   // settings link — inventing a model name for them would be worse than saying nothing.

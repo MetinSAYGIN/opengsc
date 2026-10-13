@@ -3,32 +3,54 @@
 import { useEffect, useState } from "react";
 import { signIn, useSession } from "next-auth/react";
 import {
-  ArrowLeft, Plus, X, CheckCircle, AlertCircle,
-  Users, Settings, Globe, Key, KeyRound, Edit2, Copy,
-  ChevronDown, Crown, Zap, Star, Eye, Sparkles, BarChart3, ScrollText,
+  Activity, AlertCircle, ArrowLeft, BarChart3, Bell, CheckCircle, ChevronDown, Copy, DatabaseBackup, Eye, Globe, Key, Plus, RefreshCw, ScrollText, Settings, Sparkles, Users, X, Zap,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { readChartTypePref, writeChartTypePref } from "@/lib/chartCandles";
 import TeamMembersPanel from "@/components/TeamMembersPanel";
-import SeoToolsSettings, { SeoProviderKeysSection, AeoProviderKeysSection } from "@/components/SeoToolsSettings";
+import {
+  SeoProviderKeysSection, AeoProviderKeysSection, AiGenerationSettings, SerpProviderPicker,
+  MagicLinksCard, BodyCaptureSetting,
+} from "@/components/SeoToolsSettings";
 import MetricsSettingsSection from "@/components/MetricsSettingsSection";
 import ProviderLogSection from "@/components/ProviderLogSection";
 import NotifyChannelsCard, { ChannelEventsRow } from "@/components/NotifyChannelsCard";
 import UptimeSettingsCard from "@/components/uptime/UptimeSettingsCard";
 import BackupSettingsCard from "@/components/backup/BackupSettingsCard";   // issue #32
-// wave-nov settings cards (CONTRACT.md §3) — each stub is replaced by its owning task.
 import PushSettingsCard from "@/components/PushSettingsCard";                       // N10
 import ReportBrandingCard from "@/components/reports/ReportBrandingCard";           // N8
 import WidgetSettingsCard from "@/components/leads/WidgetSettingsCard";             // N9
 import ExtensionTokenCard from "@/components/ExtensionTokenCard";                   // N11
 
-type NavItem = "accounts" | "bing" | "yandex" | "teams" | "api" | "api-keys" | "indexing-api" | "metrics" | "seo-tools" | "provider-log" | "notifications" | "members" | "preferences" | "supersites";
+// One tab per integration or concern — each setting lives in exactly one place. Grouped in the
+// sidebar as: data sources · providers · notifications & integrations · instance.
+type NavItem =
+  | "accounts" | "bing" | "yandex"
+  | "ai" | "serp" | "metrics" | "indexing-api" | "aeo-health" | "provider-log"
+  | "notifications" | "integrations"
+  | "members" | "preferences" | "sync" | "uptime" | "backups";
 
-// These screens predate a real organization/member authorization model. Keep them available to
-// contributors who are working on that RFC, but do not present client-only mock state as a
-// production feature. Existing installations can opt back in without a database migration.
-const EXPERIMENTAL_TEAM_UI = process.env.NEXT_PUBLIC_EXPERIMENTAL_TEAM_UI === "1";
+const NAV_ITEMS: NavItem[] = [
+  "accounts", "bing", "yandex",
+  "ai", "serp", "metrics", "indexing-api", "aeo-health", "provider-log",
+  "notifications", "integrations",
+  "members", "preferences", "sync", "uptime", "backups",
+];
+
+// Tab ids from before the 2026-10 regrouping. Links in the app, bookmarks and docs still carry
+// them, so they resolve to the tab that now holds what the old one was opened for.
+const LEGACY_TABS: Record<string, NavItem> = {
+  "api-keys": "ai",        // the old all-keys hub; nearly every deep link meant "add an AI key"
+  "seo-tools": "serp",     // model pickers moved to "ai", SERP pickers to "serp"
+  "api": "integrations",   // MCP token
+};
+
+function resolveTab(raw: string | null): NavItem | null {
+  if (!raw) return null;
+  if ((NAV_ITEMS as string[]).includes(raw)) return raw as NavItem;
+  return LEGACY_TABS[raw] ?? null;
+}
 
 interface ConnectedAccount {
   id: string; email: string; picture: string | null; connected: boolean; gscAccess: boolean; ga4Access?: boolean;
@@ -480,52 +502,6 @@ function AccountsSection({ user, accounts, loadingAccounts, removing, onAdd, onR
   );
 }
 
-// ─── Section: My Teams ────────────────────────────────────────────────────────
-function TeamsSection({ user }: { user?: SessionUser }) {
-  const { t } = useLanguage();
-  const teamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
-  return (
-    <SectionCard>
-      <SectionTitle icon={<Users size={17} />} title={t("myTeams")} />
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead>
-          <tr>
-            {[t("teamColTeam"), t("teamColShares"), t("teamColBilling")].map(h => (
-              <th key={h} style={{ textAlign: "left", fontSize: "12px", color: "var(--color-text-secondary)", fontWeight: 500, paddingBottom: "14px", borderBottom: "1px solid var(--color-border)" }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style={{ padding: "16px 0 0" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <UserAvatar email={user?.email ?? "a"} picture={user?.image} size={28} />
-                <div>
-                  <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{teamName}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "4px", marginTop: "2px" }}>
-                    <Crown size={11} color="#F59E0B" />
-                    <span style={{ fontSize: "11px", color: "#F59E0B", fontWeight: 600 }}>{t("owner")}</span>
-                  </div>
-                </div>
-              </div>
-            </td>
-            <td style={{ padding: "16px 0 0" }}>
-              <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-primary)", fontSize: "13px", fontWeight: 500, cursor: "pointer" }}>
-                <CheckCircle size={14} color="#10B981" /> {t("yes")} <ChevronDown size={13} color="var(--color-text-secondary)" />
-              </button>
-            </td>
-            <td style={{ padding: "16px 0 0" }}>
-              <button style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "13px", color: "var(--color-accent-blue)", background: "none", border: "none", cursor: "pointer", fontWeight: 500 }}>
-                {t("view")} <span style={{ fontSize: "11px" }}>↗</span>
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </SectionCard>
-  );
-}
-
 // ─── Section: API & MCP Keys ──────────────────────────────────────────────────
 function ApiSection() {
   const { t } = useLanguage();
@@ -731,38 +707,15 @@ http_headers = { "Authorization" = "Bearer ${shownToken}" }`,
 
 // ─── Section: Team Members ────────────────────────────────────────────────────
 // ─── Section: Preferences ─────────────────────────────────────────────────────
-function PreferencesSection({ user }: { user?: SessionUser }) {
+function PreferencesSection() {
   const { t, language, setLanguage } = useLanguage();
-  const teamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
-  const [shareWithTeam, setShareWithTeam] = useState(true);
-  const [useAI, setUseAI] = useState(true);
   const [chartPref, setChartPref] = useState(readChartTypePref);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      {/* Sharing */}
-      {EXPERIMENTAL_TEAM_UI && <SectionCard>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-          <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("sharingTitle")}</h2>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
-          <div>
-            <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{teamName}</div>
-            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("sharingDesc")}</div>
-          </div>
-          <button onClick={() => setShareWithTeam(s => !s)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-primary)", fontSize: "13px", fontWeight: 500, cursor: "pointer" }}>
-            {shareWithTeam ? <CheckCircle size={14} color="#10B981" /> : <X size={14} color="#6b7280" />}
-            {shareWithTeam ? t("yes") : t("no")}
-            <ChevronDown size={13} color="var(--color-text-secondary)" />
-          </button>
-        </div>
-      </SectionCard>}
-
-      {!EXPERIMENTAL_TEAM_UI && (
-        <SectionCard>
-          <SectionTitle title={t("singleOperatorTitle")} sub={t("singleOperatorDesc")} />
-        </SectionCard>
-      )}
+      <SectionCard>
+        <SectionTitle title={t("singleOperatorTitle")} sub={t("singleOperatorDesc")} />
+      </SectionCard>
 
       {/* Language */}
       <SectionCard>
@@ -805,39 +758,13 @@ function PreferencesSection({ user }: { user?: SessionUser }) {
         </div>
       </SectionCard>
 
-      {/* Team Preferences */}
-      {EXPERIMENTAL_TEAM_UI && <SectionCard>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-          <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("teamPreferences")}</h2>
-          <button style={{ fontSize: "13px", color: "var(--color-accent-blue)", background: "none", border: "none", cursor: "pointer", fontWeight: 500, display: "flex", alignItems: "center", gap: "4px" }}>
-            <Edit2 size={13} /> {t("edit")}
-          </button>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--color-border)" }}>
-          <div>
-            <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{t("useAI")}</div>
-            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("useAIDesc")}</div>
-          </div>
-          <div style={{ display: "flex", gap: "6px" }}>
-            {[t("yes"), t("no")].map((opt, idx) => {
-              const isActive = idx === 0 ? useAI : !useAI;
-              return (
-                <button key={opt} onClick={() => setUseAI(idx === 0)} style={{ padding: "6px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer", background: isActive ? "rgba(59,130,246,0.15)" : "transparent", color: isActive ? "#3B82F6" : "var(--color-text-secondary)", border: `1px solid ${isActive ? "rgba(59,130,246,0.3)" : "var(--color-border)"}`, transition: "all 0.15s" }}>
-                  {opt}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </SectionCard>}
-      {/* Automatic sync. Lives here rather than next to the Google accounts: it is a preference
-          about how the instance behaves, not a property of any one connected account. */}
-      <SyncScheduleSection />
+      {/* White-label identity of client reports — a workspace preference, not a notification. */}
+      <ReportBrandingCard />
     </div>
   );
 }
 
-// ─── Automatic sync schedule (Settings → Preferences) ────────────────────────
+// ─── Automatic sync schedule (Settings → Sync) ───────────────────────────────
 // The hour is stored in the user's own zone rather than UTC, because the thing being scheduled
 // is "be ready before I start work" and a UTC hour drifts away from that at every DST change.
 // See src/lib/syncSchedule.ts.
@@ -945,6 +872,7 @@ function NotificationsSection() {
   const [alerts, setAlerts] = useState<Record<string, AlertRule> | null>(null);
   const [recent, setRecent] = useState<RecentAlertEvent[]>([]);
   const [alertsSaved, setAlertsSaved] = useState(false);
+  const [alertsRunMsg, setAlertsRunMsg] = useState("");
 
   const reloadTg = () => fetch("/api/settings/telegram").then(r => r.json()).then(setTg).catch(() => {});
   const reloadSlack = () => fetch("/api/settings/slack").then(r => r.json()).then(setSlack).catch(() => {});
@@ -1072,18 +1000,11 @@ function NotificationsSection() {
         <ChannelEventsRow id="slack" />
       </SectionCard>
 
-      {/* Wave-oct delivery channels (Discord/Teams/SMTP/webhook) and the uptime workspace settings */}
+      {/* Other delivery channels (Discord/Teams/SMTP/webhook), then browser push. Only things
+          that deliver or decide alerts belong on this tab — uptime, backups, report branding,
+          the audit widget and the extension token each have their own home now. */}
       <NotifyChannelsCard />
-      <UptimeSettingsCard />
-      {/* Scheduled backups (issue #32) — owner-only card, null for members */}
-      <BackupSettingsCard />
-
-      {/* Wave-nov settings cards (CONTRACT.md §3), after UptimeSettingsCard. Stub bodies from
-          the foundation commit; N10/N8/N9/N11 replace their own card in place. */}
       <PushSettingsCard />
-      <ReportBrandingCard />
-      <WidgetSettingsCard />
-      <ExtensionTokenCard />
 
       {/* Alert rules */}
       {alerts && (
@@ -1103,10 +1024,11 @@ function NotificationsSection() {
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "12px" }}>
             <button onClick={async () => {
               const d = await fetch("/api/settings/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run" }) }).then(r => r.json());
-              setTgMsg(`${t("alertsRanNow")}: ${d.fired ?? 0}`);
+              setAlertsRunMsg(`${t("alertsRanNow")}: ${d.fired ?? 0}`);
               reloadAlerts();
             }} style={smallBtn}>{t("alertsRunNow")}</button>
             {alertsSaved && <span style={{ fontSize: "12px", color: "#10B981" }}>✓ {t("seoModelSaved")}</span>}
+            {alertsRunMsg && <span style={{ fontSize: "12px", color: "#10B981" }}>{alertsRunMsg}</span>}
             <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("alertsCadenceNote")}</span>
           </div>
         </SectionCard>
@@ -1508,14 +1430,29 @@ function AIProviderCard({ provider }: { provider: typeof AI_PROVIDERS[number] })
   );
 }
 
+// Settings → AI models: the keys, then everything about how they are used (default model,
+// custom endpoint, per-task overrides, fact-check). One tab, so "is AI set up" has one answer.
+function AiModelsSection() {
+  const { t } = useLanguage();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      <AIConfigSection />
+      <SectionCard>
+        <SectionTitle icon={<Sparkles size={17} color="#8B5CF6" />} title={t("aiGenTitle")} sub={t("aiGenSub")} />
+        <AiGenerationSettings />
+      </SectionCard>
+    </div>
+  );
+}
+
 function AIConfigSection() {
   const { t } = useLanguage();
   return (
     <SectionCard>
       <SectionTitle
         icon={<Zap size={17} color="#8B5CF6" />}
-        title="AI Providers"
-        sub="Connect an AI provider to enable intelligent clustering in One Click Setup. The AI analyzes your GSC queries and URLs to create meaningful topic clusters and content groups — much more accurate than the algorithmic fallback."
+        title={t("aiKeysTitle")}
+        sub={t("aiKeysSub")}
       />
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {AI_PROVIDERS.map(p => <AIProviderCard key={p.id} provider={p} />)}
@@ -1528,7 +1465,11 @@ function AIConfigSection() {
 }
 
 // ─── Section: Indexing API Keys ───────────────────────────────────────────────
-function IndexApiSection() {
+// One component for the three server-stored keys behind /api/settings/api-keys, rendered in two
+// places: `part="indexing"` (NeuralIndexer, 2index, IndexNow) on the Indexing tab, and
+// `part="xmlriver"` on the SERP tab — XMLRiver is a Google SERP API that the index checker AND
+// the backlink checks (check-xr, xr-donors) both read, so it is not an indexing service.
+function IndexApiSection({ part }: { part: "indexing" | "xmlriver" }) {
   const { t } = useLanguage();
 
   // NeuralIndexer state
@@ -1696,7 +1637,7 @@ function IndexApiSection() {
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
 
       {/* ── NeuralIndexer (featured / primary) ── */}
-      <SectionCard>
+      {part === "indexing" && <SectionCard>
         {/* Header */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
           <div>
@@ -1771,10 +1712,10 @@ function IndexApiSection() {
             {t("nnGetToken")}
           </a>
         </div>
-      </SectionCard>
+      </SectionCard>}
 
       {/* ── XML River ── */}
-      <SectionCard>
+      {part === "xmlriver" && <SectionCard>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1817,10 +1758,10 @@ function IndexApiSection() {
             </button>
           )}
         </div>
-      </SectionCard>
+      </SectionCard>}
 
       {/* ── 2index.ninja ── */}
-      <SectionCard>
+      {part === "indexing" && <SectionCard>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1866,10 +1807,10 @@ function IndexApiSection() {
             </button>
           )}
         </div>
-      </SectionCard>
+      </SectionCard>}
 
       {/* ── IndexNow key ── */}
-      <SectionCard>
+      {part === "indexing" && <SectionCard>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <div style={{ width: 28, height: 28, borderRadius: "6px", background: "rgba(124,58,237,0.12)", border: "1px solid rgba(124,58,237,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 800, color: "#7C3AED" }}>IN</div>
@@ -1883,28 +1824,7 @@ function IndexApiSection() {
           </div>
           <LocalKeyField storageKey="seoKey_indexnow" placeholder="IndexNow key (hex)" />
         </div>
-      </SectionCard>
-
-      {/* ── Microsoft Clarity (note: token is per-site, configured in site UX tab) ── */}
-      <SectionCard>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <div style={{ width: 28, height: 28, borderRadius: "6px", background: "rgba(0,102,204,0.12)", border: "1px solid rgba(0,102,204,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 800, color: "var(--color-accent-blue)" }}>MC</div>
-            <div>
-              <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>Microsoft Clarity</span>
-              <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{t("claritySettingsNote")}</p>
-            </div>
-          </div>
-          <a href="#" onClick={e => { e.preventDefault(); }} style={{
-            fontSize: "11px", fontWeight: 600, padding: "4px 10px", borderRadius: "9999px",
-            background: "rgba(0,102,204,0.10)", color: "var(--color-accent-blue)",
-            border: "1px solid rgba(0,102,204,0.25)", textDecoration: "none",
-            display: "inline-flex", alignItems: "center", gap: "4px",
-          }}>
-            {t("claritySettingsWhere")}
-          </a>
-        </div>
-      </SectionCard>
+      </SectionCard>}
     </div>
   );
 }
@@ -2036,248 +1956,115 @@ function HealthApiKeysSection() {
   );
 }
 
-// ─── Section: API Keys (unified) ──────────────────────────────────────────────
-// Single place for every external provider key used across the app: AI providers
-// (content generation / One Click Setup clustering), SEO Tools' SERP + AEO/AI
-// Visibility providers, and Health-check providers. Previously split across
-// Preferences and SEO Tools, which was confusing — everything lives here now.
-function ApiKeysSection() {
+// ─── Section: SERP & scraping ─────────────────────────────────────────────────
+// Keys and the choice of which key each feature uses, on one screen (see SeoToolsSettings.tsx).
+function SerpSection() {
   const { t } = useLanguage();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      <div style={{ padding: "12px 16px", borderRadius: "8px", border: "1px solid rgba(59,130,246,0.25)", background: "rgba(59,130,246,0.06)", fontSize: "13px", color: "var(--color-text-secondary)" }}>
-        💡 {t("apiKeysHubDesc")}
-      </div>
-      <AIConfigSection />
-      <SectionCard><SeoProviderKeysSection /></SectionCard>
+      <SectionCard>
+        <SectionTitle icon={<Globe size={17} color="#10A37F" />} title={t("serpTabTitle")} sub={t("serpTabSub")} />
+        <SerpProviderPicker />
+      </SectionCard>
+      <SectionCard>
+        <SectionTitle title={t("serpKeysTitle")} />
+        <SeoProviderKeysSection />
+      </SectionCard>
+      <IndexApiSection part="xmlriver" />
+      <SectionCard>
+        <SectionTitle title={t("linkBuyTitle")} sub={t("linkBuySub")} />
+        <MagicLinksCard />
+      </SectionCard>
+    </div>
+  );
+}
+
+// ─── Section: AEO & site health ───────────────────────────────────────────────
+function AeoHealthSection() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       <SectionCard><AeoProviderKeysSection /></SectionCard>
       <HealthApiKeysSection />
     </div>
   );
 }
 
-// ─── Section: Super Sites ─────────────────────────────────────────────────────
-interface GscSite { id: string; url: string; siteId: string; }
-
-function SuperSitesSection() {
-  const { t } = useLanguage();
-  const [superSites, setSuperSites] = useState<string[]>([]);
-  const [allSites, setAllSites] = useState<GscSite[]>([]);
-  const [loadingSites, setLoadingSites] = useState(true);
-  const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/gsc/sites")
-      .then(r => r.json())
-      .then(data => setAllSites(data.sites || []))
-      .catch(() => {})
-      .finally(() => setLoadingSites(false));
-  }, []);
-
-  const cleanDomain = (url: string) =>
-    url.replace(/^https?:\/\//, "").replace(/\/$/, "").replace(/^sc-domain:/, "");
-
-  const suggestions = allSites.filter(s =>
-    !superSites.includes(s.url) &&
-    cleanDomain(s.url).toLowerCase().includes(query.toLowerCase())
-  );
-
-  const showDropdown = focused && query.length > 0;
-
-  const addFromGsc = (url: string) => {
-    if (!superSites.includes(url)) setSuperSites(prev => [...prev, url]);
-    setQuery("");
-  };
-
-  const addManual = () => {
-    const trimmed = query.trim().replace(/^https?:\/\//, "").replace(/\/$/, "");
-    if (!trimmed || superSites.includes(trimmed)) return;
-    setSuperSites(prev => [...prev, trimmed]);
-    setQuery("");
-  };
-
-  const remove = (url: string) => setSuperSites(prev => prev.filter(s => s !== url));
-
-  const searchPlaceholder = loadingSites
-    ? t("loadingGscProps")
-    : allSites.length > 0
-      ? t("searchGscProps").replace("{n}", String(allSites.length))
-      : t("enterDomainToAdd");
-
+// ─── Section: Provider log ────────────────────────────────────────────────────
+// The body-capture switch sits with the log it changes, not on a different tab.
+function ProviderLogTab() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      <SectionCard>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-          <Star size={17} color="#F59E0B" />
-          <h2 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("superSites")}</h2>
-          {superSites.length > 0 && (
-            <span style={{ fontSize: "11px", color: "#F59E0B", background: "rgba(245,158,11,0.1)", borderRadius: "20px", padding: "2px 8px", fontWeight: 600 }}>
-              {superSites.length} {t("upgraded")}
-            </span>
-          )}
-        </div>
-        <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", lineHeight: 1.7, marginBottom: "20px" }}>
-          {t("superSitesDesc")}
-        </p>
+      <SectionCard><BodyCaptureSetting /></SectionCard>
+      <SectionCard><ProviderLogSection /></SectionCard>
+    </div>
+  );
+}
 
-        {/* Combined search + picker */}
-        <div style={{ position: "relative", marginBottom: "20px" }}>
-          <div style={{
-            display: "flex", alignItems: "center", gap: "8px",
-            padding: "0 14px",
-            borderRadius: showDropdown ? "10px 10px 0 0" : "10px",
-            borderTop: `1px solid ${focused ? "#F59E0B" : "var(--color-border)"}`,
-            borderLeft: `1px solid ${focused ? "#F59E0B" : "var(--color-border)"}`,
-            borderRight: `1px solid ${focused ? "#F59E0B" : "var(--color-border)"}`,
-            borderBottom: showDropdown ? "1px solid var(--color-border)" : `1px solid ${focused ? "#F59E0B" : "var(--color-border)"}`,
-            background: "rgba(255,255,255,0.04)",
-            transition: "border-color 0.15s",
-          }}>
-            <span style={{ fontSize: "14px", opacity: 0.5, flexShrink: 0 }}>🔍</span>
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setTimeout(() => setFocused(false), 150)}
-              onKeyDown={e => {
-                if (e.key === "Enter") {
-                  if (suggestions.length > 0) addFromGsc(suggestions[0].url);
-                  else addManual();
-                }
-              }}
-              placeholder={searchPlaceholder}
-              disabled={loadingSites}
-              style={{
-                flex: 1, padding: "10px 0",
-                background: "transparent", border: "none",
-                color: "var(--color-text-primary)", fontSize: "13px",
-                fontFamily: "inherit", outline: "none",
-              }}
-            />
-            {query && (
-              <button
-                onMouseDown={e => { e.preventDefault(); addManual(); }}
-                style={{
-                  flexShrink: 0, padding: "4px 10px", borderRadius: "6px",
-                  background: "rgba(245,158,11,0.1)", color: "#F59E0B",
-                  border: "1px solid rgba(245,158,11,0.25)",
-                  fontSize: "11px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-                }}
-              >{t("addManual")}</button>
-            )}
-          </div>
-
-          {/* Dropdown suggestions */}
-          {showDropdown && (
-            <div style={{
-              position: "absolute", top: "100%", left: 0, right: 0,
-              background: "var(--color-card)",
-              border: "1px solid #F59E0B",
-              borderTop: "none",
-              borderRadius: "0 0 10px 10px",
-              zIndex: 50,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-              maxHeight: "240px", overflowY: "auto",
-            }}>
-              {suggestions.length > 0 ? suggestions.map(site => (
-                <button
-                  key={site.id}
-                  onMouseDown={e => { e.preventDefault(); addFromGsc(site.url); }}
-                  style={{
-                    width: "100%", display: "flex", alignItems: "center", gap: "10px",
-                    padding: "9px 14px", background: "transparent",
-                    border: "none", cursor: "pointer", textAlign: "left",
-                    transition: "background 0.1s",
-                  }}
-                  onMouseOver={e => (e.currentTarget.style.background = "rgba(245,158,11,0.07)")}
-                  onMouseOut={e => (e.currentTarget.style.background = "transparent")}
-                >
-                  { }
-                  <img src={`/api/favicon?domain=${cleanDomain(site.url)}`} width={14} height={14} alt="" style={{ borderRadius: "3px", flexShrink: 0 }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
-                  <span style={{ fontSize: "13px", color: "var(--color-text-primary)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {cleanDomain(site.url)}
-                  </span>
-                  <span style={{ fontSize: "11px", color: "#F59E0B", flexShrink: 0 }}>{t("upgradeLabel")}</span>
-                </button>
-              )) : (
-                <div style={{ padding: "11px 14px", fontSize: "12px", color: "var(--color-text-secondary)" }}>
-                  {t("noGscMatch")}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Upgraded list */}
-        {superSites.length === 0 ? (
-          <div style={{ padding: "24px", borderRadius: "10px", border: "1px dashed var(--color-border)", textAlign: "center" }}>
-            <div style={{ fontSize: "22px", marginBottom: "8px" }}>⭐</div>
-            <div style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
-              {t("noSuperSitesYet")}
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {superSites.map(site => (
-              <div key={site} style={{
-                display: "flex", alignItems: "center", gap: "10px",
-                padding: "10px 12px",
-                background: "rgba(245,158,11,0.05)",
-                border: "1px solid rgba(245,158,11,0.15)",
-                borderRadius: "8px",
-              }}>
-                { }
-                <img src={`/api/favicon?domain=${cleanDomain(site)}`} width={16} height={16} alt="" style={{ borderRadius: "3px" }} onError={e=>((e.target as HTMLImageElement).style.display="none")} />
-                <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", flex: 1 }}>{cleanDomain(site)}</span>
-                <Star size={12} color="#F59E0B" />
-                <button
-                  onClick={() => remove(site)}
-                  style={{
-                    padding: "4px 10px", borderRadius: "6px",
-                    background: "rgba(239,68,68,0.08)", color: "#f87171",
-                    border: "1px solid rgba(239,68,68,0.2)",
-                    fontSize: "11px", fontWeight: 600, cursor: "pointer",
-                  }}
-                >{t("remove")}</button>
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
+// ─── Section: Integrations ────────────────────────────────────────────────────
+// Every way something outside the app talks to it: the MCP token for AI agents, the browser
+// extension's token, and the embeddable audit widget. Each is its own credential.
+function IntegrationsSection() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      <ApiSection />
+      <ExtensionTokenCard />
+      <WidgetSettingsCard />
     </div>
   );
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
+function NavGroup({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: "22px" }}>
+      <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 6px 12px" }}>{title}</div>
+      {hint && <div style={{ fontSize: "11px", lineHeight: 1.45, color: "var(--color-text-secondary)", margin: "0 0 8px 12px" }}>{hint}</div>}
+      {children}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { t } = useLanguage();
   const router = useRouter();
   const { data: session } = useSession();
   const user = session?.user;
 
-  const [nav, setNav] = useState<NavItem>("accounts");
+  const [nav, setNavState] = useState<NavItem>("accounts");
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [removing, setRemoving] = useState<string | null>(null);
-  const [teamName, setTeamName] = useState("");
-  const [editingTeam, setEditingTeam] = useState(false);
+  // Capabilities of the signed-in member (GET /api/team). null = not known yet; tabs that are
+  // owner-only by route are hidden only once we KNOW the caller lacks the capability, so an owner
+  // never sees them flicker away while the request is in flight.
+  const [caps, setCaps] = useState<string[] | null>(null);
 
-  const defaultTeamName = user?.name ? `${user.name.split(" ")[0]}'s Team` : "My Team";
-
-  // Deep-link support (e.g. /settings?tab=seo-tools from the SEO Tools pages) — read via
-  // window.location in an effect rather than useSearchParams(), so this stays a plain client
-  // render with no SSR/hydration mismatch and no Suspense-boundary requirement.
+  // Deep links (/settings?tab=serp) — read via window.location in an effect rather than
+  // useSearchParams(), so this stays a plain client render with no SSR/hydration mismatch and
+  // no Suspense-boundary requirement. Old ids are mapped through LEGACY_TABS.
   useEffect(() => {
-    const tab = new URLSearchParams(window.location.search).get("tab");
-    const valid: NavItem[] = [
-      "accounts", "bing", "yandex", "api", "api-keys", "indexing-api", "metrics",
-      "seo-tools", "provider-log", "notifications", "preferences",
-      "members",
-      ...(EXPERIMENTAL_TEAM_UI ? ["teams", "supersites"] as NavItem[] : []),
-    ];
-    if (tab && (valid as string[]).includes(tab)) setNav(tab as NavItem);
+    const tab = resolveTab(new URLSearchParams(window.location.search).get("tab"));
+    if (tab) setNavState(tab);
   }, []);
+
+  // Keep the tab in the URL, so a reload stays put and a tab can be linked to.
+  const setNav = (next: NavItem) => {
+    setNavState(next);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", next);
+      window.history.replaceState(null, "", url.toString());
+    } catch { /* non-critical */ }
+  };
+
+  useEffect(() => {
+    fetch("/api/team", { cache: "no-store" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => setCaps(Array.isArray(d?.me?.capabilities) ? d.me.capabilities : null))
+      .catch(() => setCaps(null));
+  }, []);
+  // Backups hold SFTP credentials and the encryption passphrase — `manageSecrets` only.
+  const showBackups = caps === null || caps.includes("manageSecrets");
 
   const fetchAccounts = async () => {
     setLoadingAccounts(true);
@@ -2297,6 +2084,9 @@ export default function SettingsPage() {
     setRemoving(null);
   };
 
+  const item = (id: NavItem, icon: React.ReactNode, label: string) => (
+    <NavBtn id={id} active={nav === id} onSelect={() => setNav(id)} icon={icon} label={label} />
+  );
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -2306,57 +2096,41 @@ export default function SettingsPage() {
           <ArrowLeft size={14} /> {t("back")}
         </button>
         <h1 style={{ fontSize: "26px", fontWeight: 700, color: "var(--color-text-primary)", letterSpacing: "-0.02em" }}>{t("settingsTitle")}</h1>
+        {user?.email && <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px" }}>{user.email}</div>}
       </div>
 
       {/* Body */}
       <div style={{ display: "flex", flex: 1, gap: 0, padding: "24px 32px", alignItems: "flex-start" }}>
 
         {/* Left sidebar */}
-        <div style={{ width: "200px", flexShrink: 0, paddingRight: "24px" }}>
-          {/* Account */}
-          <div style={{ marginBottom: "28px" }}>
-            <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "2px" }}>{t("sidebarAccount")}</div>
-            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "10px" }}>{user?.email}</div>
-            <NavBtn id="accounts" active={nav === "accounts"} onSelect={() => setNav("accounts")} icon={<GoogleIcon size={14} />} label={t("navMyGoogleAccounts")} />
-            <NavBtn id="bing" active={nav === "bing"} onSelect={() => setNav("bing")} icon={<BingIcon size={14} />} label="Bing Webmaster" />
-            <NavBtn id="yandex" active={nav === "yandex"} onSelect={() => setNav("yandex")} icon={<YandexIcon size={14} />} label="Яндекс.Вебмастер" />
-            {EXPERIMENTAL_TEAM_UI && <NavBtn id="teams" active={nav === "teams"} onSelect={() => setNav("teams")} icon={<Users size={14} />} label={t("myTeams")} />}
-            <NavBtn id="api-keys" active={nav === "api-keys"} onSelect={() => setNav("api-keys")} icon={<KeyRound size={14} />} label={t("navApiKeys")} />
-            <NavBtn id="api" active={nav === "api"} onSelect={() => setNav("api")} icon={<Key size={14} />} label={t("navApiMcpKeys")} />
-            <NavBtn id="indexing-api" active={nav === "indexing-api"} onSelect={() => setNav("indexing-api")} icon={<Globe size={14} />} label={t("navIndexingApi")} />
-            <NavBtn id="metrics" active={nav === "metrics"} onSelect={() => setNav("metrics")} icon={<BarChart3 size={14} />} label={t("navMetrics")} />
-            <NavBtn id="seo-tools" active={nav === "seo-tools"} onSelect={() => setNav("seo-tools")} icon={<Sparkles size={14} />} label={t("navSeoTools")} />
-            <NavBtn id="provider-log" active={nav === "provider-log"} onSelect={() => setNav("provider-log")} icon={<ScrollText size={14} />} label={t("navProviderLog")} />
-            <NavBtn id="notifications" active={nav === "notifications"} onSelect={() => setNav("notifications")} icon={<Zap size={14} />} label={t("navNotifications")} />
-          </div>
+        <div style={{ width: "220px", flexShrink: 0, paddingRight: "24px" }}>
+          <NavGroup title={t("setGroupSources")}>
+            {item("accounts", <GoogleIcon size={14} />, t("navMyGoogleAccounts"))}
+            {item("bing", <BingIcon size={14} />, "Bing Webmaster")}
+            {item("yandex", <YandexIcon size={14} />, "Яндекс.Вебмастер")}
+          </NavGroup>
 
-          {/* Team */}
-          <div>
-            <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "2px" }}>
-              {EXPERIMENTAL_TEAM_UI ? t("sidebarTeam") : t("sidebarInstance")}
-            </div>
-            {EXPERIMENTAL_TEAM_UI ? <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "10px" }}>
-              {editingTeam ? (
-                <input
-                  autoFocus value={teamName || defaultTeamName}
-                  onChange={e => setTeamName(e.target.value)}
-                  onBlur={() => setEditingTeam(false)}
-                  onKeyDown={e => e.key === "Enter" && setEditingTeam(false)}
-                  style={{ fontSize: "12px", color: "var(--color-text-primary)", background: "transparent", border: "none", borderBottom: "1px solid var(--color-accent-blue)", outline: "none", width: "120px", padding: "1px 0" }}
-                />
-              ) : (
-                <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{teamName || defaultTeamName}</span>
-              )}
-              <Edit2 size={11} style={{ color: "var(--color-text-secondary)", cursor: "pointer", flexShrink: 0 }} onClick={() => setEditingTeam(true)} />
-            </div> : (
-              <div style={{ fontSize: "11px", lineHeight: 1.45, color: "var(--color-text-secondary)", marginBottom: "10px" }}>
-                {t("workspaceSidebarHint")}
-              </div>
-            )}
-            <NavBtn id="members" active={nav === "members"} onSelect={() => setNav("members")} icon={<Users size={14} />} label={t("navTeamMembers")} />
-            <NavBtn id="preferences" active={nav === "preferences"} onSelect={() => setNav("preferences")} icon={<Settings size={14} />} label={t("navPreferences")} />
-            {EXPERIMENTAL_TEAM_UI && <NavBtn id="supersites" active={nav === "supersites"} onSelect={() => setNav("supersites")} icon={<Star size={14} />} label={t("navSuperSites")} />}
-          </div>
+          <NavGroup title={t("setGroupProviders")}>
+            {item("ai", <Sparkles size={14} />, t("navAiModels"))}
+            {item("serp", <Globe size={14} />, t("navSerp"))}
+            {item("metrics", <BarChart3 size={14} />, t("navMetrics"))}
+            {item("indexing-api", <Zap size={14} />, t("navIndexing"))}
+            {item("aeo-health", <Eye size={14} />, t("navAeoHealth"))}
+            {item("provider-log", <ScrollText size={14} />, t("navProviderLog"))}
+          </NavGroup>
+
+          <NavGroup title={t("setGroupConnect")}>
+            {item("notifications", <Bell size={14} />, t("navNotifications"))}
+            {item("integrations", <Key size={14} />, t("navIntegrations"))}
+          </NavGroup>
+
+          <NavGroup title={t("sidebarInstance")} hint={t("workspaceSidebarHint")}>
+            {item("members", <Users size={14} />, t("navTeamMembers"))}
+            {item("preferences", <Settings size={14} />, t("navPreferences"))}
+            {item("sync", <RefreshCw size={14} />, t("navSync"))}
+            {item("uptime", <Activity size={14} />, t("navUptime"))}
+            {showBackups && item("backups", <DatabaseBackup size={14} />, t("navBackups"))}
+          </NavGroup>
         </div>
 
         {/* Main content */}
@@ -2396,17 +2170,19 @@ export default function SettingsPage() {
               <YandexAccountsManager />
             </SectionCard>
           )}
-          {EXPERIMENTAL_TEAM_UI && nav === "teams" && <TeamsSection user={user} />}
-          {nav === "api-keys"     && <ApiKeysSection />}
-          {nav === "api"          && <ApiSection />}
-          {nav === "indexing-api" && <IndexApiSection />}
+          {nav === "ai"           && <AiModelsSection />}
+          {nav === "serp"         && <SerpSection />}
           {nav === "metrics"      && <MetricsSettingsSection />}
-          {nav === "seo-tools"    && <SeoToolsSettings />}
-          {nav === "provider-log" && <SectionCard><ProviderLogSection /></SectionCard>}
+          {nav === "indexing-api" && <IndexApiSection part="indexing" />}
+          {nav === "aeo-health"   && <AeoHealthSection />}
+          {nav === "provider-log" && <ProviderLogTab />}
           {nav === "notifications" && <NotificationsSection />}
-          {nav === "members" && <TeamMembersPanel />}
-          {nav === "preferences"  && <PreferencesSection user={user} />}
-          {EXPERIMENTAL_TEAM_UI && nav === "supersites" && <SuperSitesSection />}
+          {nav === "integrations" && <IntegrationsSection />}
+          {nav === "members"      && <TeamMembersPanel />}
+          {nav === "preferences"  && <PreferencesSection />}
+          {nav === "sync"         && <SyncScheduleSection />}
+          {nav === "uptime"       && <UptimeSettingsCard />}
+          {nav === "backups"      && (showBackups ? <BackupSettingsCard /> : null)}
         </div>
       </div>
 

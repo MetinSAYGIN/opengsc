@@ -30,7 +30,7 @@ contour from reading the owner's keys, and the stricter document wins.
 
 ## Embedding
 
-Settings → **Audit widget** → copy the embed code:
+Settings → Integrations → **Audit widget** → copy the embed code:
 
 ```html
 <iframe src="https://YOUR-INSTANCE/embed/audit?key=wid_…"

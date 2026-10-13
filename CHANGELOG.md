@@ -5,6 +5,15 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Changed — Settings regrouped: one tab per job, nothing piled under Notifications
+
+- **The sidebar is grouped** into Data sources (Google, Bing, Yandex) · Providers (AI models, SERP & scraping, SEO metrics, Indexing, AEO & site health, Provider log) · Alerts & integrations (Notifications, Integrations) · Instance (Members, Preferences, Sync, Uptime, Backups).
+- **Each integration is configured in one place.** AI keys and the model/per-task/fact-check settings used to sit on two tabs ("API Keys" and "SEO Tools"); they are now one tab, **AI models**. The same for SERP: keys, A-Parser, XMLRiver and the default / Rank Tracker / fallback provider pickers are all on **SERP & scraping**. The provider-log body-capture switch moved next to the log it controls.
+- **Notifications holds only notifications** — Telegram, Slack, other channels, push, alert rules and recent alerts. Backups (#32) are now the **Settings → Backups** tab (owner-only, hidden for members without `manageSecrets`), uptime defaults are **Settings → Uptime**, automatic GSC sync is **Settings → Sync**, report branding moved to **Preferences**, and the MCP token, browser-extension token and audit widget are together under **Integrations**.
+- **The tab is kept in the URL** (`/settings?tab=…`), so a reload stays on it and it can be linked. Old ids still work: `api-keys` → AI models, `seo-tools` → SERP & scraping, `api` → Integrations. In-app links and hints that named the old tabs point at the new ones (the "set up AI" link on a site page went to a non-existent `/settings#ai`).
+- **Removed:** the Microsoft Clarity card on the indexing tab (text only, its button went nowhere — Clarity is configured per site), and the `NEXT_PUBLIC_EXPERIMENTAL_TEAM_UI` mock screens (Teams, Super Sites, sharing / "use AI" toggles that saved nothing). Real members live under Members.
+- **Fixed:** "Run alerts now" printed its result inside the Telegram card instead of next to the button.
+
 ### Changed — the per-site AEO model setting is labelled "ChatGPT model"
 
 - Its picker has always listed OpenAI models, and since the fix below it drives the ChatGPT engine only; the label used to say just "Model". Models for the other engines live in Settings → AI models.

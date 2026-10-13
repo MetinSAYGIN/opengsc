@@ -101,7 +101,7 @@ export default function SerpMonitorPage() {
         <div className="panel" style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <AlertTriangle size={15} color="var(--color-accent-orange)" />
           <span style={{ color: "var(--color-text-secondary)" }}>{tr("serpmonNoAparser")}</span>
-          <Link href="/settings?tab=api-keys" style={{ color: "var(--color-accent-blue)", textDecoration: "none" }}>
+          <Link href="/settings?tab=serp" style={{ color: "var(--color-accent-blue)", textDecoration: "none" }}>
             {tr("serpmonOpenSettings")} →
           </Link>
         </div>

@@ -30,7 +30,7 @@ web UI both read it for free.
 
 ## 1. Generate a token
 
-**Settings → API & MCP → Generate token.** The token (`ogsc_…`) grants read access to all
+**Settings → Integrations → Generate token.** The token (`ogsc_…`) grants read access to all
 your OpenGSC data — treat it like a password; you can rotate or revoke it on the same page.
 
 ## 2. Connect your client

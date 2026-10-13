@@ -8,7 +8,7 @@ costs all ten.
 
 ## Setup
 
-1. Connect A-Parser in **Settings → API Keys** (or `OPENGSC_APARSER_BASE_URL` /
+1. Connect A-Parser in **Settings → SERP & scraping** (or `OPENGSC_APARSER_BASE_URL` /
    `OPENGSC_APARSER_PASSWORD`). The instance needs `SE::Google::Position` and proxies that
    Google accepts. The **SERP Monitor** probe is a good way to check those proxies.
 2. Run the probe on the server, from the OpenGSC directory:
@@ -20,7 +20,7 @@ costs all ten.
    It prints the live preset's option ids, the raw answer for your site, a not-found control, the
    exact-domain variant and a full `SE::Google` scan for comparison. If an id reads
    `NOT in preset`, or the Position and SE::Google numbers differ, don't switch yet.
-3. **Settings → SEO Tools → Rank Tracker provider → A-Parser.**
+3. **Settings → SERP & scraping → Rank Tracker provider → A-Parser.**
 4. Optional: **Fallback provider** (e.g. ScrapingRobot). Only checks A-Parser could not answer
    go there.
 
