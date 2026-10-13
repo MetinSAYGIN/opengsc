@@ -5,6 +5,10 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Changed — the per-site AEO model setting is labelled "ChatGPT model"
+
+- Its picker has always listed OpenAI models, and since the fix below it drives the ChatGPT engine only; the label used to say just "Model". Models for the other engines live in Settings → AI models.
+
 ### Fixed — AEO Tracker sent the OpenAI model to Claude, Gemini, Perplexity and Grok
 
 - **Claude and Gemini checks failed on every question.** The site's AEO model fell back to `AEO_DEFAULT_MODEL` (an OpenAI id) and was copied into every engine's options; only a per-engine model in Settings replaced it. With the default empty Settings, Claude and Gemini answered `404 model: gpt-…` on every check and dropped out of share of voice, and Perplexity and Grok took the same path. The site model now applies to ChatGPT only; every other engine uses its model from Settings or its own default (`sonar`, `grok-4-fast`, the Claude and Gemini defaults).
@@ -14,6 +18,7 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 ### Fixed — MCP `get_optimization_brief` briefed the homepage for every URL
 
 - **Any page on the site matched the homepage.** URL matching accepted the stored URL being a substring of the requested one, and `https://host` is a substring of every URL on the host. The brief came back with the homepage's queries, cannibalization rivals and live content. Pages now match on the normalized path (host, query string, fragment, case and trailing slash ignored); a fragment such as `pricing` is a fallback used only when nothing matches exactly, and when it names several pages the tool lists them instead of guessing.
+- **Subdomain pages no longer fold into the main host's brief.** Matching ignored the host entirely, so on an sc-domain site `blog.example.com/pricing` and `example.com/pricing` answered as one page whenever the agent named a full URL. Hosts are now compared whenever both sides carry one (`www.` counts as the same); a bare path — the common `/pricing` argument — still matches any host, since it cannot discriminate.
 
 ## [1.10.0] — 2026-10-12
 

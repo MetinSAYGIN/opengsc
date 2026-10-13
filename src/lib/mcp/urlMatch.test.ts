@@ -37,3 +37,13 @@ test("fragment fallback is one-way and never lets the root swallow everything", 
   assert.equal(urlFragmentMatches("https://ex.com/arch-linux-vps", "/"), false);
   assert.equal(urlFragmentMatches("https://ex.com/arch", "https://ex.com/arch-linux-vps"), false);
 });
+
+test("subdomains are different pages once both sides name a host", () => {
+  assert.equal(urlMatches("https://blog.ex.com/pricing", "https://ex.com/pricing"), false);
+  assert.equal(urlMatches("https://ex.com/pricing", "https://blog.ex.com/pricing"), false);
+  assert.equal(urlMatches("https://www.ex.com/pricing", "https://ex.com/pricing"), true);
+  // a bare path cannot discriminate — it still matches any subdomain's row
+  assert.equal(urlMatches("/pricing", "https://ex.com/pricing"), true);
+  assert.equal(urlFragmentMatches("https://blog.ex.com/arch-linux-vps", "https://ex.com/arch"), false);
+  assert.equal(urlFragmentMatches("/arch-linux-vps", "https://ex.com/arch"), true);
+});
