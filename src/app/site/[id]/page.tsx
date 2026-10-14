@@ -239,7 +239,12 @@ function iso3ToName(code: string, locale?: string): string {
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
 // ─── Shared components ────────────────────────────────────────────────────────
-function Change({ pct, invert = false }: { pct: number; invert?: boolean }) {
+function Change({ pct, invert = false }: { pct: number | null; invert?: boolean }) {
+  const { t } = useLanguage();
+  // null = up from zero. That growth has no percentage; "+100%" read like a doubling.
+  if (pct === null) {
+    return <span style={{ fontSize: "11px", color: "#10B981", fontWeight: 500, marginLeft: "3px" }}>{t("chgNew")}</span>;
+  }
   const good = invert ? pct <= 0 : pct >= 0;
   const color = good ? "#10B981" : "#EF4444";
   const sign = pct >= 0 ? "+" : "";
@@ -340,11 +345,13 @@ const SortTh = ({ col, label, color, sortCol, sortDir, onSort }: { col: DtSortCo
 };
 
 
-function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }: {
+function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked, cut }: {
   title: string;
-  rows: { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number }[];
+  rows: { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null }[];
   blur?: boolean;
   csvFilename?: string;
+  /** Set when the API sent only the top rows: the table must not pass the cut off as the site. */
+  cut?: { shown: number; total: number };
   /** Rank tracker: adds a per-row "Track" button (queries table only) */
   onTrack?: (label: string) => void;
   tracked?: Set<string>;
@@ -379,7 +386,7 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
     exportCSV(
       csvFilename ?? `${title.toLowerCase().replace(/\s+/g, "-")}.csv`,
       ["Query/Page", "Clicks", "Impressions", "CTR%", "Position", "Clicks%Change", "Impr%Change"],
-      sorted.map(r => [r.label, r.clicks, r.impr, r.ctr, r.pos, r.cPct, r.iPct])
+      sorted.map(r => [r.label, r.clicks, r.impr, r.ctr, r.pos, r.cPct ?? "new", r.iPct ?? "new"])
     );
   };
 
@@ -388,12 +395,19 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
   // Totals row
   const totalClicks = rows.reduce((s, r) => s + r.clicks, 0);
   const totalImpr   = rows.reduce((s, r) => s + r.impr, 0);
-  const avgPos      = rows.length ? (rows.reduce((s, r) => s + r.pos, 0) / rows.length) : 0;
+  // Weighted by impressions, as Search Console does: a plain mean let a query seen once at 90
+  // weigh as much as the one carrying the site.
+  const avgPos      = totalImpr > 0 ? rows.reduce((s, r) => s + r.pos * r.impr, 0) / totalImpr : 0;
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{title}</h3>
+        {cut && cut.total > cut.shown && (
+          <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
+            {t("tblShownOfTotal").replace("{shown}", cut.shown.toLocaleString()).replace("{total}", cut.total.toLocaleString())}
+          </span>
+        )}
         <button onClick={handleCSV} title={t("exportCsv")}
           style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "12px", cursor: "pointer" }}>
           <Download size={12} /> {t("exportCsv")}
@@ -464,7 +478,7 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
   );
 }
 
-type CountryRow = { name: string; flag?: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number };
+type CountryRow = { name: string; flag?: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null };
 function CountryTable({ rows }: { rows: CountryRow[] }) {
   const { t, language } = useLanguage();
   const [page,     setPage]     = useState(1);
@@ -538,7 +552,7 @@ function CountryTable({ rows }: { rows: CountryRow[] }) {
   );
 }
 
-type DeviceRow = { name: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number; ctrPct: number; posDelta: number };
+type DeviceRow = { name: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null; ctrPct: number; posDelta: number };
 function DeviceTable({ rows }: { rows: DeviceRow[] }) {
   const { t } = useLanguage();
   const iconFor = (name: string) => {
@@ -4886,7 +4900,7 @@ function OptimizeTab({ siteDbId }: { siteDbId: string }) {
 }
 
 // ─── New Rankings Table ───────────────────────────────────────────────────────
-type RankRow = { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number };
+type RankRow = { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null };
 function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[]; pageRows: RankRow[]; blur: boolean }) {
   const { t } = useLanguage();
   const [tab, setTab] = useState<"Queries" | "Pages">("Queries");
@@ -4979,7 +4993,13 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
 // Top queries/pages by click growth/decline between the current and previous period,
 // with a contribution bar showing each row's share of the total change.
 type WlItem = { label: string; curr: number; prev: number; delta: number };
-type WlData = { queries: { winners: WlItem[]; losers: WlItem[] }; pages: { winners: WlItem[]; losers: WlItem[] } };
+type WlCoverage = { visibleClicks: number; source: "history" | "live"; complete: boolean };
+type WlData = {
+  queries: { winners: WlItem[]; losers: WlItem[] };
+  pages: { winners: WlItem[]; losers: WlItem[] };
+  // Absent from responses of an older server — the panel then simply says nothing about it.
+  coverage?: { totalClicks: number; queries: WlCoverage; pages: WlCoverage };
+};
 
 function WlList({ items, positive, blur, onTrack, tracked, emptyKey }: {
   items: WlItem[]; positive: boolean; blur: boolean;
@@ -5032,6 +5052,9 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
   const [dim, setDim] = useState<"queries" | "pages">("queries");
   const d = data?.[dim];
   const noneAtAll = !d?.winners?.length && !d?.losers?.length;
+  const cov = data?.coverage;
+  const covSide = cov?.[dim];
+  const covPct = cov && covSide && cov.totalClicks > 0 ? Math.round((covSide.visibleClicks / cov.totalClicks) * 100) : null;
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "14px", flexWrap: "wrap" }}>
@@ -5047,6 +5070,17 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
         {/* The rows carry no column headers; without this "3 → 8" reads as a ranking move. */}
         <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("wlHint")}</span>
       </div>
+      {/* How much of the traffic this panel can see at all. Search Console withholds anonymized
+          queries; on a small site the listed queries may carry a third of the clicks. */}
+      {cov && covSide && covPct !== null && (
+        <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "-6px 0 12px" }}>
+          {t(dim === "queries" ? "wlCoverageQueries" : "wlCoveragePages")
+            .replace("{visible}", covSide.visibleClicks.toLocaleString())
+            .replace("{total}", cov.totalClicks.toLocaleString())
+            .replace("{pct}", String(Math.min(100, covPct)))}
+          {!covSide.complete && <span style={{ color: "#F59E0B" }}> {t("wlIncomplete")}</span>}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
         <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px" }}>
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#10B981", marginBottom: "10px", letterSpacing: "0.04em", textTransform: "uppercase" }}>▲ {t("wlWinners")}</div>
@@ -5084,6 +5118,7 @@ interface SiteData {
   newPages: RankRow[];
   positionBuckets: { "1-3": number; "4-10": number; "11-20": number; "21+": number };
   winnersLosers: WlData;
+  totals?: { queries: number; pages: number };
   hasData: boolean;
 }
 
@@ -5994,8 +6029,10 @@ export default function SitePage({
         )}
         <div ref={resultsRef} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "32px", scrollMarginTop: "16px" }}>
           <DataTable title={t("queriesTable")} rows={queryRows} tabs={["All", "Growing", "Decaying"]} blur={blur} csvFilename="queries.csv"
-            onTrack={handleTrack} tracked={trackedKws} />
-          <DataTable title={t("pagesTable")}   rows={pageRows}  tabs={["All", "Growing", "Decaying"]} blur={blur} csvFilename="pages.csv" />
+            onTrack={handleTrack} tracked={trackedKws}
+            cut={siteData?.totals ? { shown: siteData.queries.length, total: siteData.totals.queries } : undefined} />
+          <DataTable title={t("pagesTable")}   rows={pageRows}  tabs={["All", "Growing", "Decaying"]} blur={blur} csvFilename="pages.csv"
+            cut={siteData?.totals ? { shown: siteData.pages.length, total: siteData.totals.pages } : undefined} />
         </div>
 
         {/* Winners & Losers (click delta vs previous period) */}

@@ -184,6 +184,10 @@ model Site {
   // Archived sites keep all their history but are hidden from the main dashboard.
   archivedAt       DateTime?
 
+  // Oldest day whose per-query rows (QueryDaily) are stored completely — the backfill cursor.
+  // Null until the first sync that writes query history. See src/lib/gsc/queryHistoryPlan.ts.
+  queryHistoryFrom DateTime?
+
   // Dashboard decluttering, as workspace properties rather than browser state. A hidden site
   // drops out of the site-wide opportunity reports (striking distance, cannibalization, decay)
   // the same way an archived one does — hiding is how you shelve a property you no longer work
@@ -221,6 +225,7 @@ model Site {
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   metrics               DailyMetric[]
   queryPageDaily        QueryPageDaily[]
+  queryDaily            QueryDaily[]
   contentGroups         ContentGroup[]
   topicClusters         TopicCluster[]
   pageInspections       PageInspection[]
@@ -661,6 +666,28 @@ model QueryPageDaily {
 
   @@index([siteId, date])
   @@index([siteId, query])
+}
+
+// Per-day clicks / impressions / position for every query Search Console reports (web), kept
+// for good. Unlike QueryPageDaily (a 28-day window replaced each sync) this ACCUMULATES: a sync
+// rewrites only its recent tail and backfills older days, so history outlives Google's own
+// ~16 months. One row per site × day × query — no page, which keeps it small and keeps
+// impressions exact (query+page rows count a query once per ranking page).
+// Feeds the dashboard's period comparison (tables, Winners & Losers, New Rankings).
+model QueryDaily {
+  id           String   @id @default(cuid())
+  siteId       String
+  date         DateTime // UTC midnight of the GSC day
+  query        String
+  clicks       Int
+  impressions  Int
+  // Σ position × impressions for the day. Summed over days and divided by summed impressions
+  // it is the period position Search Console itself shows — a plain average of days is not.
+  posWeighted  Float
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, date])
 }
 
 // ─── Rank Tracker (SERP position monitoring) ─────────────────────────────────
