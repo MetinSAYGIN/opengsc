@@ -4775,6 +4775,8 @@
   "repTemplate_local": "本地",
   "repSections": "章节",
   "repPeriod": "周期",
+  "repLang": "报告语言",
+  "repLangHint": "快照、PDF 和电子邮件以此语言渲染——与你的控制台语言无关。",
   "repRecipients": "收件人",
   "repSchedule": "计划",
   "repSchedule_off": "仅手动",

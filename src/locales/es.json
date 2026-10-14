@@ -4775,6 +4775,8 @@
   "repTemplate_local": "Local",
   "repSections": "Secciones",
   "repPeriod": "Periodo",
+  "repLang": "Idioma del informe",
+  "repLangHint": "La instantánea, el PDF y el correo se generan en este idioma, independientemente del idioma de tu panel.",
   "repRecipients": "Destinatarios",
   "repSchedule": "Programación",
   "repSchedule_off": "Solo manual",

@@ -4775,6 +4775,8 @@
   "repTemplate_local": "Lokal",
   "repSections": "Abschnitte",
   "repPeriod": "Zeitraum",
+  "repLang": "Sprache des Berichts",
+  "repLangHint": "Momentaufnahme, PDF und E-Mail erscheinen in dieser Sprache — unabhängig von der Sprache deines Dashboards.",
   "repRecipients": "Empfänger",
   "repSchedule": "Zeitplan",
   "repSchedule_off": "Nur manuell",

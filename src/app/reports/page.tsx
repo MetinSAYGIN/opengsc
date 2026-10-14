@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import ReportEditor, { type EditorDraft } from "@/components/reports/ReportEditor";
+import { REPORT_LANG_OPTIONS } from "@/lib/reports/i18n";
 import type { ReportRow } from "@/lib/reports/store";
 
 const btn: React.CSSProperties = {
@@ -193,6 +194,7 @@ export default function ReportsPage() {
                     <span>{r.siteDomain}</span>
                     <span>· {t(`repTemplate_${r.template}` as never) || r.template}</span>
                     <span>· {t("repPeriod")} {r.periodDays}d</span>
+                    <span title={t("repLang" as never) || "Language"}>· {REPORT_LANG_OPTIONS.find(o => o.value === r.lang)?.label ?? r.lang}</span>
                     <span aria-label={t("repSchedule")}>· {t(`repSchedule_${r.schedule}` as never) || r.schedule}{r.schedule !== "off" ? ` (d${r.sendDay})` : ""}</span>
                     {r.recipients.length > 0 && <span>· {r.recipients.length} @</span>}
                   </div>

@@ -2431,6 +2431,7 @@ model ClientReport {
   sendDay     Int       @default(1)            // weekday 1..7 or day of month 1..28
   recipients  String    @default("")           // comma-separated e-mails
   notes       String    @default("")           // operator's "what we did" text, markdown
+  lang        String    @default("en")           // issue #36 — report/PDF/e-mail language (ReportLang)
   shareToken  String?   @unique                  // client link /share/report/<token> (N8); null = link off
   lastSentAt  DateTime?
   nextSendAt  DateTime?

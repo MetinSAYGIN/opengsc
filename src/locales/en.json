@@ -4775,6 +4775,8 @@
   "repTemplate_local": "Local",
   "repSections": "Sections",
   "repPeriod": "Period",
+  "repLang": "Report language",
+  "repLangHint": "The snapshot, PDF and e-mail render in this language — independently of your dashboard language.",
   "repRecipients": "Recipients",
   "repSchedule": "Schedule",
   "repSchedule_off": "Manual only",

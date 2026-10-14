@@ -4775,6 +4775,8 @@
   "repTemplate_local": "Локальний",
   "repSections": "Розділи",
   "repPeriod": "Період",
+  "repLang": "Мова звіту",
+  "repLangHint": "Знімок, PDF і лист рендеряться цією мовою — незалежно від мови вашої панелі.",
   "repRecipients": "Отримувачі",
   "repSchedule": "Розклад",
   "repSchedule_off": "Лише вручну",

@@ -4775,6 +4775,8 @@
   "repTemplate_local": "Локальный",
   "repSections": "Разделы",
   "repPeriod": "Период",
+  "repLang": "Язык отчёта",
+  "repLangHint": "Снапшот, PDF и письмо рендерятся на этом языке — независимо от языка вашей панели.",
   "repRecipients": "Получатели",
   "repSchedule": "Расписание",
   "repSchedule_off": "Только вручную",

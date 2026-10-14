@@ -16,6 +16,7 @@ import { parseSections, parseTemplate, REPORT_TEMPLATES, type ReportSectionId, t
 import { nextSendAt, parseRecipients, validSendDay, type ReportSchedule } from "./schedule";
 import { collectReportData, reportWindow, type ReportData } from "./collect";
 import { buildSummary, renderReportHTML } from "./render";
+import { normalizeReportLang, REPORT_FMT_INT, REPORT_L, type ReportLang } from "./i18n";
 import { renderReportPdf } from "./pdf";
 import { buildReportEmail, isSmtpConfigured, sendReportEmail } from "./mail";
 
@@ -52,6 +53,8 @@ export interface ReportRow {
   sendDay: number;
   recipients: string[];
   notes: string;
+  /** Issue #36 — the language the snapshot, the PDF and the client e-mail render in. */
+  lang: ReportLang;
   shareToken: string | null;
   lastSentAt: string | null;
   nextSendAt: string | null;
@@ -77,6 +80,7 @@ function toRow(r: Row, runs: Row[] = []): ReportRow {
     sendDay: Number(r.sendDay) || 1,
     recipients: parseRecipients(r.recipients).to,
     notes: String(r.notes ?? ""),
+    lang: normalizeReportLang(r.lang),
     shareToken: r.shareToken ?? null,
     lastSentAt: r.lastSentAt ? new Date(r.lastSentAt).toISOString() : null,
     nextSendAt: r.nextSendAt ? new Date(r.nextSendAt).toISOString() : null,
@@ -133,11 +137,12 @@ export interface ReportInput {
   sendDay: number;
   recipients: string;
   notes: string;
+  lang?: unknown;
 }
 
 export type UpsertResult = { ok: true; report: ReportRow } | { ok: false; error: string };
 
-function validateInput(body: ReportInput): { error: string } | { value: Required<ReportInput>; schedule: ReportSchedule; template: ReportTemplateId; sections: ReportSectionId[] } {
+function validateInput(body: ReportInput): { error: string } | { value: Required<Omit<ReportInput, "lang">> & { lang: ReportLang }; schedule: ReportSchedule; template: ReportTemplateId; sections: ReportSectionId[] } {
   const title = String(body.title ?? "").trim().slice(0, 120);
   if (!title) return { error: "title_required" };
   const siteId = String(body.siteId ?? "").trim();
@@ -155,7 +160,7 @@ function validateInput(body: ReportInput): { error: string } | { value: Required
   if (schedule !== "off" && !to.length) return { error: "recipients_required" };
   const notes = String(body.notes ?? "").slice(0, 8000);
   return {
-    value: { siteId, title, template, sections, periodDays, schedule, sendDay: validSendDay(schedule, body.sendDay), recipients: to.join(", "), notes },
+    value: { siteId, title, template, sections, periodDays, schedule, sendDay: validSendDay(schedule, body.sendDay), recipients: to.join(", "), notes, lang: normalizeReportLang(body.lang) },
     schedule,
     template,
     sections,
@@ -179,6 +184,7 @@ export async function createReport(userId: string, body: ReportInput): Promise<U
       sendDay: v.value.sendDay,
       recipients: v.value.recipients,
       notes: v.value.notes,
+      lang: v.value.lang,
       nextSendAt: nextSendAt(v.schedule, v.value.sendDay) ?? null,
     },
   });
@@ -202,6 +208,7 @@ export async function updateReport(userId: string, id: string, body: ReportInput
       sendDay: v.value.sendDay,
       recipients: v.value.recipients,
       notes: v.value.notes,
+      lang: v.value.lang,
       // Rescheduled from now, not from the stored nextSendAt — an edit means the operator
       // just chose a new rhythm, and "weekly Friday" edited on a Saturday fires this Friday.
       nextSendAt: nextSendAt(v.schedule, v.value.sendDay) ?? null,
@@ -269,6 +276,7 @@ export async function renderPreview(userId: string, id: string): Promise<Rendere
   const html = renderReportHTML({
     title: String(r.title ?? ""), sections, data, branding,
     notes: String(r.notes ?? ""), generatedAt: new Date().toISOString(),
+    lang: normalizeReportLang(r.lang),
   });
   return { html, data };
 }
@@ -292,9 +300,13 @@ export async function createAndSendRun(userId: string, id: string, opts: { send:
   const w = reportWindow(Number(r.periodDays) || 30);
   const branding = await getBranding(userId);
   const data = await collectReportData(userId, String(r.siteId), w, sections);
+  // The client-facing artifacts speak the report's own language (issue #36); opts.lang stays
+  // what it always was — the language of the owner's receipt notification.
+  const reportLang = normalizeReportLang(r.lang);
   const html = renderReportHTML({
     title: String(r.title ?? ""), sections, data, branding,
     notes: String(r.notes ?? ""), generatedAt: new Date().toISOString(),
+    lang: reportLang,
   });
 
   const run: Row = await db.clientReportRun.create({
@@ -311,13 +323,14 @@ export async function createAndSendRun(userId: string, id: string, opts: { send:
     if (!to.length) {
       error = "no_recipients";
     } else {
-      const summary = buildSummary(data);
+      const L = REPORT_L[reportLang];
+      const summary = buildSummary(data, L, REPORT_FMT_INT[reportLang]);
       const clientUrl = r.shareToken ? `${instanceUrl()}/share/report/${r.shareToken}` : null;
       const mail = buildReportEmail(
         {
           title: String(r.title ?? ""), siteDomain: data.siteDomain,
           periodFrom: w.from.toISOString().slice(0, 10), periodTo: w.to.toISOString().slice(0, 10),
-          clientUrl,
+          clientUrl, lang: reportLang,
           branding: { companyName: branding.companyName, accentColor: branding.accentColor, footer: branding.footer },
         },
         [summary.direction, summary.win, summary.priority].filter((s): s is string => Boolean(s)),

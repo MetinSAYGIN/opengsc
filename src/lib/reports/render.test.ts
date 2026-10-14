@@ -5,6 +5,7 @@ import {
 } from "./render";
 import type { ReportData } from "./collect";
 import type { ReportSectionId } from "./sections";
+import { REPORT_FMT_INT, REPORT_L } from "./i18n";
 
 // ─── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -219,4 +220,54 @@ test("GSC sections state the Search Console dates they cover when they differ fr
 
 test("snapshots frozen before #27 (no search dates) render without the note", () => {
   assert.equal(searchDates(fixtureData()), "");
+});
+
+// ─── per-report language (issue #36) ──────────────────────────────────────────
+
+test("default render stays English: lang attribute, section titles, summary", () => {
+  const html = render();
+  assert.ok(html.includes('<html lang="en">'));
+  assert.ok(html.includes("Top queries"));
+  assert.ok(html.includes("vs prev:"));
+  assert.ok(html.includes("Generated 2026-09-25"));
+});
+
+test("a Dutch report renders Dutch titles, summary, steps and number formatting", () => {
+  const html = renderReportHTML({
+    title: "September report",
+    sections: SECTIONS_ALL,
+    data: fixtureData(),
+    notes: "",
+    generatedAt: "2026-09-25T09:00:00.000Z",
+    lang: "nl",
+  });
+  assert.ok(html.includes('<html lang="nl">'));
+  assert.ok(html.includes("Samenvatting"));
+  assert.ok(html.includes("Topzoekwoorden"));
+  assert.ok(html.includes("Klikken +18% t.o.v. de vorige periode (1.180 vs 1.000)."));
+  assert.ok(html.includes('Beste groei — “transfer halkidiki” (+240 klikken).'));
+  assert.ok(html.includes("6 pagina(’s) zijn in deze periode uit de Google-index gevallen."));
+  assert.ok(html.includes("vs vorige:"));
+  assert.ok(html.includes("Gegenereerd op 2026-09-25"));
+  // No English leaks in the Dutch sections.
+  assert.ok(!html.includes("Top queries"));
+  assert.ok(!html.includes("vs prev:"));
+});
+
+test("every language renders its own section titles without falling back to English", () => {
+  for (const lang of ["ru", "uk", "fr", "es", "de", "zh"] as const) {
+    const html = renderReportHTML({
+      title: "T", sections: ["queries"], data: fixtureData(), notes: "", generatedAt: "2026-09-25T09:00:00.000Z", lang,
+    });
+    assert.ok(!html.includes("Top queries"), `${lang} must not leak the English title`);
+    assert.ok(!html.includes("Clicks"), `${lang} must not leak the English KPI label`);
+  }
+});
+
+test("buildSummary in Russian composes the translated sentence", () => {
+  const s = buildSummary(fixtureData(), REPORT_L.ru, REPORT_FMT_INT.ru);
+  assert.ok(s.direction, "direction must be set for the fixture");
+  const nbsp = (x: string) => x.replace(/\u00a0/g, " ");
+  assert.equal(nbsp(s.direction), "Клики +18% к предыдущему периоду (1 180 против 1 000).");
+  assert.equal(s.win, "Лучший рост — «transfer halkidiki» (+240 кликов).");
 });

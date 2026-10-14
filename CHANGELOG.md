@@ -5,6 +5,12 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Added — Dutch language and per-report languages for client reports (#36)
+
+- **Dutch (nl) is the eighth interface language** — the full UI dictionary (login screen and dashboard switchers included), the audit share-markdown links, and the lead-widget contour (findings texts, report e-mail, first letter, proposal skeleton) all speak Dutch. Alerts and digests pick it up automatically: they always rendered in the language the UI saved into the notification settings.
+- **Every client report now has its own language**, chosen per report in the editor (Language dropdown, defaulting to the operator's dashboard language) — independently of the dashboard. The frozen snapshot, the PDF, the client e-mail (summary lines, "Open the report" button, period line) and the public `/share/report/` link all render in it, with per-language number formatting (1,180 en · 1.180 nl · 1 180 ru). The language shows on the report card, and `list_reports` (MCP) carries a `lang` field. Existing reports stay English — the column defaults to `en` (deploy needs `prisma db push`).
+- **The report renderer's strings moved into a server-side dictionary** (`lib/reports/i18n.ts`, one block per language — the notifyI18n pattern; the snapshot never depended on browser locale files and still doesn't). The deterministic summary and next-steps sentences are template functions per language, unit-tested for Dutch and Russian; a parity test walks all languages so no section title can ever render as `undefined`.
+
 ### Fixed — Key Pages could not be removed from Site Context (Project Memory)
 
 - **Remove silently deleted nothing.** The card shows each key page in its stored form ("site.com/pricing") and sends that exact text back on Remove, but normalization prefixed the site host again, so the delete looked for "site.com/site.com/pricing" — a row that doesn't exist — and still reported success. `normalizeKeyPageUrl` is now idempotent (the stored form re-normalizes to itself, for the site's host and for foreign-host pages alike), the homepage is matched in both stored spellings ("site.com" and "site.com/"), and a remove that matches nothing is reported as skipped instead of silently applied. Fixes #35.
