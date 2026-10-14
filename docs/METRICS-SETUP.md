@@ -27,7 +27,7 @@ is for what should not need a human.
 
 ### Importing a file
 
-**SEO Tools → Import metrics.** Drop the export in, pick the market it belongs to, press
+**Settings → SEO Metrics → Import metrics.** Drop the export in, pick the market it belongs to, press
 Import. The report type is detected from the column headers — you do not say what it is.
 
 Recognised exports:
@@ -112,7 +112,7 @@ costs nothing by itself; it can only fire after a profile refresh.
 
 ### Competitors — the keyword gap
 
-**Competitors** in the main menu. Find competitors, pull one's keywords, and the result is
+**SEO Tools → Competitors.** Find competitors, pull one's keywords, and the result is
 crossed with your Search Console data into three verdicts:
 
 | Verdict | Meaning | What to do |

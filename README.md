@@ -77,7 +77,9 @@ On top of that dashboard, OpenGSC ships two things most GSC tools don't: a full 
 **Signing in:** identity and data are separate. You sign in with an email and a password —
 create the first account from the server console with `npm run create-owner -- --email you@example.com`
 — while Google OAuth stays what it should be: the grant that pulls Search Console and Analytics
-data in. The owner can also keep signing in with Google — after setting a password both work — while a
+data in. While the owner has no password, signing in with Google works too — once a password is
+set, Google stops being a login method (`OPENGSC_ALLOW_GOOGLE_LOGIN=true` reopens it after a lost
+password) — and a
 Google account that is not the owner's is refused rather than quietly attached. Lost the password? `npm run set-password -- --email you@example.com`
 from the server.
 
@@ -319,8 +321,6 @@ The drops funnel ends at *acquired*; this tab is what happens next — from a fr
 - **IndexNow, honestly scoped** to Bing/Yandex, pushed in 10,000-URL batches.
 - **Donor accelerator:** doorways from the indexer network enqueue **donor** URLs only. A doorway qualifies by confirmed Google crawl — at least 1,000 hits over 30 days, recomputed from live stats on every run, never a stored list.
 - **Measure by uploading the access log:** paste the nginx log of the asset host and the parser counts Googlebot hits (total, 7-day window, last seen) onto the asset — garbage lines are skipped, never an error.
-
-Runbook with the nginx ordering trap, doorway numbers and the footprint rule: [docs/DROPS-ACTIVATION.md](docs/DROPS-ACTIVATION.md). Requires `npx prisma db push` on deploy (the `Drop*` activation tables).
 
 <br/>
 
