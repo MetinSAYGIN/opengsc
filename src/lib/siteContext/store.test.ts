@@ -50,6 +50,12 @@ test("pure: normalizeKeyPageUrl folds /path and absolute URL onto one identity",
   assert.equal(normalizeKeyPageUrl("https://example.com/pricing?x=1", ""), "example.com/pricing?x=1");
   assert.equal(normalizeKeyPageUrl("not a url at all", "example.com"), "example.com/not a url at all");
   assert.equal(normalizeKeyPageUrl("", "example.com"), "");
+  // Idempotent — the stored form must re-normalize to itself, because Remove sends the row
+  // back exactly as the card shows it (#35: a second host prefix matched no row).
+  assert.equal(normalizeKeyPageUrl("example.com/pricing", "example.com"), "example.com/pricing");
+  assert.equal(normalizeKeyPageUrl("example.com/pricing?x=1", "example.com"), "example.com/pricing?x=1");
+  assert.equal(normalizeKeyPageUrl("other.com/page", "example.com"), "other.com/page"); // foreign host kept, not re-prefixed
+  assert.equal(normalizeKeyPageUrl("example.com/", "example.com"), "example.com");
 });
 
 test("get: empty context names its missing sections", async () => {
@@ -146,6 +152,28 @@ test("apply: key pages upsert by url, /path and absolute meet on one row", async
 
   r = await applyContextUpdates("s1", [{ removeKeyPages: ["/money"] }], "user");
   assert.equal((await getSiteContext("s1")).keyPages.length, 0);
+
+  // The round-trip the card actually does (#35): add "/rt", the table shows the stored
+  // "example.com/rt", Remove sends that stored form back — it must delete the row.
+  await applyContextUpdates("s1", [{ addKeyPages: [{ url: "/rt", role: "other" }] }], "user");
+  const stored = (await getSiteContext("s1")).keyPages.find(p => p.url.endsWith("/rt"))!;
+  assert.equal(stored.url, "example.com/rt");
+  r = await applyContextUpdates("s1", [{ removeKeyPages: [stored.url] }], "user");
+  assert.equal(r.applied, 1);
+  assert.equal((await getSiteContext("s1")).keyPages.length, 0);
+
+  // A homepage added as "/" was stored "example.com/" — removing it as shown still works
+  // (the trailing slash is normalized away, both spellings are matched).
+  await applyContextUpdates("s1", [{ addKeyPages: [{ url: "/", role: "hub" }] }], "user");
+  r = await applyContextUpdates("s1", [{ removeKeyPages: ["example.com/"] }], "user");
+  assert.equal(r.applied, 1);
+  assert.equal((await getSiteContext("s1")).keyPages.length, 0);
+
+  // A remove matching nothing is reported as skipped, not silently "applied".
+  r = await applyContextUpdates("s1", [{ removeKeyPages: ["/nope"] }], "user");
+  assert.equal(r.applied, 0);
+  assert.equal(r.skipped.length, 1);
+  assert.match(r.skipped[0], /no key page matched/);
 });
 
 test("apply: research log appends with a server date, prunes past 90 days, batch skips nothing on one bad op", async () => {

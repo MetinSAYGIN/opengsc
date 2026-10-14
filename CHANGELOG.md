@@ -5,6 +5,10 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Fixed — Key Pages could not be removed from Site Context (Project Memory)
+
+- **Remove silently deleted nothing.** The card shows each key page in its stored form ("site.com/pricing") and sends that exact text back on Remove, but normalization prefixed the site host again, so the delete looked for "site.com/site.com/pricing" — a row that doesn't exist — and still reported success. `normalizeKeyPageUrl` is now idempotent (the stored form re-normalizes to itself, for the site's host and for foreign-host pages alike), the homepage is matched in both stored spellings ("site.com" and "site.com/"), and a remove that matches nothing is reported as skipped instead of silently applied. Fixes #35.
+
 ### Changed — Settings regrouped: one tab per job, nothing piled under Notifications
 
 - **The sidebar is grouped** into Data sources (Google, Bing, Yandex) · Providers (AI models, SERP & scraping, SEO metrics, Indexing, AEO & site health, Provider log) · Alerts & integrations (Notifications, Integrations) · Instance (Members, Preferences, Sync, Uptime, Backups).
