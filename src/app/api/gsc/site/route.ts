@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
-import { resolveWindow } from '@/lib/periodWindow';
+import { resolveWindow, windowDays, utcDay, shiftYmd } from '@/lib/periodWindow';
 
 function pct(curr: number, prev: number) {
   if (prev === 0) return curr > 0 ? 100 : 0;
@@ -81,22 +81,16 @@ export async function GET(req: Request) {
   // carries as ?start=&end= when it was left on a manually-picked window.
   // GSC 'final' data lags ~2 days
   const window = resolveWindow(period, searchParams.get('start'), searchParams.get('end'));
-  const { start: startDate, end: endDate, days } = window;
+  const { days } = window;
 
-  const prevEnd = new Date(startDate);
-  prevEnd.setDate(startDate.getDate() - 1);
-  prevEnd.setHours(23, 59, 59, 999);
-
-  const prevStart = new Date(prevEnd);
-  prevStart.setDate(prevEnd.getDate() - days + 1);
-  prevStart.setHours(0, 0, 0, 0);
-
-  // A custom window brings its own exact calendar strings; presets keep the historic
-  // derivation from the window instants.
-  const startStr    = window.startStr ?? startDate.toISOString().split('T')[0];
-  const endStr      = window.endStr   ?? endDate.toISOString().split('T')[0];
-  const prevStartStr = prevStart.toISOString().split('T')[0];
-  const prevEndStr   = prevEnd.toISOString().split('T')[0];
+  // Both periods as calendar days: the previous one has the same length and ends the day
+  // before the current one starts. These used to come from toISOString() on local-midnight
+  // instants, which on a server east of UTC read every start as the day before — "7 days"
+  // asked Google for 8, and the two periods shared a day (a query clicked only on that day
+  // counted on both sides, so a real 1 → 0 loss showed as no change). See windowDays().
+  const { curr: currDays, prev: prevDays } = windowDays(window);
+  const { startStr, endStr } = currDays;
+  const { startStr: prevStartStr, endStr: prevEndStr } = prevDays;
 
   // Get user's Google accounts
   const accounts = await prisma.account.findMany({
@@ -107,11 +101,14 @@ export async function GET(req: Request) {
   // ── Chart data from DB ────────────────────────────────────────────────────────
   const [currRows, prevRows] = await Promise.all([
     prisma.dailyMetric.findMany({
-      where: { siteId: site.id, date: { gte: startDate, lte: endDate }, url: '', query: '', searchType: 'web' },
+      where: { siteId: site.id, date: { gte: utcDay(startStr), lte: utcDay(endStr) }, url: '', query: '', searchType: 'web' },
       orderBy: { date: 'asc' },
     }),
+    // The previous period ONLY. summary.change compares its totals with the current ones; this
+    // used to run on to the current period's end, so 7 days were compared with 14 and every
+    // KPI % on the dashboard was skewed toward a drop.
     prisma.dailyMetric.findMany({
-      where: { siteId: site.id, date: { gte: prevStart, lte: endDate }, url: '', query: '', searchType: 'web' },
+      where: { siteId: site.id, date: { gte: utcDay(prevStartStr), lte: utcDay(prevEndStr) }, url: '', query: '', searchType: 'web' },
     }),
   ]);
 
@@ -119,11 +116,11 @@ export async function GET(req: Request) {
   for (const r of prevRows) prevMap.set(r.date.toISOString().split('T')[0], r);
 
   const chartData = currRows.map((r) => {
-    const compDate = new Date(r.date);
-    compDate.setDate(compDate.getDate() - days);
-    const comp = prevMap.get(compDate.toISOString().split('T')[0]);
+    const comp = prevMap.get(shiftYmd(r.date.toISOString().split('T')[0], -days));
     return {
-      date:         new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      // DailyMetric dates are UTC midnights — label them in UTC, or west of UTC every day
+      // reads as the one before.
+      date:         new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
       dateIso:      new Date(r.date).toISOString().split('T')[0],
       clicks:       r.clicks,
       impressions:  r.impressions,

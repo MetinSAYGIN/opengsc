@@ -141,3 +141,42 @@ export function previousWindow(w: GscWindow, comparison: string, matchWd: boolea
 export function comparisonShift(current: GscWindow, prev: GscWindow): number {
   return Math.round((dayAnchor(current.start) - dayAnchor(prev.start)) / DAY_MS);
 }
+
+// ── Calendar-day strings ─────────────────────────────────────────────────────────────────
+// resolveWindow builds preset instants at LOCAL midnight / end-of-day. Reading one back with
+// toISOString() gives its UTC date — east of UTC a local midnight is still the previous day
+// (Athens: 00:00 local = 21:00Z the day before), west of UTC an end-of-day is already the next.
+// /api/gsc/site did exactly that: its "7 days" asked Google for 8 and the previous period shared
+// a day with the current one. Strings come from localYmd; anything compared against
+// DailyMetric.date (stored at UTC midnight of the GSC day) is built from them with utcDay.
+
+/** "YYYY-MM-DD" of an instant in the server's local calendar — the one resolveWindow uses. */
+export function localYmd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** UTC midnight of a calendar day — the instant DailyMetric stores that GSC day at. */
+export function utcDay(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+/** A calendar day moved by whole days. Pure UTC math, so no DST hour can slip it a day. */
+export function shiftYmd(ymd: string, deltaDays: number): string {
+  return new Date(utcDay(ymd).getTime() + deltaDays * DAY_MS).toISOString().slice(0, 10);
+}
+
+export interface DayRange { startStr: string; endStr: string }
+
+/**
+ * The window as calendar strings, plus the "previous period": the same number of days, ending
+ * the day before the window starts. Never overlaps the window, never leaves a gap.
+ */
+export function windowDays(w: GscWindow): { curr: DayRange; prev: DayRange } {
+  const startStr = w.startStr ?? localYmd(w.start);
+  const endStr = w.endStr ?? localYmd(w.end);
+  return {
+    curr: { startStr, endStr },
+    prev: { startStr: shiftYmd(startStr, -w.days), endStr: shiftYmd(startStr, -1) },
+  };
+}

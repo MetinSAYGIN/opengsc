@@ -4981,15 +4981,18 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
 type WlItem = { label: string; curr: number; prev: number; delta: number };
 type WlData = { queries: { winners: WlItem[]; losers: WlItem[] }; pages: { winners: WlItem[]; losers: WlItem[] } };
 
-function WlList({ items, positive, blur, onTrack, tracked }: {
+function WlList({ items, positive, blur, onTrack, tracked, emptyKey }: {
   items: WlItem[]; positive: boolean; blur: boolean;
   onTrack?: (label: string) => void; tracked?: Set<string>;
+  // An empty side is only "not enough data" when BOTH sides are empty; one empty side next to
+  // a full one means "nothing moved this way", and saying "not enough data" there misleads.
+  emptyKey: "wlNoData" | "wlNoWinners" | "wlNoLosers";
 }) {
   const { t } = useLanguage();
   const maxAbs = Math.max(1, ...items.map(x => Math.abs(x.delta)));
   const color = positive ? "#10B981" : "#EF4444";
   if (!items.length) {
-    return <div style={{ padding: "24px", fontSize: "12px", color: "var(--color-text-secondary)", textAlign: "center" }}>{t("wlNoData")}</div>;
+    return <div style={{ padding: "24px", fontSize: "12px", color: "var(--color-text-secondary)", textAlign: "center" }}>{t(emptyKey)}</div>;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -5028,9 +5031,10 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
   const { t } = useLanguage();
   const [dim, setDim] = useState<"queries" | "pages">("queries");
   const d = data?.[dim];
+  const noneAtAll = !d?.winners?.length && !d?.losers?.length;
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "14px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "14px", flexWrap: "wrap" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("wlTitle")}</h3>
         <div style={{ display: "flex", gap: "4px" }}>
           {(["queries", "pages"] as const).map(k => (
@@ -5040,15 +5044,17 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
             </button>
           ))}
         </div>
+        {/* The rows carry no column headers; without this "3 → 8" reads as a ranking move. */}
+        <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("wlHint")}</span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
         <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px" }}>
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#10B981", marginBottom: "10px", letterSpacing: "0.04em", textTransform: "uppercase" }}>▲ {t("wlWinners")}</div>
-          <WlList items={d?.winners ?? []} positive blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} />
+          <WlList items={d?.winners ?? []} positive blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} emptyKey={noneAtAll ? "wlNoData" : "wlNoWinners"} />
         </div>
         <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px" }}>
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#EF4444", marginBottom: "10px", letterSpacing: "0.04em", textTransform: "uppercase" }}>▼ {t("wlLosers")}</div>
-          <WlList items={d?.losers ?? []} positive={false} blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} />
+          <WlList items={d?.losers ?? []} positive={false} blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} emptyKey={noneAtAll ? "wlNoData" : "wlNoLosers"} />
         </div>
       </div>
     </div>
