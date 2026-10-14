@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/fenjo26/opengsc/main/install.sh | s
 
 ## 🌍 Supported languages
 
-OpenGSC's interface is available in **seven languages** — pick one from the language switcher on the login screen or in **Settings → Preferences**:
+OpenGSC's interface is available in **eight languages** — pick one from the language switcher on the login screen or in **Settings → Preferences**:
 
 | Code | Language | Native name |
 |------|----------|-------------|
@@ -49,6 +49,7 @@ OpenGSC's interface is available in **seven languages** — pick one from the la
 | `es` | Spanish | Español 🇪🇸 |
 | `de` | German | Deutsch 🇩🇪 |
 | `zh` | Simplified Chinese | 简体中文 🇨🇳 |
+| `nl` | Dutch | Nederlands 🇳🇱 |
 
 Telegram/Slack alerts and digests are sent in the same language you pick. SEO and Search Console terms that have no native equivalent (CTR, SEO, GSC, sitemap, canonical…) stay in English, the way practitioners use them.
 

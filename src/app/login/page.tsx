@@ -151,6 +151,25 @@ const content = {
     errUnavailable: "暂时无法登录：数据库没有响应。请稍后再试。",
     bullets: ["Google 用于连接 Search Console 和 Analytics 数据", "可连接多个 Google 账号", "Self-hosted 在你的 VPS 上"],
   },
+  nl: {
+    tagline: "Jouw persoonlijke",
+    highlight: "Search Console",
+    tagline2: "commandocentrum",
+    sub: "Alle Google-accounts, alle websites — één overzichtelijk dashboard. Zonder limieten, zonder ruis, zonder abonnement.",
+    features: [
+      { title: "Alle accounts op één plek", desc: "Verbind meerdere Google-accounts en bekijk al je GSC-properties op één dashboard." },
+      { title: "Verkeer in één oogopslag", desc: "Sparkline-grafieken voor elke website. Zie direct winnaars, dalingen en trends." },
+      { title: "Jouw data, jouw server", desc: "Self-hosted. Je Search Console-data verlaat nooit je eigen VPS." },
+    ],
+    getStarted: "Aan de slag",
+    signInSub: "Log in met je Google-account. Het eerste account wordt de eigenaar van dit dashboard.",
+    signIn: "Inloggen met Google",
+    signInSubOwner: "Log in met je e-mailadres en wachtwoord. Google blijft verbonden voor Search Console- en Analytics-data.",
+    signInSubBoth: "Log in met het Google-account van de eigenaar. Teamleden loggen in met een wachtwoord.",
+    errBootstrapEmail: "Dit Google-account kan deze instantie niet instellen — het staat niet in OPENGSC_OWNER_EMAIL.",
+    errUnavailable: "Inloggen is tijdelijk niet beschikbaar: de database antwoordde niet. Probeer het zo opnieuw.",
+    bullets: ["Google verbindt je Search Console- en Analytics-data", "Verbind meerdere Google-accounts", "Self-hosted op je eigen VPS"],
+  },
 };
 
 const featureIcons = [
@@ -210,7 +229,7 @@ export default function LoginPage() {
           border: "1px solid var(--color-border)",
           borderRadius: "8px", overflow: "hidden",
         }}>
-          {(["en", "ru", "uk", "fr", "es", "de", "zh"] as const).map(lang => (
+          {(["en", "ru", "uk", "fr", "es", "de", "zh", "nl"] as const).map(lang => (
             <button
               key={lang}
               onClick={() => setLanguage(lang)}

@@ -8,8 +8,9 @@ import fr from "@/locales/fr.json";
 import es from "@/locales/es.json";
 import de from "@/locales/de.json";
 import zh from "@/locales/zh.json";
+import nl from "@/locales/nl.json";
 
-type Language = "en" | "ru" | "uk" | "fr" | "es" | "de" | "zh";
+type Language = "en" | "ru" | "uk" | "fr" | "es" | "de" | "zh" | "nl";
 type Dictionary = typeof en;
 
 interface LanguageContextType {
@@ -20,10 +21,10 @@ interface LanguageContextType {
 
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
-const dictionaries: Record<Language, Dictionary> = { en, ru, uk, fr, es, de, zh };
+const dictionaries: Record<Language, Dictionary> = { en, ru, uk, fr, es, de, zh, nl };
 
 // Languages we accept from localStorage, in priority order.
-const KNOWN_LANGS: Language[] = ["en", "ru", "uk", "fr", "es", "de", "zh"];
+const KNOWN_LANGS: Language[] = ["en", "ru", "uk", "fr", "es", "de", "zh", "nl"];
 
 export const LanguageProvider = ({ children }: { children: ReactNode }) => {
   const [language, setLanguageState] = useState<Language>("en");
@@ -44,6 +45,7 @@ export const LanguageProvider = ({ children }: { children: ReactNode }) => {
         : primary === "fr" ? "fr"
         : primary === "es" ? "es"
         : primary === "de" ? "de"
+        : primary === "nl" ? "nl"
         : "en";
       setLanguageState(browserLang);
     }

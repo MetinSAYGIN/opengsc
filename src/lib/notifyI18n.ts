@@ -1,14 +1,15 @@
 // Server-side i18n for Telegram/Slack notifications (alerts + digests). The browser's
 // LanguageProvider can't help here — schedulers run headless — so the UI saves the
 // user's current language into alertSettings/digestSettings and the templates below
-// render in that language. Same locales as the app: en / ru / uk / fr / es / de / zh.
+// render in that language. Same locales as the app: en / ru / uk / fr / es / de / zh / nl
+// (nl joined with the per-report language work, issue #36).
 
 import type { UptimeCause } from "@/lib/uptime/types";
 
-export type NotifyLang = "en" | "ru" | "uk" | "fr" | "es" | "de" | "zh";
+export type NotifyLang = "en" | "ru" | "uk" | "fr" | "es" | "de" | "zh" | "nl";
 
 export const normalizeLang = (v: unknown): NotifyLang =>
-  v === "ru" || v === "uk" || v === "fr" || v === "es" || v === "de" || v === "zh" ? v : "en";
+  v === "ru" || v === "uk" || v === "fr" || v === "es" || v === "de" || v === "zh" || v === "nl" ? v : "en";
 
 type Tpl = {
   // alerts
@@ -139,6 +140,7 @@ const DUR_UNITS: Record<NotifyLang, { d: string; h: string; min: string; s: stri
   es: { d: "d",   h: "h",   min: "min", s: "s" },
   de: { d: "d",   h: "h",   min: "min", s: "s" },
   zh: { d: "天",  h: "小时", min: "分钟", s: "秒" },
+  nl: { d: "d",   h: "u",   min: "min", s: "s" },
 };
 
 export function formatDuration(ms: number, lang: NotifyLang): string {
@@ -970,5 +972,121 @@ export const NOTIFY_L: Record<NotifyLang, Tpl> = {
     backupFailedMsg: (when, error) => `OpenGSC 计划备份于 ${when} UTC 失败。\n\n错误：${error}\n\n下一次尝试按备份计划进行；在 Settings \u2192 Backups 里点「Back up now」可立即重试。`,
     backupUploadFailedTitle: "\u{1F4BE} 备份已保存 — 上传失败",
     backupUploadFailedMsg: (when, file, error) => `OpenGSC 于 ${when} UTC 保存了本地备份（${file}），但 SFTP 上传失败。\n\n错误：${error}\n\n备份在本服务器的 backups/ 目录中；修正 SFTP 设置后点「Back up now」重试。`,
+  },
+  nl: {
+    rankDropTitle: kw => `📉 Positiedaling: ${kw}`,
+    rankDropMsg: (site, kw, country, drop, from, to) => `*${site}* — "${kw}" (${country}) zakte ${drop} posities: ${from} → ${to}.`,
+    trafficDropTitle: site => `🔻 Verkeersdaling: ${site}`,
+    trafficDropMsg: (site, pct, from, to) => `*${site}* — klikken ${pct}% lager week-over-week: ${from} → ${to}.`,
+    sslTitle: site => `🔒 SSL verloopt binnenkort: ${site}`,
+    sslMsg: (site, days) => `*${site}* — het SSL-certificaat verloopt over ${days} dag(en). Vernieuw het (certbot renew / controleer de auto-vernieuwing).`,
+    lostLinkTitle: site => `🔗 Verloren backlinks: ${site}`,
+    lostLinkMsg: (site, count, domains, minDr) => `*${site}* — ${count} verwijzend domein(en) met DR ≥ ${minDr} verdwenen: ${domains}.`,
+    auditTitle: site => `🩺 Lage auditscore: ${site}`,
+    auditMsg: (site, score, bad, total) => `*${site}* — de gezondheidsscore van de site-audit is ${score}/100 (${bad}/${total} pagina's met problemen). Bekijk het tabblad Audit.`,
+    digestTitleAll: "📊 OpenGSC-samenvatting — alle websites",
+    digestTitleTag: tag => `📊 OpenGSC-samenvatting — tag "${tag}"`,
+    digestWindow: (days, date) => `_Laatste ${days} dagen vs voorgaande ${days} dagen · ${date}_`,
+    digestRange: (from, to) => `_Periode: ${from} — ${to}_`,
+    digestPrevRange: (from, to) => `_vs ${from} — ${to}_`,
+    digestMore: n => `…en ${n} meer`,
+    digestNoSitesTag: tag => `Geen websites met de tag "${tag}".`,
+    digestNoSites: "Nog geen websites verbonden.",
+    totalClicks: (cur, delta) => `*Totaal aantal klikken:* ${cur} (${delta} vs vorige)`,
+    moreSites: n => `…en ${n} websites meer`,
+    winners: "*🏆 Gestegen zoekwoorden:*",
+    losers: "*⚠️ Gedaalde zoekwoorden:*",
+    rankMoves: "*📍 Positiewijzigingen:*",
+    aiSummary: "🤖 *AI-samenvatting:*",
+    unitClicks: "klikken",
+    unitImpr: "vertoningen",
+    allTime: "sinds het begin",
+    portfolio: (n, up, down) => `*Portfolio:* ${n} websites · 🟢 ${up} omhoog · 🔴 ${down} omlaag`,
+    clicksLine: (cur, delta, impr, imprDelta) => `*Klikken:* ${cur} (${delta}) · *Vertoningen:* ${impr} (${imprDelta})`,
+    topGainers: "*📈 Grootste stijgers (websites):*",
+    topLosers: "*📉 Grootste dalers (websites):*",
+    strikingHdr: n => `*🎯 Bijna bovenaan (pos. 4–20): ${n} zoekwoorden*`,
+    strikingRow: (kw, site, pos, impr) => `  ${kw} — ${site} · pos. ${pos} · ${impr} vertoningen`,
+    attentionHdr: "*🚨 Aandacht vereist:*",
+    attentionDrop: (site, pct) => `  ${site} — verkeer ${pct}% gedaald`,
+    engineHdr: name => `*🔎 ${name} (live):*`,
+    engineTotals: (clicks, impr) => `  ${clicks} klikken · ${impr} vertoningen`,
+    engineTopSite: (name, clicks, impr) => `  ${name} — ${clicks} klikken · ${impr} vert.`,
+    dglSectionTitle: "*🔗 Links:*",
+    dglNew: "nieuwe links",
+    dglLost: "verloren links",
+    dglNet: "netto verandering",
+    dglFavoriteLost: links => `  ⭐ Favoriete links verloren: ${links}`,
+    dglFavoriteDowngraded: links => `  ⭐ Favoriete links gedegradeerd naar nofollow: ${links}`,
+    dglRelDowngrade: n => `  ${n} links werden nofollow / sponsored / ugc`,
+    dglTopLossDomains: list => `  Meeste verliezen per verwijzend domein: ${list}`,
+    dglAnomaly: "  🚨 Ongebruikelijk linkverlies",
+    dglAnomalyHint: (n, x) => `  ${n} links verloren — ${x}× het gebruikelijke tempo voor deze periode.`,
+    dglBaselineBuilding: "  Nog niet genoeg historie om linkverliezen te beoordelen — baseline wordt opgebouwd.",
+    dglNoFullExport: "  Nog geen volledige backlink-export, dus verliezen worden niet gerapporteerd.",
+    dglNoChange: "  Geen linkwijzigingen in deze periode.",
+    dglWhatLost: "de link is verdwenen",
+    dglWhatDowngraded: "gedegradeerd naar nofollow / sponsored / ugc",
+    dglWhatTargetChanged: "wijst nu ergens anders naartoe",
+    dglWhatAnchorChanged: "de ankertekst is vervangen",
+    alertPurchasedTitle: site => `💸 Gekochte links gewijzigd: ${site}`,
+    alertPurchasedBody: (n, lines) => `${n} gekochte plaatsing(en) gewijzigd:\n${lines}`,
+    alertBacklinkLossTitle: site => `🔗 Ongebruikelijk backlinkverlies op ${site}`,
+    alertBacklinkLossBody: (n, x) => `${n} backlinks verloren sinds de laatste controle — ${x}× het gebruikelijke tempo.`,
+    alertFavoriteLinkTitle: site => `⭐ Een favoriete link is gewijzigd op ${site}`,
+    alertFavoriteLinkBody: (url, what) => `${url} — ${what}`,
+    balanceLowTitle: provider => `💸 Laag saldo: ${provider}`,
+    balanceLowMsg: (provider, left, pct) => pct != null ? `*${provider}*: ${left} resterend (${pct}% van de limiet).` : `*${provider}*: ${left} resterend.`,
+    providerDownTitle: provider => `🚨 Provider storing: ${provider}`,
+    providerDownMsg: (provider, n) => `*${provider}* faalde ${n}× in het afgelopen uur.`,
+    dropsWatchTitle: (n) => `\u{1F3AF} Gevolgd${n > 1 ? "e domeinen" : " domein"} vrijgekomen (${n}):`,
+    dropsWatchRow: (d, dr, refs) => `\u{1F7E2} ${d} \u2014 DR ${dr}, verwijzende domeinen ${refs}`,
+    serpmonStormTitle: p => `\u{1F32A} SERP-storm: ${p}`,
+    serpmonStormScore: (score, share) => `Stormscore ${score} \u00B7 ${share} van de zoekwoorden boven hun gebruikelijke schommeling`,
+    serpmonStormKeywords: list => `Zwaarst getroffen zoekwoorden: ${list}`,
+    serpmonStormHosts: list => `Meeste nieuwkomers en uitvallers: ${list}`,
+    serpmonTestPrefix: "\u{1F9EA} TEST \u2014 verzonnen data, geen echte storm:",
+    publishBlockedTitle: site => `\u{1F6AB} Geplande post geblokkeerd: ${site}`,
+    publishBlockedMsg: (post, reason, also) => `*${post}* liep bij het verzenden vast op de publish-gate:\n${reason}\nHerschrijf de tekst en publiceer hem als een nieuwe post \u2014 er is geen manier om dit te omzeilen.${also ? `\n\u2026en ${also} post(s) meer van deze website geblokkeerd in dezelfde run \u2014 zie /publishing.` : ""}`,
+    uptimeDownTitle: site => `\u{1F534} ${site} ligt eruit`,
+    uptimeDownMsg: (site, url, cause, since) => `*${site}* reageert niet.\nURL: ${url}\nReden: ${cause}\nSinds: ${since}`,
+    uptimeStillDownMsg: (site, dur) => `*${site}* ligt er nog steeds uit (${dur}).`,
+    uptimeUpTitle: site => `\u{1F7E2} ${site} is terug`,
+    uptimeUpMsg: (site, dur) => `*${site}* reageert weer. Storingstijd: ${dur}.`,
+    uptimeDegradedMsg: (site, ms) => `\u{1F7E1} *${site}* is traag: ${ms} ms.`,
+    uptimeCause: (code, http) => {
+      switch (code) {
+        case "timeout": return "timeout";
+        case "dns": return "DNS-fout";
+        case "tls": return "SSL/TLS-fout";
+        case "connect": return "verbinding geweigerd";
+        case "http_status": return http != null ? `HTTP ${http}` : "fout";
+        case "keyword_missing": return "verwachte tekst niet gevonden";
+        case "redirect_loop": return "redirect-lus";
+        case "blocked_target": return "adres niet toegestaan";
+        default: return "fout";
+      }
+    },
+    indexLossTitle: site => `\u{1F4C9} ${site}: pagina's uit de Google-index`,
+    indexLossMsg: (site, n, lines) => `*${site}* \u2014 ${n} pagina('s) met verkeer zijn niet langer geïndexeerd:\n${lines}`,
+    mentionsNotifyTitle: site => `\u{1F4F0} Nieuwe vermeldingen van ${site}`,
+    mentionsNotifyMsg: (site, n, lines) => `*${site}* \u2014 ${n} nieuwe vermelding(en):\n${lines}`,
+    notifyTestMsg: channel => `\u2705 OpenGSC-testbericht via ${channel}.`,
+    toxicNewTitle: site => `\u2623\uFE0F ${site}: nieuwe toxic backlinks`,
+    toxicNewMsg: (site, n, lines) => `*${site}* \u2014 ${n} nieuw toxic verwijzend domein(en):\n${lines}`,
+    gbpReviewTitle: (site, rating) => `\u2B50 ${site}: nieuwe review van ${rating}\u2605`,
+    gbpReviewMsg: (site, author, rating, text) => `*${site}* \u2014 ${author}, ${rating}\u2605:\n${text}`,
+    localPackTitle: site => `\u{1F4CD} ${site}: map-packwijzigingen`,
+    localPackMsg: (site, lines) => `*${site}*:\n${lines}`,
+    trendsTitle: site => `\u{1F4C8} ${site}: stijgende zoekwoorden`,
+    trendsMsg: (site, lines) => `*${site}*:\n${lines}`,
+    digestTrends: "Stijgende zoekwoorden",
+    leadNewTitle: domain => `\u{1F4E5} Nieuwe lead: ${domain}`,
+    leadNewMsg: (domain, email, score, top) => `*${domain}* \u00B7 ${email}\nScore ${score}/100\nTopproblemen: ${top}`,
+    reportSentMsg: (title, to) => `\u{1F4C4} Rapport \u201C${title}\u201D verzonden naar ${to}.`,
+    backupFailedTitle: "\u{1F4BE} OpenGSC-backup mislukt",
+    backupFailedMsg: (when, error) => `De geplande OpenGSC-backup is mislukt op ${when} UTC.\n\nFout: ${error}\n\nDe volgende poging draait bij de volgende keer dat het backupschema afgaat; "Nu back-uppen" in Instellingen \u2192 Backups probeert het direct opnieuw.`,
+    backupUploadFailedTitle: "\u{1F4BE} Backup opgeslagen \u2014 upload mislukt",
+    backupUploadFailedMsg: (when, file, error) => `OpenGSC heeft de lokale backup opgeslagen (${file}) op ${when} UTC, maar de SFTP-upload is mislukt.\n\nFout: ${error}\n\nDe backup staat in de map backups/ op deze server; herstel de SFTP-instellingen en gebruik "Nu back-uppen" om het opnieuw te proberen.`,
   },
 };

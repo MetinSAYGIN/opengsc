@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const locales = ['en', 'ru', 'uk', 'fr', 'es', 'de', 'zh'];
+const locales = ['en', 'ru', 'uk', 'fr', 'es', 'de', 'zh', 'nl'];
 const dictionaries = Object.fromEntries(locales.map(locale => {
   const file = path.resolve(__dirname, `../src/locales/${locale}.json`);
   return [locale, JSON.parse(fs.readFileSync(file, 'utf8'))];

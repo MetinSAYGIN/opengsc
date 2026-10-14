@@ -17,8 +17,9 @@ import fr from "@/locales/fr.json";
 import es from "@/locales/es.json";
 import de from "@/locales/de.json";
 import zh from "@/locales/zh.json";
+import nl from "@/locales/nl.json";
 
-const dictionaries = { en, ru, uk, fr, es, de, zh } as const;
+const dictionaries = { en, ru, uk, fr, es, de, zh, nl } as const;
 export type MdLang = keyof typeof dictionaries;
 const MD_LANGS = Object.keys(dictionaries) as MdLang[];
 

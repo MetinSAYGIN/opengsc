@@ -15,7 +15,7 @@ import { useSearchParams } from "next/navigation";
 import { LEAD_STRINGS, t2 } from "@/lib/leads/i18n";
 import type { FindingSeverity, LeadLang, PublicWidgetConfig } from "@/lib/leads/types";
 
-const KNOWN_LANGS: LeadLang[] = ["en", "ru", "uk", "fr", "es", "de", "zh"];
+const KNOWN_LANGS: LeadLang[] = ["en", "ru", "uk", "fr", "es", "de", "zh", "nl"];
 
 interface PublicFinding {
   code: string;

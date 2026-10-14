@@ -1,4 +1,4 @@
-// N9 — server- and client-side strings for the lead widget contour, in all seven app
+// N9 — server- and client-side strings for the lead widget contour, in all app
 // languages. The locale JSON files are owned by N0 and R, so the texts that only this
 // module needs (finding titles/fixes/consequences, report e-mail, proposal skeleton, first
 // letter) live HERE instead. Locale keys from the N9 brief stay in the locales and win:
@@ -13,6 +13,7 @@ import fr from "@/locales/fr.json";
 import es from "@/locales/es.json";
 import de from "@/locales/de.json";
 import zh from "@/locales/zh.json";
+import nl from "@/locales/nl.json";
 
 export interface FindingStrings {
   title: string;
@@ -954,7 +955,214 @@ const ZH: LeadStrings = {
   },
 };
 
-export const LEAD_STRINGS: Record<LeadLang, LeadStrings> = { en: EN, ru: RU, uk: UK, fr: FR, es: ES, de: DE, zh: ZH };
+// ─── Nederlands ────────────────────────────────────────────────────────────────
+
+const NL: LeadStrings = {
+  findings: {
+    https_unavailable: {
+      title: "De website werkt niet via HTTPS",
+      fix: "Installeer een SSL/TLS-certificaat en leid alle http://-URL's om naar https://.",
+      consequence: "Browsers markeren de website als “Niet veilig”, bezoekers vertrekken, en Google rangschikt veilige concurrenten hoger.",
+    },
+    http_error: {
+      title: "De server geeft een foutmelding",
+      fix: "Herstel de HTTP-status van de genoemde pagina's — ze moeten 200 antwoorden.",
+      consequence: "Zoekmachines halen foutpagina's uit de index, en bezoekers zien een storing in plaats van de website.",
+    },
+    fetch_failed: {
+      title: "Pagina's konden niet worden geladen",
+      fix: "Controleer of de server betrouwbaar antwoordt en crawlers niet blokkeert.",
+      consequence: "Als onze checker deze pagina's niet kon laden, kunnen zoekmachine-robots dat waarschijnlijk ook niet.",
+    },
+    redirect: {
+      title: "De hoofdpagina stuurt door naar elders",
+      fix: "Wijs het canonieke adres direct aan; een homepage moet 200 antwoorden, geen redirect.",
+      consequence: "Elke redirect kost crawlbudget en verdunt de signalen die rankings bepalen.",
+    },
+    redirect_chain: {
+      title: "Lange redirectketen",
+      fix: "Link en redirect rechtstreeks naar de definitieve URL, hooguit één stap.",
+      consequence: "Elke extra stap maakt de website trager en kan de pagina uit de zoekresultaten doen verdwijnen.",
+    },
+    title_missing: {
+      title: "Pagina's hebben geen <title>",
+      fix: "Schrijf een unieke titel van 50–60 tekens voor elke genoemde pagina.",
+      consequence: "Zonder titel heeft het zoekresultaat niets te tonen — zulke pagina's krijgen nauwelijks klikken.",
+    },
+    title_too_long: {
+      title: "Titels zijn te lang",
+      fix: "Kort de titels in tot 50–60 tekens; zet het belangrijkste zoekwoord vooraan.",
+      consequence: "Te lange titels worden afgekapt in zoekresultaten, en de boodschap verliest zijn punt.",
+    },
+    title_too_short: {
+      title: "Titels zijn te kort",
+      fix: "Breid de titels uit tot 50–60 tekens met echte zoekwoorden, niet alleen de merknaam.",
+      consequence: "Een titel van één woord vertelt de zoeker niet waar de pagina over gaat, waardoor minder mensen klikken.",
+    },
+    description_missing: {
+      title: "Pagina's hebben geen meta description",
+      fix: "Schrijf een description van 150–160 tekens voor elke genoemde pagina.",
+      consequence: "Google stelt de snippet samen uit willekeurige paginatekst, en dat leest slechter dan nodig is.",
+    },
+    description_too_long: {
+      title: "Meta descriptions zijn te lang",
+      fix: "Kort de descriptions in tot 150–160 tekens.",
+      consequence: "De description wordt midden in de zin afgekapt, precies waar de oproep tot actie meestal staat.",
+    },
+    description_too_short: {
+      title: "Meta descriptions zijn te kort",
+      fix: "Breid de descriptions uit tot 150–160 tekens met een concreet aanbod.",
+      consequence: "Een korte snippet verspilt de ruimte die de zoeker overtuigt om voor jou te kiezen.",
+    },
+    h1_missing: {
+      title: "Pagina's hebben geen H1-kop",
+      fix: "Voeg precies één H1 per pagina toe die het onderwerp beschrijft.",
+      consequence: "Zonder de hoofdkop zien noch mensen noch zoekmachines waar de pagina over gaat.",
+    },
+    h1_multiple: {
+      title: "Meer dan één H1 op een pagina",
+      fix: "Houd één H1 aan; degradeer de rest naar H2.",
+      consequence: "Meerdere H1's vertroebelen het onderwerp van de pagina en verzwakken de relevantiesignalen.",
+    },
+    noindex: {
+      title: "Pagina's zijn afgesloten van indexering (noindex)",
+      fix: "Verwijder de noindex-instructie van de genoemde pagina's als ze in de zoekresultaten moeten staan.",
+      consequence: "Deze pagina's zijn onzichtbaar voor Google — geen vertoningen, geen bezoekers, geen verkopen.",
+    },
+    canonical_missing: {
+      title: "Geen canonieke URL",
+      fix: "Voeg <link rel=\"canonical\"> toe die naar de eigen definitieve URL van elke pagina wijst.",
+      consequence: "Zonder canonical kunnen duplicaten van de pagina de rankingsignalen verdelen.",
+    },
+    viewport_missing: {
+      title: "Geen mobiele viewport",
+      fix: "Voeg <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"> toe.",
+      consequence: "Op telefoons wordt de pagina als verkleinde desktopweergave getoond — de meeste mobiele bezoekers vertrekken.",
+    },
+    viewport_not_responsive: {
+      title: "Viewport blokkeert mobiel inzoomen",
+      fix: "Verwijder user-scalable=no en maximum-scale onder 2 uit de viewport-meta.",
+      consequence: "Slechtziende gebruikers kunnen de tekst niet vergroten — een toegankelijkheidsfout met juridisch risico in sommige markten.",
+    },
+    lang_missing: {
+      title: "De taal van de pagina is niet opgegeven",
+      fix: "Voeg het lang-attribuut toe aan <html>, bv. lang=\"nl\".",
+      consequence: "Schermlezers kiezen de verkeerde stem en zoekmachines gokken de taal — allebei slecht.",
+    },
+    jsonld_invalid: {
+      title: "Kapotte gestructureerde data (JSON-LD)",
+      fix: "Herstel de JSON-syntax in de blokken gestructureerde data.",
+      consequence: "Ongeldige markup wordt genegeerd, waardoor de website rich results in de zoekresultaten verliest.",
+    },
+    open_graph_incomplete: {
+      title: "Onvolledige Open Graph-tags",
+      fix: "Voeg og:title, og:description en og:image toe zodat links correct worden voorvertoond.",
+      consequence: "Links die in messengers en sociale netwerken worden gedeeld tonen een kale URL in plaats van een kaart.",
+    },
+    security_headers_missing: {
+      title: "Security-headers ontbreken",
+      fix: "Voeg Content-Security-Policy, X-Content-Type-Options, Referrer-Policy en framebeveiliging toe.",
+      consequence: "De website is gemakkelijker aan te vallen met geïnjecteerde scripts en clickjacking.",
+    },
+    slow_response: {
+      title: "De server reageert traag",
+      fix: "Voeg caching en een CDN toe; streef naar een serverrespons onder 1 seconde.",
+      consequence: "Bezoekers wachten, vertrekken eerder, en zoekmachines registreren de trage ervaring.",
+    },
+    broken_links: {
+      title: "Dode links op de hoofdpagina",
+      fix: "Herstel of verwijder de dode links die in het rapport staan.",
+      consequence: "Bezoekers en crawlers lopen tegen doodlopende wegen, en de website lijkt voor beiden verwaarloosd.",
+    },
+    mixed_content: {
+      title: "Mixed content (http://-bronnen op een https://-pagina)",
+      fix: "Laad elke afbeelding, script en stylesheet via https://.",
+      consequence: "Browsers blokkeren de onveilige onderdelen, waardoor de vormgeving en functies van de pagina breken.",
+    },
+    thin_content: {
+      title: "Zeer weinig tekst op de pagina's",
+      fix: "Breid de genoemde pagina's uit met nuttige content — minstens 150 woorden.",
+      consequence: "Magere pagina's ranken nergens op en verbruiken alleen maar crawlbudget.",
+    },
+    images_no_alt: {
+      title: "Afbeeldingen zonder alt-tekst",
+      fix: "Beschrijf elke betekenisvolle afbeelding in het alt-attribuut.",
+      consequence: "Gebruikers van schermlezers horen een bestandsnaam, en afbeeldingenzoek kan de plaatjes niet classificeren.",
+    },
+  },
+  consent: "Ik ga ermee akkoord dat mijn e-mail gebruikt mag worden om mij het auditrapport te sturen en mij daarover te contacteren.",
+  email: {
+    subject: (domain, score) => `SEO-audit van ${domain} — score ${score}/100`,
+    header: (domain, score) => `SEO-audit van ${domain}: ${score}/100`,
+    intro: "Dit is wat de geautomatiseerde controle van uw website vond. Elk punt bevat hoe je het kunt oplossen.",
+    footer: "Dit rapport is automatisch gegenereerd door een site-audittool. Het weerspiegelt een crawl van maximaal 5 pagina's op het moment van controleren.",
+  },
+  letter: {
+    subject: domain => `Een korte blik op ${domain}`,
+    greeting: name => (name ? `Hallo ${name},` : "Hallo,"),
+    intro: (domain, score) => `We hebben een korte geautomatiseerde controle van ${domain} gedraaid — een score van ${score} uit 100. Drie dingen vielen op:`,
+    offer: "Dit is allemaal op te lossen. Zou een kort gesprek van 15 minuten deze week passen om ze door te nemen?",
+    closing: "Met vriendelijke groet,",
+  },
+  proposal: {
+    docTitle: domain => `SEO-voorstel voor ${domain}`,
+    about: "Over ons",
+    aboutPlaceholder: "_Vertel de klant wie je bent: ervaring, team, resultaten in hun markt. Twee of drie zinnen zijn genoeg._",
+    found: "Wat we vonden",
+    scope: "Werkzaamheden",
+    pricing: "Prijsstelling",
+    priceNote: "Elk onderdeel wordt apart geprijsd; bij alles in één keer is een pakketkorting mogelijk.",
+    timeline: "Planning",
+    timelinePlaceholder: "_Bepaal de termijnen: bijvoorbeeld technische fixes — 1 week, content — 2–3 weken._",
+    nextStep: "Volgende stap",
+    nextStepText: "Reageer op dit voorstel of plan een gesprek, en we beginnen met de technische fixes — die leveren meestal de snelst zichtbare verandering.",
+    noPromises: "Dit voorstel belooft geen aantallen voor verkeer, rankings of omzet: een crawl van maximaal 5 pagina's kan die niet onderbouwen.",
+    categories: {
+      crawlability: "Crawlbaarheid en indexering",
+      metadata: "Meta-tags en gestructureerde data",
+      content: "Content",
+      links: "Links",
+      performance: "Snelheid",
+      rendering: "Mobiele weergave",
+      security: "Beveiliging",
+    },
+  },
+  widget: {
+    checking: "Controleren…",
+    error: "Kon deze website niet controleren. Controleer het domein en probeer het opnieuw.",
+    nameField: "Uw naam (optioneel)",
+    messageField: "Bericht (optioneel)",
+    consentLabel: "Ik ga akkoord met de verwerking van mijn e-mail",
+    needEmail: "Voer uw e-mailadres in",
+    sending: "Versturen…",
+    again: "Controleer een andere website",
+  },
+  ui: {
+    leadSearch: "Zoek domein of e-mail",
+    leadEmpty: "Nog geen leads. Plaats de widget op uw website en ze verschijnen hier.",
+    leadFilterAll: "Alles",
+    leadDate: "Datum",
+    leadSource: "Bron",
+    leadStatus: "Status",
+    leadSave: "Opslaan",
+    leadSaved: "Opgeslagen",
+    leadDownload: "HTML downloaden",
+    leadPrint: "Openen & printen",
+    leadMakeClient: "Maak klant",
+    leadInclude: "Opnemen in het voorstel",
+    leadWidgetOn: "Widget ingeschakeld",
+    leadWidgetAccent: "Accentkleur",
+    leadWidgetLogo: "Logo-URL (getoond in de widget)",
+    leadWidgetNotify: "Extra e-mail voor lead-meldingen",
+    leadWidgetTpl: "Eerste-brief-sjabloon ({name}, {domain}, {email}, {score}, {issues})",
+    leadWidgetOriginsAny: "Leeg = elke website mag de widget embedden (niet aanbevolen)",
+    leadWidgetRegenConfirm: "Sleutel opnieuw genereren? De oude widget werkt direct niet meer.",
+    leadCopied: "Gekopieerd",
+    leadLoadError: "Kon leads niet laden",
+  },
+};
+
+export const LEAD_STRINGS: Record<LeadLang, LeadStrings> = { en: EN, ru: RU, uk: UK, fr: FR, es: ES, de: DE, zh: ZH, nl: NL };
 
 import type { LeadFinding, RawFinding } from "./types";
 
@@ -977,7 +1185,7 @@ export function consequenceOf(code: string, lang: LeadLang): string {
 
 // ─── locale-first lookup for UI keys ──────────────────────────────────────────
 
-const LOCALE_DICTS: Record<LeadLang, Record<string, string>> = { en, ru, uk, fr, es, de, zh };
+const LOCALE_DICTS: Record<LeadLang, Record<string, string>> = { en, ru, uk, fr, es, de, zh, nl };
 
 /**
  * Look up a UI key: the locale JSON wins (the N9-brief keys live there), this module's
