@@ -725,6 +725,8 @@
   "annDeleteNote": "Notitie verwijderen",
   "annDeleteConfirm": "Deze notitie verwijderen? Dit kan niet ongedaan worden gemaakt.",
   "annSave": "Opslaan",
+  "annSaveFailed": "Notitie kon niet worden opgeslagen — controleer de verbinding en probeer het opnieuw.",
+  "annDiscardConfirm": "Deze notitie sluiten zonder op te slaan?",
   "tagsPrompt": "Voer tags in, gescheiden door komma's:",
   "sortTags": "Op tags (A-Z)",
   "googleAccountsLabel": "Google-accounts:",

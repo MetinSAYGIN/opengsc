@@ -725,6 +725,8 @@
   "annDeleteNote": "Notiz löschen",
   "annDeleteConfirm": "Diese Notiz löschen? Dies kann nicht rückgängig gemacht werden.",
   "annSave": "Speichern",
+  "annSaveFailed": "Notiz konnte nicht gespeichert werden — Verbindung prüfen und erneut versuchen.",
+  "annDiscardConfirm": "Diese Notiz verwerfen, ohne zu speichern?",
   "tagsPrompt": "Tags per Komma getrennt eingeben:",
   "sortTags": "Nach Tags (A–Z)",
   "googleAccountsLabel": "Google-Konten:",

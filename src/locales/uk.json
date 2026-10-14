@@ -725,6 +725,8 @@
   "annDeleteNote": "Видалити нотатку",
   "annDeleteConfirm": "Видалити цю нотатку? Дію не можна скасувати.",
   "annSave": "Зберегти",
+  "annSaveFailed": "Не вдалося зберегти нотатку — перевірте з'єднання та спробуйте ще раз.",
+  "annDiscardConfirm": "Закрити нотатку без збереження?",
   "tagsPrompt": "Введіть теги через кому:",
   "sortTags": "За тегами (A-Z)",
   "googleAccountsLabel": "Google-акаунти:",

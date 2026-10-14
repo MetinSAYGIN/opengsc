@@ -725,6 +725,8 @@
   "annDeleteNote": "Delete note",
   "annDeleteConfirm": "Delete this note? This cannot be undone.",
   "annSave": "Save",
+  "annSaveFailed": "Could not save the note — check the connection and try again.",
+  "annDiscardConfirm": "Discard this note without saving?",
   "tagsPrompt": "Enter tags separated by comma:",
   "sortTags": "By Tags (A-Z)",
   "googleAccountsLabel": "Google accounts:",

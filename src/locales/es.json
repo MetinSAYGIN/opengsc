@@ -725,6 +725,8 @@
   "annDeleteNote": "Eliminar nota",
   "annDeleteConfirm": "¿Eliminar esta nota? No se puede deshacer.",
   "annSave": "Guardar",
+  "annSaveFailed": "No se pudo guardar la nota: comprueba la conexión e inténtalo de nuevo.",
+  "annDiscardConfirm": "¿Descartar esta nota sin guardar?",
   "tagsPrompt": "Introduce etiquetas separadas por coma:",
   "sortTags": "Por etiquetas (A-Z)",
   "googleAccountsLabel": "Cuentas de Google:",

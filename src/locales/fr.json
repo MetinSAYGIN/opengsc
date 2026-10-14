@@ -725,6 +725,8 @@
   "annDeleteNote": "Supprimer la note",
   "annDeleteConfirm": "Supprimer cette note ? Cette action est irréversible.",
   "annSave": "Enregistrer",
+  "annSaveFailed": "Impossible d'enregistrer la note — vérifiez la connexion et réessayez.",
+  "annDiscardConfirm": "Abandonner cette note sans enregistrer ?",
   "tagsPrompt": "Saisissez les tags séparés par des virgules :",
   "sortTags": "Par tags (A-Z)",
   "googleAccountsLabel": "Comptes Google :",

@@ -4182,16 +4182,32 @@ function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }
 // ─── Add Note Modal ───────────────────────────────────────────────────────────
 function AddNoteModal({ onClose, onSave, editNote }: {
   onClose: () => void;
-  onSave: (note: { id?: string; date: string; title: string; desc: string; scope: string }) => void;
+  /** Persists the note. Resolves false when the write failed — the modal then stays open with the
+   *  draft intact and an error shown, instead of closing and silently discarding what was typed. */
+  onSave: (note: { id?: string; date: string; title: string; desc: string; scope: string }) => Promise<boolean>;
   /** When set, the modal opens in edit mode: fields are pre-filled and the label/button reflect editing. */
   editNote?: { id: string; title: string; desc: string; date: string } | null;
 }) {
   const { t } = useLanguage();
-  const today = new Date();
-  const todayStr = today.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  // The wire format is a strict ISO day (YYYY-MM-DD) — the API stores that day's UTC midnight, so
+  // the date never shifts through anyone's timezone. Built from the client's own calendar date: at
+  // 00:30 in Athens, toISOString() would still name yesterday.
+  const n = new Date();
+  const todayIso = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+  const [dateVal, setDateVal] = useState(editNote?.date ?? todayIso);
   const [title, setTitle] = useState(editNote?.title ?? "");
   const [desc, setDesc]   = useState(editNote?.desc ?? "");
   const [scope, setScope] = useState<"all" | "specific" | "group">("all");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+
+  // A stray click on the backdrop or the X used to throw a long draft away instantly. Those two are
+  // "clicked somewhere to dismiss" gestures, so with text on screen they ask first; Cancel is an
+  // explicit, labelled choice and stays one click.
+  const guardedClose = () => {
+    if ((title.trim() || desc.trim()) && !confirm(t("annDiscardConfirm"))) return;
+    onClose();
+  };
 
   // l holds an i18n KEY. Both render (3238) and onSave (3246) translate it via t(), so the stored
   // note scope is the localized label — same as the old hardcoded English, but in the active language.
@@ -4203,18 +4219,25 @@ function AddNoteModal({ onClose, onSave, editNote }: {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={onClose}>
+      onClick={guardedClose}>
       <div style={{ background: "#fff", borderRadius: "16px", padding: "32px", width: "90%", maxWidth: "640px", color: "#111", boxShadow: "0 20px 60px rgba(0,0,0,0.4)", position: "relative" }}
         onClick={e => e.stopPropagation()}>
         {/* Close */}
-        <button onClick={onClose} style={{ position: "absolute", top: "16px", right: "16px", background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X size={20} /></button>
+        <button onClick={guardedClose} style={{ position: "absolute", top: "16px", right: "16px", background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X size={20} /></button>
 
         {/* Label */}
         <p style={{ fontSize: "12px", color: "#9ca3af", fontWeight: 500, marginBottom: "4px" }}>{editNote ? t("annEditNote") : "Note"}</p>
 
-        {/* Date */}
+        {/* Date — a real input: it used to be a decorative span, so a note could only ever be dated
+            "today" (and the day it meant still drifted with the server's timezone). */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px" }}>
-          <span style={{ fontSize: "24px", fontWeight: 700 }}>{editNote?.date ?? todayStr}</span>
+          <input
+            type="date"
+            value={dateVal}
+            max={todayIso}
+            onChange={e => setDateVal(e.target.value)}
+            style={{ fontSize: "18px", fontWeight: 700, color: "#111", border: "none", borderBottom: "2px solid #d1d5db", outline: "none", padding: "2px 0", background: "transparent", cursor: "pointer", borderRadius: 0 }}
+          />
           <Calendar size={18} color="#9ca3af" />
         </div>
 
@@ -4251,10 +4274,25 @@ function AddNoteModal({ onClose, onSave, editNote }: {
         </div>
 
         {/* Buttons */}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-          <button onClick={onClose} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#f3f4f6", color: "#374151", fontSize: "14px", fontWeight: 500, cursor: "pointer" }}>{t("cancel")}</button>
-          <button onClick={() => { if (title.trim()) { onSave({ id: editNote?.id, date: editNote?.date ?? todayStr, title, desc, scope: t(scopeOptions.find(o => o.v === scope)!.l as never) }); onClose(); } }}
-            style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: title.trim() ? "#374151" : "#9ca3af", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: title.trim() ? "pointer" : "not-allowed" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", alignItems: "center" }}>
+          {saveError && (
+            <span style={{ fontSize: "12px", color: "#EF4444", marginRight: "auto" }}>{t("annSaveFailed")}</span>
+          )}
+          <button onClick={guardedClose} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#f3f4f6", color: "#374151", fontSize: "14px", fontWeight: 500, cursor: "pointer" }}>{t("cancel")}</button>
+          <button
+            onClick={async () => {
+              if (!title.trim() || saving) return;
+              setSaving(true); setSaveError(false);
+              // The parent owns the write and reports whether it landed; closing is earned, not
+              // assumed — this used to fire onClose() unconditionally next to a fire-and-forget
+              // fetch, so a failed save (expired session, 503, a dropped request) looked exactly
+              // like a successful one, minus the note.
+              const ok = await onSave({ id: editNote?.id, date: dateVal || todayIso, title, desc, scope: t(scopeOptions.find(o => o.v === scope)!.l as never) });
+              setSaving(false);
+              if (ok) onClose(); else setSaveError(true);
+            }}
+            disabled={saving}
+            style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: title.trim() ? "#374151" : "#9ca3af", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: title.trim() && !saving ? "pointer" : "not-allowed", opacity: saving ? 0.7 : 1 }}>
             {editNote ? t("annSave") : "Save"}
           </button>
         </div>
@@ -4691,14 +4729,19 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
           onClose={() => setShowAddNote(false)}
           // Persist, then re-read: the figures are computed server-side from DailyMetric, so the
           // row can only be filled in by the API. Writing a locally-invented placeholder is what
-          // produced the permanent 0 → 0 +0% this tab used to show.
+          // produced the permanent 0 → 0 +0% this tab used to show. The boolean tells the modal
+          // whether its draft may be discarded.
           onSave={async note => {
-            if (!siteDbId) return;
-            await fetch("/api/annotations", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ siteId: siteDbId, date: note.date, title: note.title, description: note.desc }),
-            }).catch(() => {});
+            if (!siteDbId) return false;
+            try {
+              const res = await fetch("/api/annotations", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ siteId: siteDbId, date: note.date, title: note.title, description: note.desc }),
+              });
+              if (!res.ok) return false;
+            } catch { return false; }
             await loadNotes();
+            return true;
           }}
         />
       )}
@@ -4709,12 +4752,16 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
           editNote={editingNote}
           onClose={() => setEditingNote(null)}
           onSave={async note => {
-            if (!note.id) return;
-            await fetch("/api/annotations", {
-              method: "PUT", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id: note.id, date: note.date, title: note.title, description: note.desc }),
-            }).catch(() => {});
+            if (!note.id) return false;
+            try {
+              const res = await fetch("/api/annotations", {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: note.id, date: note.date, title: note.title, description: note.desc }),
+              });
+              if (!res.ok) return false;
+            } catch { return false; }
             await loadNotes();
+            return true;
           }}
         />
       )}
