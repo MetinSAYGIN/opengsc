@@ -4428,12 +4428,6 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
   algoMarkers?: AlgoMarker[];
 }) {
   const { t } = useLanguage();
-  // Was `useState(true)`, which blurred the table and covered it with a panel advertising four
-  // invented notes from 2024 ("Moved to Astro", and so on). It appeared before the real notes had
-  // even loaded, so an operator with a full history saw fake data first. The onboarding panel now
-  // waits until the request has come back empty, and the fake rows are gone entirely — an empty
-  // table with a working "add note" button says the same thing without pretending to have data.
-  const [onboarding, setOnboarding] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
   // When set, AddNoteModal opens in edit mode with this note's fields pre-filled.
   const [editingNote, setEditingNote] = useState<{ id: string; title: string; desc: string; date: string } | null>(null);
@@ -4443,10 +4437,9 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
   const [activeMetrics, setActiveMetrics] = useState<Set<Metric>>(new Set(["clicks", "impressions", "ctr", "position"]));
 
   const days = period === "custom" && customDays ? customDays : annotationWindow(period);
-  // The list always reaches across the whole tracking history: hiding a note because it is older
-  // than the selected period is exactly the trap that made the onboarding panel appear over notes
-  // that were sitting there all along. The period now controls only the before/after comparison
-  // window (`days`), not which notes are visible.
+  // The list always reaches across the whole tracking history: the period controls only the
+  // before/after comparison window (`days`), never which notes are visible — hiding a note
+  // because it is older than the selected period would make it look lost rather than old.
   const lookback = 1200;
 
   // Notes and their figures both come from the server: the note rows persist in the Annotation
@@ -4489,15 +4482,6 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
       }))
       .filter((n): n is { id: string; title: string; x: string; kind?: "note" | "purchase"; label?: string } => n.x !== null);
   }, [ownNotes, chartData, t]);
-  // The onboarding panel is an absolutely-positioned overlay covering everything below the
-  // sub-header, so it can only appear when there is genuinely nothing underneath. Keying it on
-  // "no notes of your own" would hide the Google-update timeline the moment a fresh instance
-  // opened the tab — a card inviting you to add something, drawn over the only thing on screen.
-  // The "+ add note" button is always present when the panel is not.
-  useEffect(() => {
-    if (loading) return;
-    setOnboarding(notes.length === 0 && !unavailable);
-  }, [loading, notes.length, unavailable]);
 
   const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
 
@@ -4506,7 +4490,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
   const fK = (n: number) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : String(n);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div>
       {/* ── Sub-header controls ── */}
       <div style={{ padding: "10px 32px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: "8px", background: "var(--color-card)", flexWrap: "wrap" }}>
         <AnnotationsFilterDd onSetupBranded={onSetupBranded} />
@@ -4693,33 +4677,13 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
         ))}
       </div>
 
-      {/* Empty state when not onboarding and no notes */}
-      {!onboarding && !loading && notes.length === 0 && (
+      {/* Empty state: no notes of your own in the tracking history. The "+ add note" button says
+          the rest — an onboarding overlay used to sit here restating it. */}
+      {!loading && notes.length === 0 && (
         <div style={{ padding: "64px 32px", textAlign: "center" }}>
           <p style={{ fontSize: "14px", color: "var(--color-text-secondary)" }}>
             {t("annEmptyDesc")}
           </p>
-        </div>
-      )}
-
-      {/* ── Onboarding overlay ── */}
-      {onboarding && (
-        <div style={{ position: "absolute", top: "61px", left: 0, right: 0, bottom: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "24px", zIndex: 10 }}>
-          <div style={{ background: "var(--color-card)", borderRadius: "20px", border: "1px solid var(--color-border)", boxShadow: "0 16px 64px rgba(0,0,0,0.45)", width: "100%", maxWidth: "620px", overflow: "hidden", padding: "32px" }}>
-            <h2 style={{ fontSize: "22px", fontWeight: 700, color: "var(--color-text-primary)", textAlign: "center", marginBottom: "6px" }}>{t("tabAnnotations")}</h2>
-            <p style={{ fontSize: "14px", color: "var(--color-text-secondary)", textAlign: "center", marginBottom: "24px" }}>{t("annCreateFirstNote")}</p>
-
-            {/* CTA */}
-            <button
-              onClick={() => { setOnboarding(false); setShowAddNote(true); }}
-              style={{ width: "100%", padding: "13px", borderRadius: "10px", border: "none", background: "linear-gradient(90deg, #2563EB 0%, #7C3AED 100%)", color: "#fff", fontSize: "15px", fontWeight: 700, cursor: "pointer", marginBottom: "14px", boxShadow: "0 4px 16px rgba(37,99,235,0.35)" }}>
-              {t("annCreateNoteBtn")}
-            </button>
-
-            {/* No "try it with Google updates" line any more: the panel only shows when the
-                timeline is empty, so there are no updates in this period to point at. Claiming
-                otherwise would be false exactly when someone reads it. */}
-          </div>
         </div>
       )}
 
@@ -4766,14 +4730,12 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
         />
       )}
 
-      {/* Add note FAB when onboarding dismissed */}
-      {!onboarding && (
-        <div style={{ position: "fixed", bottom: "32px", right: "32px", zIndex: 50 }}>
-          <button onClick={() => setShowAddNote(true)} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px 20px", borderRadius: "12px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "14px", fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(59,130,246,0.4)" }}>
-            {t("annAddNote")}
-          </button>
-        </div>
-      )}
+      {/* Add note FAB */}
+      <div style={{ position: "fixed", bottom: "32px", right: "32px", zIndex: 50 }}>
+        <button onClick={() => setShowAddNote(true)} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px 20px", borderRadius: "12px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "14px", fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(59,130,246,0.4)" }}>
+          {t("annAddNote")}
+        </button>
+      </div>
     </div>
   );
 }
