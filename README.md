@@ -18,7 +18,7 @@ Self-hosted on your own VPS. No subscriptions, no seat limits, no third party to
 
 [Русская версия](README.ru.md) · [English version](README.md)
 
-[Website](https://opengsc.org) · [Install](#-installation) · [Features](#-features) · [SEO Tools](#-ai-seo-content-suite-seo-tools) · [Indexer](#-private-indexer-network) · [Docs](docs/)
+[Website](https://opengsc.org) · [Wiki](https://github.com/fenjo26/OpenGSC/wiki) · [Install](#-installation) · [Features](#-features) · [SEO Tools](#-ai-seo-content-suite-seo-tools) · [Indexer](#-private-indexer-network) · [Docs](docs/)
 
 </div>
 
@@ -931,6 +931,7 @@ docs/
 
 ## Documentation
 
+- **[Wiki](https://github.com/fenjo26/OpenGSC/wiki)** — the user manual: quick start, Google Cloud setup, every screen and setting, what needs which key, troubleshooting and FAQ. Source in [`wiki/`](wiki/).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the app is built: the background job system, the multi-pass SEO generation pipeline, the multi-provider LLM abstraction, the MCP server, the audit crawler, the indexer's cloaking/verification mechanism, and the full data model.
 - **[docs/GA4-SETUP.md](docs/GA4-SETUP.md)** — connecting Google Analytics 4, step by step.
 - **[docs/METRICS-SETUP.md](docs/METRICS-SETUP.md)** — keyword weights, backlink profiles and the competitor gap: importing exports for free, configuring an Ahrefs/Semrush/Majestic key, and what each action costs.
