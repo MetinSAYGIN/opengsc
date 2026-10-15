@@ -128,6 +128,22 @@ const SUPPORT_PARTNERS = [
     tileBg: "#ffffff",
     imgStyle: { maxWidth: "84px", maxHeight: "18px" } as React.CSSProperties,
   },
+  {
+    id: "Market369",
+    name: "369 Links Market",
+    href: "https://t.me/marketplace369_bot?start=ref_58bsvidx",
+    logo: "/partners/369market-logo.png",
+    tileBg: "#000000",
+    imgStyle: { maxHeight: "40px" } as React.CSSProperties,
+  },
+  {
+    id: "Fieldlink",
+    name: "FieldLink",
+    href: "https://seoboost-root.info/r/flt_oW6P5bnPM5JTkU44PxbVxFWBUF4e8MBRFDy0kG17t5Y",
+    logo: "/partners/fieldlink-logo.svg",
+    tileBg: "#07110c",
+    imgStyle: { maxHeight: "32px" } as React.CSSProperties,
+  },
 ] as const;
 
 function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose: () => void }) {

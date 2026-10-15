@@ -9,7 +9,7 @@ import {
 import { parseRequestItems } from "@/lib/magiclinks/requestItems";
 import {
   recordPurchases, orderRecorded, isMagicProviderId, PROVIDER_FIELDLINK, PROVIDER_MAGIC369,
-  PROVIDER_MAGIC369_LINKS, type PurchaseInput,
+  PROVIDER_MAGIC369_LINKS, PROVIDER_FIELDLINK_LINKS, type PurchaseInput,
 } from "@/lib/magiclinks/purchases";
 
 // POST /api/magiclinks/submit — the only route in this feature that spends money, and the only
@@ -61,7 +61,9 @@ export async function POST(req: Request) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));
-  const provider = isMagicProviderId(b?.provider) ? b.provider : PROVIDER_FIELDLINK;
+  // FieldLink links ride the posts path: same task → quote → order contract, same order space.
+  const provider = b?.provider === PROVIDER_FIELDLINK_LINKS ? PROVIDER_FIELDLINK
+    : isMagicProviderId(b?.provider) ? b.provider : PROVIDER_FIELDLINK;
   const expectedMinor = Number(b?.expectedMinor);
   if (!Number.isInteger(expectedMinor) || expectedMinor < 0) {
     return NextResponse.json({ error: "no_expected_amount" }, { status: 400 });
@@ -148,10 +150,11 @@ async function submitFieldLink(
         return {
           siteId,
           targetUrl: brief.targetUrl,
-          query: brief.titleKeyword || brief.anchor,
+          query: queryByPair.get(`${brief.targetUrl}\n${brief.anchor}`) || brief.titleKeyword || brief.anchor,
           anchor: brief.anchor,
           language: brief.language,
-          quantity: Number(brief.count ?? 1),
+          // Responses normalise the count to `quantity` (contract 1.19); `count` is the request name.
+          quantity: Number(brief.quantity ?? brief.count ?? 1),
           taskId,
           orderId: order.id,
           provider: PROVIDER_FIELDLINK,
@@ -170,7 +173,7 @@ async function submitMagic369(
   fallbackSiteId: string, owned: Set<string>, userId: string,
 ) {
   const client = await magic369ClientFor(userId);
-  if (!client) return NextResponse.json({ error: "not_configured", message: "369Team token is not set" }, { status: 400 });
+  if (!client) return NextResponse.json({ error: "not_configured", message: "369 Links Market token is not set" }, { status: 400 });
 
   const links = provider === PROVIDER_MAGIC369_LINKS;
   const items = parseRequestItems(rawItems, { links });
@@ -191,7 +194,7 @@ async function submitMagic369(
   const counts = items.map(it => it.count ?? 1);
   const q = links ? quoteLinks(balance, counts) : quoteArticles(balance, counts);
   if (!q) {
-    return NextResponse.json({ error: "no_link_price", message: "369Team did not report link_price in /balance" }, { status: 502 });
+    return NextResponse.json({ error: "no_link_price", message: "369 Links Market did not report link_price in /balance" }, { status: 502 });
   }
   const amountMinor = q.amountMinor;
   if (amountMinor !== expectedMinor) {
@@ -219,7 +222,7 @@ async function submitMagic369(
     // has no idempotency — retrying blind would buy twice. Say so plainly instead.
     return NextResponse.json({
       error: "order_unknown",
-      message: "369Team did not answer the create call. The order may exist — check the balance before paying again.",
+      message: "369 Links Market did not answer the create call. The order may exist — check the balance before paying again.",
     }, { status: 504 });
   }
 

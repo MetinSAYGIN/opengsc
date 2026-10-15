@@ -6,8 +6,9 @@
 // Checked against the vendor's Swagger 2.0 spec v1.1 (magiclinks.online/docs/doc.json,
 // 2026-10-10). Two products share one token and one balance, with SEPARATE order-id spaces:
 //
-//   • articles ("меджики")   POST /orders       — price by volume tier, +30% bonus per row
+//   • articles ("меджики")   POST /orders       — price by volume tier, +50% bonus per row
 //   • homepage links         POST /link-orders  — flat link_price,     +20% bonus per row
+//   • referral program       GET  /referrals, /referrals/history — read-only earnings
 //
 // Both orders are one-shot: the POST charges immediately, there is no quote call and no
 // idempotency, and the API exposes no order LIST — the purchase ledger is the only history.
@@ -17,7 +18,7 @@ import { languageNameFor } from "./languages";
 export const MAGIC369_DEFAULT_BASE = "https://magiclinks.online/api/v1";
 
 /** Free extra placements the service adds on top of each row's paid count. */
-export const MAGIC369_ARTICLE_BONUS_RATE = 0.3;
+export const MAGIC369_ARTICLE_BONUS_RATE = 0.5; // spec v1.1 as of 2026-10-15 (was +30%)
 export const MAGIC369_LINK_BONUS_RATE = 0.2;
 
 /** Link-order limits from the spec: anchor ≤ 200 chars, surrounding text ≤ 1000 with $LINK once. */
@@ -119,6 +120,28 @@ export interface Magic369Link {
   publishedAt: string | null;
 }
 
+/** GET /referrals — the key owner's own referral program summary. */
+export interface Magic369ReferralSummary {
+  /** Percent of each referral's deposit paid as reward (10 / 15 / 20 / 30). */
+  percent: number;
+  referralsCount: number;
+  depositsTotalMinor: number;
+  earnedTotalMinor: number;
+  paidTotalMinor: number;
+  pendingTotalMinor: number;
+}
+
+/** One rewarded deposit from GET /referrals/history (newest first). */
+export interface Magic369ReferralReward {
+  referralId: number;
+  depositMinor: number;
+  depositedAt: string | null;
+  percent: number;
+  rewardMinor: number;
+  status: string;
+  paidAt: string | null;
+}
+
 export interface Magic369Created {
   orderId: string;
   status: string;
@@ -164,7 +187,7 @@ export function articlePriceFor(tiers: Magic369PriceTier[], paidCount: number): 
   return price;
 }
 
-/** Bonus placements the service adds to one row. The spec states the rate (+30% / +20% per
+/** Bonus placements the service adds to one row. The spec states the rate (+50% / +20% per
  *  row) but not the rounding, so this is an ESTIMATE rounded down — the real figure comes back
  *  as bonus_count in the create response and the order status. */
 export function estimateBonus(count: number, rate: number): number {
@@ -361,6 +384,33 @@ export class Magic369Client {
       linkPriceMinor: d.link_price == null ? null : toMinor(d.link_price),
       currency: d.currency ?? "tokens",
     };
+  }
+
+  /** Referral program summary of the key's owner. Read-only, free. */
+  async referrals(): Promise<Magic369ReferralSummary> {
+    const d = await this.request<Record<string, unknown>>("GET", "/referrals");
+    return {
+      percent: Number(d.referral_percent ?? 0),
+      referralsCount: Number(d.referrals_count ?? 0),
+      depositsTotalMinor: toMinor(d.deposits_total),
+      earnedTotalMinor: toMinor(d.earned_total),
+      paidTotalMinor: toMinor(d.paid_total),
+      pendingTotalMinor: toMinor(d.pending_total),
+    };
+  }
+
+  /** Every rewarded referral deposit, newest first. */
+  async referralHistory(): Promise<Magic369ReferralReward[]> {
+    const d = await this.request<{ rewards?: Record<string, unknown>[] }>("GET", "/referrals/history");
+    return (d.rewards ?? []).map(r => ({
+      referralId: Number(r.referral_id ?? 0),
+      depositMinor: toMinor(r.deposit_amount),
+      depositedAt: (r.deposited_at as string | null | undefined) ?? null,
+      percent: Number(r.percent ?? 0),
+      rewardMinor: toMinor(r.reward),
+      status: String(r.status ?? ""),
+      paidAt: (r.paid_at as string | null | undefined) ?? null,
+    }));
   }
 
   /** Creates an ARTICLE order and charges immediately. No idempotency: runs only from the pay

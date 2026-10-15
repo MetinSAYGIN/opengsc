@@ -19,15 +19,21 @@ export const PROVIDER_MAGIC369 = "magic369";
  *  ledger, the tracker and the order views must know which endpoint an order id belongs to. */
 export const PROVIDER_MAGIC369_LINKS = "magic369links";
 export type MagicProviderId = "fieldlink" | "magic369" | "magic369links";
+/** FieldLink homepage links — a PRODUCT id for the buy window only. FieldLink keeps posts and
+ *  links in one task/order space (same /orders endpoint), so the ledger records these orders
+ *  under PROVIDER_FIELDLINK and nothing downstream needs to tell them apart. */
+export const PROVIDER_FIELDLINK_LINKS = "fieldlinklinks";
+export type BuyProductId = MagicProviderId | typeof PROVIDER_FIELDLINK_LINKS;
 
 export function isMagicProviderId(v: unknown): v is MagicProviderId {
   return v === PROVIDER_FIELDLINK || v === PROVIDER_MAGIC369 || v === PROVIDER_MAGIC369_LINKS;
 }
 
 export function providerName(p: string): string {
-  return p === PROVIDER_MAGIC369 ? "369Team"
-    : p === PROVIDER_MAGIC369_LINKS ? "369Team · links"
+  return p === PROVIDER_MAGIC369 ? "369 Links Market · Magic links"
+    : p === PROVIDER_MAGIC369_LINKS ? "369 Links Market · Homepage links"
     : p === PROVIDER_FIELDLINK ? "FieldLink"
+    : p === PROVIDER_FIELDLINK_LINKS ? "FieldLink · Homepage links"
     : p;
 }
 

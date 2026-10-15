@@ -55,7 +55,7 @@ test("the tier is picked by the WHOLE order's paid count: largest from not excee
   assert.deepEqual(normalizeTiers(undefined, 45), [{ from: 1, priceMinor: 45 }]);
 });
 
-test("quoteArticles sums rows before choosing the tier; bonus is +30% per row, rounded down", () => {
+test("quoteArticles sums rows before choosing the tier; bonus is +50% per row, rounded down", () => {
   const bal: Magic369Balance = {
     balanceMinor: 100000, priceMinor: 45, currency: "tokens", linkPriceMinor: 300,
     tiers: [{ from: 1, priceMinor: 45 }, { from: 100, priceMinor: 30 }],
@@ -64,7 +64,7 @@ test("quoteArticles sums rows before choosing the tier; bonus is +30% per row, r
   assert.equal(q.paid, 110);
   assert.equal(q.priceMinor, 30);
   assert.equal(q.amountMinor, 3300);
-  assert.equal(q.bonus, 18 + 15);
+  assert.equal(q.bonus, 30 + 25);
   const l = quoteLinks(bal, [5, 3]);
   assert.ok(l);
   assert.equal(l.amountMinor, 2400);

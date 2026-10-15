@@ -1,4 +1,4 @@
-// FieldLink customer API client (contract 1.14.0).
+// FieldLink customer API client (contract 1.19.0, checked 2026-10-15).
 //
 // Adapted from gsc-hub (https://github.com/izzipizzy/gsc-hub, MIT — notice preserved here per
 // its license), which built the first integration against this API. Deviations from the port:
@@ -15,12 +15,48 @@ import { LANGUAGE_CODES } from "./languages";
 
 export const FIELDLINK_DEFAULT_BASE = "https://seoboost-root.info/api/customer/v1";
 
-/** Price of one post placement in minor units (0.2 credits at scale 100). */
+/** DEFAULT price of one post placement in minor units (0.2 credits at scale 100). An account
+ *  can have a personal price — /balance `prices.post` wins; the quote is always the truth. */
 export const POST_UNIT_MINOR = 20;
 
-/** The service's standing bonus: 25% extra placements, per order, rounded up. */
+/** The service's standing post bonus: 25% extra, on the order total, rounded DOWN
+ *  (contract 1.19: floor(requested / 4) — 50 ordered → 12 bonus). Homepage links get none. */
 export function bonusFor(requested: number): number {
-  return Math.ceil(requested / 4);
+  return Math.floor(requested / 4);
+}
+
+/** Homepage-link traffic tiers (contract 1.19, pricing version 2026-10-12-traffic-v4). Only
+ *  the `available` ones are accepted for new orders; the rest answer LINK_TIER_COMING_SOON. */
+export const LINK_TIERS = [
+  { id: "traffic_0_1", label: "0–1", creditsMinor: 100, available: true },
+  { id: "traffic_2_24", label: "2–24", creditsMinor: 200, available: true },
+  { id: "traffic_25_249", label: "25–249", creditsMinor: 500, available: true },
+  { id: "traffic_250_9999", label: "250–9 999", creditsMinor: 1000, available: false },
+  { id: "traffic_10000_29999", label: "10 000–29 999", creditsMinor: 1500, available: false },
+  { id: "traffic_30000_plus", label: "30 000+", creditsMinor: 2000, available: false },
+] as const;
+export type LinkTierId = (typeof LINK_TIERS)[number]["id"];
+export const AVAILABLE_LINK_TIERS: ReadonlySet<string> = new Set(LINK_TIERS.filter(t => t.available).map(t => t.id));
+export const LINK_CONTENT_HINT_MAX = 300;
+
+/** A homepage-link brief: exactly the fields POST /links accepts (extra fields are a 400). */
+export interface FieldLinkLinkBrief {
+  targetUrl: string;
+  anchor: string;
+  language: string;
+  count: number;
+  tier: string;
+  contentHint?: string;
+}
+
+/** contentHint: plain text ≤ 300 chars, no URL, no HTML, no spintax. Returns the problem or null. */
+export function contentHintProblem(hint: string): string | null {
+  if (!hint) return null;
+  if (hint.length > LINK_CONTENT_HINT_MAX) return `topic longer than ${LINK_CONTENT_HINT_MAX} characters`;
+  if (/<[a-z/]/i.test(hint)) return "topic must not contain HTML";
+  if (/https?:\/\/|www\./i.test(hint)) return "topic must not contain a URL";
+  if (/\{[^}]*\|[^}]*\}/.test(hint)) return "topic must not contain spintax";
+  return null;
 }
 
 export const MAX_COUNT_PER_BRIEF = 250;
@@ -304,8 +340,16 @@ export class FieldLinkClient {
   }
 
   /** Saves a task. Publication does not start and no money moves. */
-  createPosts(payload: { name?: string; topic: string; items: FieldLinkBrief[] }, idempotencyKey: string) {
+  createPosts(payload: { name?: string; topic: "auto" | "casino" | "other"; items: FieldLinkBrief[] }, idempotencyKey: string) {
     return this.request<{ taskId?: string; task?: { id: string }; replayed?: boolean }>("POST", "/posts", {
+      body: payload,
+      idempotencyKey,
+    });
+  }
+
+  /** Saves a homepage-link task (same save → quote → order cycle as posts). No bonus. */
+  createLinks(payload: { name?: string; items: FieldLinkLinkBrief[] }, idempotencyKey: string) {
+    return this.request<{ taskId?: string; task?: { id: string }; replayed?: boolean }>("POST", "/links", {
       body: payload,
       idempotencyKey,
     });
@@ -313,12 +357,12 @@ export class FieldLinkClient {
 
   /** The briefs a task was saved with — the purchase ledger is written from these, not from
    *  whatever the browser happened to send, so a replayed submit cannot double-record. */
-  async taskRows(taskId: string, pageSize = 100): Promise<FieldLinkBrief[]> {
-    const out: FieldLinkBrief[] = [];
+  async taskRows(taskId: string, pageSize = 100): Promise<(FieldLinkBrief & { quantity?: number })[]> {
+    const out: (FieldLinkBrief & { quantity?: number })[] = [];
     let page = 0;
     for (;;) {
       const data = await this.request<{
-        task?: { rows?: FieldLinkBrief[] };
+        task?: { rows?: (FieldLinkBrief & { quantity?: number })[] };
         pagination?: { totalPages?: number };
       }>("GET", `/tasks/${encodeURIComponent(taskId)}/rows`, { query: { page, pageSize } });
       out.push(...(data.task?.rows ?? []));

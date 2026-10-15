@@ -4619,7 +4619,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
             <div style={{ padding: "18px 24px 18px 0" }}>
               <div style={{ fontSize: "13px", fontWeight: 700, color: note.kind === "purchase" ? "#7C3AED" : "var(--color-text-primary)", marginBottom: "4px" }}>
                 {note.kind === "purchase"
-                  ? t("mlPurchaseRow").replace("{n}", String(note.mlQuantity ?? "?")).replace("{p}", String(note.mlProvider ?? "").startsWith("magic369") ? "369Team" : "FieldLink")
+                  ? t("mlPurchaseRow").replace("{n}", String(note.mlQuantity ?? "?")).replace("{p}", String(note.mlProvider ?? "").startsWith("magic369") ? "369 Links Market" : "FieldLink")
                   : note.title}
               </div>
               <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
@@ -5542,7 +5542,7 @@ export default function SitePage({
       if (!x) continue;
       out.push({
         id: `purchase-${p.orderId}`,
-        title: `${p.quantity} links · ${p.provider.startsWith("magic369") ? "369Team" : "FieldLink"} · ${p.orderId}`,
+        title: `${p.quantity} links · ${p.provider.startsWith("magic369") ? "369 Links Market" : "FieldLink"} · ${p.orderId}`,
         x,
         kind: "purchase",
         label: `${p.quantity}×${p.provider.startsWith("magic369") ? "369" : "FL"}`,

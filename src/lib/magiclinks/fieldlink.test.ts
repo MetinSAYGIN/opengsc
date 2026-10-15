@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  validateBrief, bonusFor, idempotencyKeyFor, POST_UNIT_MINOR, FieldLinkClient, FieldLinkError,
+  validateBrief, bonusFor, idempotencyKeyFor, POST_UNIT_MINOR, contentHintProblem, AVAILABLE_LINK_TIERS, FieldLinkClient, FieldLinkError,
 } from "./fieldlink";
 
 // The money contract's client side: brief validation (bad input must die in OUR UI, not as a
@@ -38,10 +38,11 @@ test("validateBrief rejects the inputs the service would 400 on", () => {
   assert.throws(() => validateBrief(brief({ count: 0 }), 6), /row 7: count/);
 });
 
-test("bonusFor rounds the 25% service bonus up", () => {
+test("bonusFor rounds the 25% service bonus down (contract 1.19)", () => {
   assert.equal(bonusFor(4), 1);
-  assert.equal(bonusFor(5), 2); // 1.25 → 2: the service rounds up, so must any local estimate
-  assert.equal(bonusFor(8), 2);
+  assert.equal(bonusFor(5), 1); // floor(5 / 4)
+  assert.equal(bonusFor(50), 12); // the contract's own example
+  assert.equal(bonusFor(100), 25);
   assert.equal(bonusFor(0), 0);
   assert.equal(POST_UNIT_MINOR, 20);
 });
@@ -120,4 +121,14 @@ test("FieldLinkClient sends the expected-credits header on submit", async () => 
   } finally {
     globalThis.fetch = orig;
   }
+});
+
+test("contentHintProblem: plain short text only; tiers 1/2/5 available, 10/15/20 not yet", () => {
+  assert.equal(contentHintProblem(""), null);
+  assert.equal(contentHintProblem("rental apartments"), null);
+  assert.ok(contentHintProblem("see https://x.com"));
+  assert.ok(contentHintProblem("<b>x</b>"));
+  assert.ok(contentHintProblem("{car|auto} rental"));
+  assert.ok(contentHintProblem("x".repeat(301)));
+  assert.deepEqual([...AVAILABLE_LINK_TIERS], ["traffic_0_1", "traffic_2_24", "traffic_25_249"]);
 });

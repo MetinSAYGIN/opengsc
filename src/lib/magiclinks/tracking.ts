@@ -36,7 +36,9 @@ export interface PurchasedPlacement {
 export function placementsFromFieldLink(rows: FieldLinkRow[]): PurchasedPlacement[] {
   const out: PurchasedPlacement[] = [];
   for (const r of rows) {
-    const donorUrl = String(r.result?.destination ?? "").trim();
+    // Posts: `destination` is the publication. Homepage links: `donor` is the homepage the link
+    // sits on (result.text is the snippet, never a URL).
+    const donorUrl = String(r.result?.destination ?? r.result?.donor ?? "").trim();
     const targetUrl = String(r.input?.targetUrl ?? "").trim();
     if (donorUrl && targetUrl) out.push({ donorUrl, targetUrl });
   }
