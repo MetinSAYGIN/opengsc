@@ -144,6 +144,14 @@ const SUPPORT_PARTNERS = [
     tileBg: "#07110c",
     imgStyle: { maxHeight: "32px" } as React.CSSProperties,
   },
+  {
+    id: "Tradeproxy",
+    name: "TradeProxy",
+    href: "https://tradeproxy.net/?utm_source=opengsc",
+    logo: "/partners/tradeproxy-logo.png",
+    tileBg: "#0F172A",
+    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
+  },
 ] as const;
 
 function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose: () => void }) {
