@@ -149,7 +149,7 @@ const SUPPORT_PARTNERS = [
     name: "TradeProxy",
     href: "https://tradeproxy.net/?utm_source=opengsc",
     logo: "/partners/tradeproxy-logo.png",
-    tileBg: "#0F172A",
+    tileBg: "#0b0e16",
     imgStyle: { maxHeight: "30px" } as React.CSSProperties,
   },
 ] as const;
