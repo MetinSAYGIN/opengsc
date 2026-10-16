@@ -5415,5 +5415,7 @@
   "serpTabSub": "Los resultados de búsqueda alimentan el análisis de contenido, los esquemas, Rank Tracker, SERP Monitor y la investigación de palabras clave. Elige el proveedor predeterminado y, si quieres, otro (y uno de respaldo) para Rank Tracker. Las claves están abajo.",
   "serpKeysTitle": "Claves de SERP y scraping",
   "linkBuyTitle": "Compra de enlaces",
-  "linkBuySub": "Plataformas a través de las que pide la herramienta Magic links."
+  "linkBuySub": "Plataformas a través de las que pide la herramienta Magic links.",
+  "gscQuotaWarn": "La cuota de la API de Google Search Console está agotada ahora mismo: las tablas de abajo se llenarán solas cuando se restablezca. Los totales y los gráficos provienen de la base de datos sincronizada y siguen siendo correctos.",
+  "gscUnreachableWarn": "No se pudo acceder a Google Search Console: las tablas de abajo no están disponibles. Revisa la conexión de Google en Ajustes."
 }

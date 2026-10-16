@@ -5415,5 +5415,7 @@
   "serpTabSub": "Zoekresultaten voeden contentanalyse, outlines, Rank Tracker, SERP Monitor en zoekwoordonderzoek. Kies de standaardprovider en eventueel een aparte (en een fallback) voor Rank Tracker. De sleutels staan hieronder.",
   "serpKeysTitle": "SERP- & scraping-sleutels",
   "linkBuyTitle": "Linkaankoop",
-  "linkBuySub": "Marktplaatsen waar de tool Magic links bij bestelt."
+  "linkBuySub": "Marktplaatsen waar de tool Magic links bij bestelt.",
+  "gscQuotaWarn": "Het API-quota van Google Search Console is momenteel verbruikt — de tabellen hieronder vullen zichzelf zodra het herstelt. Totalen en grafieken komen uit de gesynchroniseerde database en blijven correct.",
+  "gscUnreachableWarn": "Google Search Console is onbereikbaar — de tabellen hieronder zijn niet beschikbaar. Controleer de Google-verbinding in de instellingen."
 }

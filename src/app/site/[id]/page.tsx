@@ -41,7 +41,7 @@ import {
   SlidersHorizontal, ChevronDown, Smartphone, Monitor, Tablet,
   Users, Activity, Zap, DollarSign, Link2, Check, Star,
   FileText, Globe, Search, ArrowLeftRight, BookmarkCheck, Calendar, X, Download,
-  ChevronLeft, ChevronRight, ExternalLink, Pencil, Trash2,
+  ChevronLeft, ChevronRight, ExternalLink, Pencil, Trash2, AlertTriangle,
 } from "lucide-react";
 import {
   ComposedChart, LineChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -5119,6 +5119,9 @@ interface SiteData {
   positionBuckets: { "1-3": number; "4-10": number; "11-20": number; "21+": number };
   winnersLosers: WlData;
   totals?: { queries: number; pages: number };
+  // Why the live sections came back empty — "quota" (transient, self-heals) or "unreachable"
+  // (auth/network). Absent from responses of an older server (issue #38).
+  live?: { failure: "quota" | "unreachable" | null };
   hasData: boolean;
 }
 
@@ -5279,7 +5282,7 @@ export default function SitePage({
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [showBrandedModal, setShowBrandedModal] = useState(false);
   const [brandedKeywords, setBrandedKeywords] = useState<string[]>([]);
-  const [clusterMetrics, setClusterMetrics] = useState<{ clusters: ClusterRow[]; groups: ClusterRow[] } | null>(null);
+  const [clusterMetrics, setClusterMetrics] = useState<{ clusters: ClusterRow[]; groups: ClusterRow[]; error?: "quota" | "unreachable" | null } | null>(null);
   const [clusterLoading, setClusterLoading] = useState(false);
   const siteDbId = propSiteDbId || siteData?.siteDbId || '';
   const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
@@ -5985,6 +5988,11 @@ export default function SitePage({
           {/* Tables or placeholders */}
           {(clusterMetrics?.clusters?.length ?? 0) > 0 || (clusterMetrics?.groups?.length ?? 0) > 0 ? (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
+              {clusterMetrics?.error === "quota" && (
+                <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "#B45309" }}>
+                  <AlertTriangle size={14} color="#F59E0B" /> {t("gscQuotaWarn")}
+                </div>
+              )}
               <ClusterTable
                 title={t("topicClusters")}
                 data={clusterMetrics?.clusters ?? []}
@@ -6025,6 +6033,20 @@ export default function SitePage({
                 filterPreset && (filterPreset === "paa" ? "People Also Ask" : "Long Tail Keywords"),
               ].filter(Boolean).join(", ")} (Queries/Pages below)
             </span>
+          </div>
+        )}
+        {/* Empty tables with correct totals above = Search Console refused the live calls, not
+            "this site has no queries". Say which of the two it is (issue #38). */}
+        {siteData?.live?.failure && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: "8px", margin: "0 0 16px", padding: "10px 14px",
+            borderRadius: "8px", fontSize: "13px",
+            background: siteData.live.failure === "quota" ? "rgba(245,158,11,0.08)" : "rgba(239,68,68,0.06)",
+            border: `1px solid ${siteData.live.failure === "quota" ? "rgba(245,158,11,0.3)" : "rgba(239,68,68,0.25)"}`,
+            color: "var(--color-text-primary)",
+          }}>
+            <AlertTriangle size={15} color={siteData.live.failure === "quota" ? "#F59E0B" : "#EF4444"} />
+            <span>{siteData.live.failure === "quota" ? t("gscQuotaWarn") : t("gscUnreachableWarn")}</span>
           </div>
         )}
         <div ref={resultsRef} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "32px", scrollMarginTop: "16px" }}>

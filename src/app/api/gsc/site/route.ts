@@ -4,6 +4,7 @@ import { google } from 'googleapis';
 import { resolveWindow, windowDays, utcDay, shiftYmd } from '@/lib/periodWindow';
 import { comparePeriods, aggFromGscRows, pctChange } from '@/lib/gsc/periodCompare';
 import { queryHistoryFor } from '@/lib/gsc/queryHistory';
+import { classifyGscFailure, type GscFailure } from '@/lib/gsc/gscFailure';
 
 function pct(curr: number, prev: number) {
   if (prev === 0) return curr > 0 ? 100 : 0;
@@ -36,7 +37,10 @@ function makeOAuth2(account: GscAccount) {
   return oauth2;
 }
 
-// Try each linked account until one successfully queries GSC for the given siteUrl
+// Try each linked account until one successfully queries GSC for the given siteUrl.
+// Returns WHY it failed when none could: a dashboard over quota used to show empty
+// Queries/Pages tables next to correct totals, with nothing anywhere saying why (issue #38).
+type GscRow = { keys?: string[] | null; clicks?: number | null; impressions?: number | null; ctr?: number | null; position?: number | null };
 async function queryGSC(
   accounts: GscAccount[],
   siteUrl: string,
@@ -44,7 +48,8 @@ async function queryGSC(
   endDate: string,
   dimension: string,
   rowLimit = 250
-) {
+): Promise<{ rows: GscRow[]; failure: GscFailure | null }> {
+  let failure: GscFailure | null = null;
   for (const account of accounts) {
     try {
       const oauth2 = makeOAuth2(account);
@@ -59,13 +64,19 @@ async function queryGSC(
           dataState: 'all',
         },
       });
-      return res.data.rows ?? [];
-    } catch {
-      continue;
+      return { rows: res.data.rows ?? [], failure: null };
+    } catch (err) {
+      const f = classifyGscFailure(err);
+      if (failure !== "quota") failure = f;
     }
   }
-  return [];
+  return { rows: [], failure };
 }
+
+// Once Google answers 429, hammering it with four 25k-row fetches per page view only keeps
+// the quota pinned. Remember the quota answer for two minutes and answer "quota" directly.
+const LIVE_QUOTA_BACKOFF_MS = 2 * 60_000;
+let liveQuotaUntil = 0;
 
 import { verifyAuthOrShare } from '@/lib/authShare';
 
@@ -164,19 +175,38 @@ export async function GET(req: Request) {
   // Google's 25k-row maximum; pages are live (few, and Google's positions are exact).
   const FULL = 25000;
   const history = await queryHistoryFor(site.id, currDays, prevDays);
+  const quotaPaused = Date.now() < liveQuotaUntil; // recent 429 — skip Google for now
+  const skipCall = (): Promise<{ rows: GscRow[]; failure: GscFailure | null }> =>
+    Promise.resolve(quotaPaused ? { rows: [], failure: "quota" } : { rows: [], failure: null });
+  const call = (used: boolean, startDate: string, endDate: string, dimension: string, rowLimit: number) =>
+    quotaPaused || !used ? skipCall() : queryGSC(accounts, site.siteId, startDate, endDate, dimension, rowLimit);
   const [
-    qCurrRows, qPrevRows, pageRows, prevPageRows,
-    countryRows, deviceRows, prevCountryRows, prevDeviceRows,
+    qCurr, qPrev, pageCall, prevPageCall,
+    countryCall, deviceCall, prevCountryCall, prevDeviceCall,
   ] = await Promise.all([
-    history ? Promise.resolve([]) : queryGSC(accounts, site.siteId, startStr, endStr, 'query', FULL),
-    history ? Promise.resolve([]) : queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'query', FULL),
-    queryGSC(accounts, site.siteId, startStr, endStr, 'page', FULL),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'page', FULL),
-    queryGSC(accounts, site.siteId, startStr, endStr, 'country', 100),
-    queryGSC(accounts, site.siteId, startStr, endStr, 'device', 10),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'country', 100),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'device', 10),
+    call(!history, startStr, endStr, 'query', FULL),
+    call(!history, prevStartStr, prevEndStr, 'query', FULL),
+    call(true, startStr, endStr, 'page', FULL),
+    call(true, prevStartStr, prevEndStr, 'page', FULL),
+    call(true, startStr, endStr, 'country', 100),
+    call(true, startStr, endStr, 'device', 10),
+    call(true, prevStartStr, prevEndStr, 'country', 100),
+    call(true, prevStartStr, prevEndStr, 'device', 10),
   ]);
+  const { rows: qCurrRows } = qCurr;
+  const { rows: qPrevRows } = qPrev;
+  const { rows: pageRows } = pageCall;
+  const { rows: prevPageRows } = prevPageCall;
+
+  // One honest verdict for everything fetched live here. "quota" wins over "unreachable":
+  // it is transient and the banner must say so, and seeing it arms the backoff above.
+  const worst = (a: GscFailure | null, b: GscFailure | null): GscFailure | null =>
+    a === "quota" || b === "quota" ? "quota" : a ?? b;
+  const liveFailure = history
+    ? worst(pageCall.failure, worst(prevPageCall.failure, worst(countryCall.failure, worst(deviceCall.failure, worst(prevCountryCall.failure, prevDeviceCall.failure)))))
+    : [qCurr, qPrev, pageCall, prevPageCall, countryCall, deviceCall, prevCountryCall, prevDeviceCall].reduce(
+        (acc, c) => worst(acc, c.failure), null as GscFailure | null);
+  if (liveFailure === "quota") liveQuotaUntil = Date.now() + LIVE_QUOTA_BACKOFF_MS;
 
   const qCmp = comparePeriods(history?.curr ?? aggFromGscRows(qCurrRows), history?.prev ?? aggFromGscRows(qPrevRows));
   const pCmp = comparePeriods(aggFromGscRows(pageRows), aggFromGscRows(prevPageRows));
@@ -186,11 +216,11 @@ export async function GET(req: Request) {
   const newQueries = qCmp.newRows;
   const newPages   = pCmp.newRows;
 
-  const prevCountryMap = new Map(prevCountryRows.map(r => [r.keys?.[0], r]));
-  const prevDeviceMap  = new Map(prevDeviceRows.map(r => [r.keys?.[0], r]));
+  const prevCountryMap = new Map(prevCountryCall.rows.map(r => [r.keys?.[0], r]));
+  const prevDeviceMap  = new Map(prevDeviceCall.rows.map(r => [r.keys?.[0], r]));
 
   // ── Countries with real change % ──────────────────────────────────────────────
-  const countries = countryRows.map(r => {
+  const countries = countryCall.rows.map(r => {
     const key  = r.keys?.[0] ?? '';
     const prev = prevCountryMap.get(key);
     return {
@@ -206,7 +236,7 @@ export async function GET(req: Request) {
   });
 
   // ── Devices with real change % ────────────────────────────────────────────────
-  const devices = deviceRows.map(r => {
+  const devices = deviceCall.rows.map(r => {
     const key      = r.keys?.[0] ?? '';
     const prev     = prevDeviceMap.get(key);
     const currCtr  = (r.ctr ?? 0) * 100;
@@ -265,6 +295,11 @@ export async function GET(req: Request) {
     winnersLosers,
     // How many queries/pages the period has in all — the tables carry the top TABLE_ROWS.
     totals: { queries: qCmp.total, pages: pCmp.total },
+    // Why the live sections (queries when not covered by history, pages, countries, devices)
+    // came back empty: "quota" = Search Console is over its quota right now and will recover,
+    // "unreachable" = no linked account could query the property. Totals and charts come from
+    // the synced database either way. Absent in responses of an older server.
+    live: { failure: liveFailure },
     hasData: currRows.length > 0,
   });
 }

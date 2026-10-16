@@ -5,6 +5,7 @@ import { google } from 'googleapis';
 import { recordSyncCompleted } from '@/lib/syncSchedule';
 import { planQueryHistory, type DayRange } from "@/lib/gsc/queryHistoryPlan";
 import { localYmd, utcDay } from "@/lib/periodWindow";
+import { isGscQuotaError } from "@/lib/gsc/gscFailure";
 
 let isSyncing = false;
 
@@ -62,11 +63,7 @@ async function pooled<T>(items: T[], limit: number, worker: (item: T) => Promise
   await Promise.all(lanes);
 }
 
-function isQuotaError(err: unknown): boolean {
-  const e = err as { code?: number | string; status?: number; message?: string };
-  const status = Number(e?.code ?? e?.status);
-  return status === 429 || /quota|rate.?limit|too many requests/i.test(String(e?.message ?? ''));
-}
+const isQuotaError = isGscQuotaError;
 
 /** Search Console's maximum rows per searchanalytics request. */
 const GSC_ROW_LIMIT = 25_000;
@@ -80,6 +77,13 @@ const QUERY_PAGE_MAX_PAGES = 8;
 const QUERY_PAGE_DAILY_MAX_PAGES = 8;
 /** Upper bound on date×query pages per planned range per sync (×25k rows) — see Step 6. */
 const QUERY_HISTORY_MAX_PAGES = 8;
+
+// A backfill chunk that died on quota must not come back on the very next sync: retrying the
+// same heavy 30-day fetch every run keeps the property pinned at its load ceiling, which is
+// what starves the dashboard's live tables for days (issue #38). The site's backfill (never
+// its tail) pauses for this long after a quota failure. In-memory: a restart just retries.
+const QUERY_HISTORY_QUOTA_PAUSE_MS = 6 * 60 * 60_000;
+const queryHistoryPausedUntil = new Map<string, number>();
 
 /**
  * Retry a Google call that came back over quota.
@@ -620,14 +624,25 @@ export async function runGscSync() {
           const known = newest && cursorRow?.queryHistoryFrom ? storedDay(cursorRow.queryHistoryFrom) : null;
           let cursor = known && known < plan.tail.start ? known : plan.tail.start;
           await saveCursor(cursor);
-          for (const r of plan.backfill) {
-            written += await writeRange(r);
-            cursor = r.start;
-            await saveCursor(cursor);
+          const pausedUntil = queryHistoryPausedUntil.get(dbSite.id) ?? 0;
+          if (Date.now() < pausedUntil) {
+            note.push(`${written} query/day (backfill paused — quota)`);
+          } else {
+            for (const r of plan.backfill) {
+              written += await writeRange(r);
+              cursor = r.start;
+              await saveCursor(cursor);
+            }
+            queryHistoryPausedUntil.delete(dbSite.id);
+            note.push(`${written} query/day (history from ${cursor})`);
           }
-          note.push(`${written} query/day (history from ${cursor})`);
         } catch (err) {
-          console.error(`[GSC Sync]     Query history skipped for ${hostname}: ${(err as Error).message}`);
+          if (isQuotaError(err)) {
+            queryHistoryPausedUntil.set(dbSite.id, Date.now() + QUERY_HISTORY_QUOTA_PAUSE_MS);
+            console.warn(`[GSC Sync]     ${hostname}: query history over quota — backfill paused for ${QUERY_HISTORY_QUOTA_PAUSE_MS / 3_600_000}h (tail still refreshes)`);
+          } else {
+            console.error(`[GSC Sync]     Query history skipped for ${hostname}: ${(err as Error).message}`);
+          }
         }
 
         // Reports computed from these rows (cannibalization, …) are cached per site; this

@@ -5415,5 +5415,7 @@
   "serpTabSub": "搜索结果用于内容分析、大纲、Rank Tracker、SERP 监控和关键词研究。选择默认服务商，也可为 Rank Tracker 单独指定一个（及备用）。密钥在下方。",
   "serpKeysTitle": "SERP 与抓取密钥",
   "linkBuyTitle": "购买外链",
-  "linkBuySub": "Magic links 工具下单使用的平台。"
+  "linkBuySub": "Magic links 工具下单使用的平台。",
+  "gscQuotaWarn": "Google Search Console 的 API 配额当前已用尽——下方表格会在配额恢复后自动填充。总计和图表来自已同步的数据库，保持准确。",
+  "gscUnreachableWarn": "无法连接 Google Search Console——下方表格不可用。请在设置中检查 Google 连接。"
 }

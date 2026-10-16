@@ -5415,5 +5415,7 @@
   "serpTabSub": "Suchergebnisse speisen Content-Analyse, Outlines, Rank Tracker, SERP Monitor und Keyword-Recherche. Wähle den Standardanbieter und optional einen eigenen (plus Fallback) für den Rank Tracker. Die Keys stehen darunter.",
   "serpKeysTitle": "SERP- & Scraping-Keys",
   "linkBuyTitle": "Linkkauf",
-  "linkBuySub": "Marktplätze, bei denen das Tool Magic links bestellt."
+  "linkBuySub": "Marktplätze, bei denen das Tool Magic links bestellt.",
+  "gscQuotaWarn": "Das API-Kontingent der Google Search Console ist derzeit ausgeschöpft — die Tabellen unten füllen sich von selbst, sobald es sich erholt. Summen und Diagramme kommen aus der synchronisierten Datenbank und bleiben korrekt.",
+  "gscUnreachableWarn": "Google Search Console ist nicht erreichbar — die Tabellen unten sind nicht verfügbar. Prüfen Sie die Google-Verbindung in den Einstellungen."
 }

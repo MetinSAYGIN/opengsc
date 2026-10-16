@@ -5415,5 +5415,7 @@
   "serpTabSub": "Search results power content analysis, outlines, Rank Tracker, SERP Monitor and keyword research. Pick the default provider and, if you like, a separate one (and a fallback) for Rank Tracker. The keys are below.",
   "serpKeysTitle": "SERP & scraping keys",
   "linkBuyTitle": "Link purchase",
-  "linkBuySub": "Marketplaces the Magic links tool orders from."
+  "linkBuySub": "Marketplaces the Magic links tool orders from.",
+  "gscQuotaWarn": "Google Search Console is over its API quota right now — the tables below will fill in on their own once it resets. Totals and charts come from the synced database and stay correct.",
+  "gscUnreachableWarn": "Google Search Console could not be reached — the tables below are unavailable. Check the Google connection in Settings."
 }
