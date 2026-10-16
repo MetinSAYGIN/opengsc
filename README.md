@@ -608,6 +608,8 @@ Every step below is a direct link that opens exactly the right page in Google Cl
    > **Note:** Google does not accept bare IP addresses here — a domain is required (the only exception is `http://localhost` for local development). Any subdomain you control works fine, e.g. `gsc.your-domain.com`.
 5. Copy the **Client ID** and **Client Secret** from the confirmation dialog — the installer asks for both. You can always find them again at [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials).
 
+> **Warning:** Test users are fine for a first look, but while the app stays in **Testing**, Google issues refresh tokens that expire after **7 days** — a week in, your accounts quietly disconnect and syncs stop, with everything else still looking normal. For a long-running instance press **Publish app** on the Audience page ([console.cloud.google.com/auth/audience](https://console.cloud.google.com/auth/audience)); no Google verification is needed for a self-hosted tool. Details: [Wiki → Google Cloud Setup](https://github.com/fenjo26/OpenGSC/wiki/Google-Cloud-Setup#testing-vs-in-production-read-this).
+>
 > **Tip:** if sign-in later fails with `access_denied`, your account isn't in Test users (step 3) — either add it there, or publish the app on the same page (**Publish app**).
 
 ### 2. Run the one-line installer
