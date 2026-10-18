@@ -10,12 +10,19 @@
 // stored per user. If two people both switch it on, the earlier of the two hours wins and the
 // second one finds the run already done for the day. On a single-operator instance — which is
 // what OpenGSC is — that distinction never comes up.
+//
+// Right after the Google run, the same schedule rebuilds each due user's Bing/Yandex snapshots
+// (enginePortfolio.ts), which the dashboard otherwise only rebuilds when Sync is pressed. That half
+// is per user, since it spends the user's own engine keys, and it keeps a day stamp of its own
+// (`enginesRunAt`): it runs once a day, even on a day the Google run has to be retried.
 
 import { runGscSync, isSyncInProgress } from "@/lib/gscSync";
 import { getSyncSchedule, saveSyncSchedule, isDue } from "@/lib/syncSchedule";
 import { rawQuery } from "@/lib/db/raw";
 import { resolveCaptureBodies } from '@/lib/providerLog/bodies';
 import { withCallContext } from "@/lib/providerLog/context";
+import { redactText } from "@/lib/providerLog/redact";
+import { ENGINE_CRON_PERIODS, refreshEnginePortfolios } from "@/lib/enginePortfolio";
 
 const TICK_MS = 15 * 60 * 1000;
 
@@ -30,17 +37,26 @@ async function tick() {
 
   const now = new Date();
   const due: string[] = [];
+  const enginesDue: string[] = [];
   for (const u of users) {
     const s = await getSyncSchedule(u.id);
     if (isDue(s, now)) due.push(u.id);
+    // The same once-a-day rule, counted against the engines' own stamp.
+    if (isDue({ ...s, lastRunAt: s.enginesRunAt ?? null }, now)) enginesDue.push(u.id);
   }
-  if (!due.length) return;
+  if (!due.length && !enginesDue.length) return;
 
   if (isSyncInProgress()) {
     console.log("[sync-cron] due, but a sync is already running — leaving it alone");
     return;
   }
 
+  // The engines do not read Google's data, so a Google run that failed does not hold them back.
+  if (due.length) await syncGoogle(due).catch(e => console.warn("[sync-cron] scheduled sync failed:", e));
+  if (enginesDue.length) await refreshEngines(enginesDue);
+}
+
+async function syncGoogle(due: string[]) {
   console.log(`[sync-cron] starting scheduled sync (due for ${due.length} user(s))`);
   // A null user, deliberately. `runGscSync()` is one instance-wide run serving everyone who is
   // due, so there is no single owner to name — and naming one of the due users would bill their
@@ -63,6 +79,22 @@ async function tick() {
   }
 }
 
+// Unlike the Google run, these calls have an owner: the user whose keys they spend.
+async function refreshEngines(userIds: string[]) {
+  for (const userId of userIds) {
+    try {
+      const captureBodies = await resolveCaptureBodies(userId);
+      await withCallContext({ userId, feature: "engine-cron", captureBodies }, () => refreshEnginePortfolios(userId));
+    } catch (e) {
+      console.warn(`[engine-cron] interrompu pour l'utilisateur ${userId} : ${redactText(e instanceof Error ? e.message : String(e))}`);
+    }
+    // Stamped whatever the outcome: a period that failed keeps its previous snapshot and is tried
+    // again tomorrow, not every fifteen minutes against an engine that is throttling us.
+    const s = await getSyncSchedule(userId);
+    await saveSyncSchedule(userId, { ...s, enginesRunAt: new Date().toISOString() }).catch(() => {});
+  }
+}
+
 let started = false;
 let running = false;
 
@@ -70,6 +102,7 @@ export function startSyncScheduler() {
   if (started) return;
   started = true;
   console.log("[sync-cron] scheduler started");
+  console.log(`[engine-cron] rafraîchissement Bing/Yandex prévu après chaque sync planifiée (${ENGINE_CRON_PERIODS.join(", ")})`);
   const run = async () => {
     if (running) return;
     running = true;

@@ -2382,7 +2382,7 @@
   "autoSyncZone": "Zona horaria",
   "autoSyncLastRun": "Última ejecución automática",
   "autoSyncNever": "aún no",
-  "autoSyncNote": "La ejecución cubre todas las cuentas de Google conectadas. Google publica los datos de un día unos dos días después, así que la fecha más reciente que verás es la de anteayer.",
+  "autoSyncNote": "La ejecución cubre todas las cuentas de Google conectadas. Google publica los datos de un día unos dos días después, así que la fecha más reciente que verás es la de anteayer. Bing y Yandex, si tienen sus claves configuradas, se actualizan justo después para las vistas de 7 días, 28 días y 3 meses; los demás periodos, al pulsar Sincronizar datos.",
   "autoSyncNotMigrated": "No se pudo guardar — ejecuta `npx prisma db push` para añadir la nueva columna.",
   "digestTitle": "Resumen",
   "digestSubtitle": "Un resumen de tus sitios — todos o una etiqueta (p. ej., tu red favorita) — en pantalla o enviado a tus canales de notificación.",

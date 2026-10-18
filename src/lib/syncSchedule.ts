@@ -29,6 +29,13 @@ export type SyncSchedule = {
    * from this morning. Two screens disagreeing about the same event.
    */
   lastCompletedAt?: string | null;
+  /**
+   * ISO timestamp of the last daily Bing/Yandex refresh this schedule triggered, or null.
+   *
+   * A stamp of its own rather than `lastRunAt`, so neither run drags the other along: a Google run
+   * that crashed is retried on the next tick, and that retry must not pull Bing a second time.
+   */
+  enginesRunAt?: string | null;
 };
 
 export const DEFAULT_SYNC_SCHEDULE: SyncSchedule = {
@@ -37,6 +44,7 @@ export const DEFAULT_SYNC_SCHEDULE: SyncSchedule = {
   timeZone: "UTC",
   lastRunAt: null,
   lastCompletedAt: null,
+  enginesRunAt: null,
 };
 
 export async function getSyncSchedule(userId: string): Promise<SyncSchedule> {
@@ -61,10 +69,11 @@ export function normalise(input: Partial<SyncSchedule>, current: SyncSchedule): 
     enabled: input.enabled ?? current.enabled,
     hour: Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : current.hour,
     timeZone: isValidZone(input.timeZone) ? input.timeZone! : current.timeZone,
-    // Both timestamps are the server's to write. Carried over explicitly rather than spread from
+    // The timestamps are the server's to write. Carried over explicitly rather than spread from
     // `current`, so that saving the form cannot erase them by omission.
     lastRunAt: current.lastRunAt,
     lastCompletedAt: current.lastCompletedAt ?? null,
+    enginesRunAt: current.enginesRunAt ?? null,
   };
 }
 

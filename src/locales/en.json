@@ -2382,7 +2382,7 @@
   "autoSyncZone": "Time zone",
   "autoSyncLastRun": "Last automatic run",
   "autoSyncNever": "not yet",
-  "autoSyncNote": "The run covers every connected Google account. Google publishes a day's data about two days later, so the newest date you will see is the day before yesterday.",
+  "autoSyncNote": "The run covers every connected Google account. Google publishes a day's data about two days later, so the newest date you will see is the day before yesterday. Bing and Yandex, when their keys are set, are refreshed right after it for the 7-day, 28-day and 3-month views; other periods update when you press Sync Data.",
   "autoSyncNotMigrated": "Could not save — run `npx prisma db push` to add the new column.",
   "digestTitle": "Digest",
   "digestSubtitle": "A summary of your sites — all of them or one tag (e.g. your favorite network) — on screen or delivered to your notification channels.",

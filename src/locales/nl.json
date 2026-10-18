@@ -2382,7 +2382,7 @@
   "autoSyncZone": "Tijdzone",
   "autoSyncLastRun": "Laatste automatische run",
   "autoSyncNever": "nog niet",
-  "autoSyncNote": "De run dekt elk verbonden Google-account. Google publiceert de gegevens van een dag ongeveer twee dagen later, dus de nieuwste datum die je ziet is eergisteren.",
+  "autoSyncNote": "De run dekt elk verbonden Google-account. Google publiceert de gegevens van een dag ongeveer twee dagen later, dus de nieuwste datum die je ziet is eergisteren. Bing en Yandex worden, als hun sleutels zijn ingesteld, direct daarna bijgewerkt voor de weergaven 7 dagen, 28 dagen en 3 maanden; andere periodes wanneer je op Gegevens synchroniseren klikt.",
   "autoSyncNotMigrated": "Kon niet opslaan — voer `npx prisma db push` uit om de nieuwe kolom toe te voegen.",
   "digestTitle": "Samenvatting",
   "digestSubtitle": "Een samenvatting van je websites — allemaal of één tag (bijv. je favoriete netwerk) — op het scherm of bezorgd in je notificatiekanalen.",

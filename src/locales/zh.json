@@ -2382,7 +2382,7 @@
   "autoSyncZone": "时区",
   "autoSyncLastRun": "上次自动运行",
   "autoSyncNever": "尚未运行",
-  "autoSyncNote": "运行覆盖每个已连接的 Google 账号。Google 会在约两天后才发布某天的数据，因此你能看到的最新日期是前天。",
+  "autoSyncNote": "运行覆盖每个已连接的 Google 账号。Google 会在约两天后才发布某天的数据，因此你能看到的最新日期是前天。如已配置 Bing 和 Yandex 的密钥，它们会紧接着为 7 天、28 天和 3 个月视图刷新；其他时间段在点击“同步数据”时更新。",
   "autoSyncNotMigrated": "无法保存——请运行 `npx prisma db push` 以添加新列。",
   "digestTitle": "摘要",
   "digestSubtitle": "站点摘要——全部站点或某个标签（例如你最喜欢的站群）——在屏幕上查看或发送到你的通知渠道。",

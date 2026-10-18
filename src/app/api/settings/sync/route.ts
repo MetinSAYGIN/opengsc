@@ -38,6 +38,7 @@ export async function POST(req: Request) {
   // already handled makes the first run happen at the hour that was actually asked for.
   if (settings.enabled && !settings.lastRunAt && isDue(settings, new Date())) {
     settings.lastRunAt = new Date().toISOString();
+    settings.enginesRunAt = settings.lastRunAt; // the Bing/Yandex refresh that follows it, likewise
   }
 
   try {

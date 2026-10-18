@@ -2382,7 +2382,7 @@
   "autoSyncZone": "Zeitzone",
   "autoSyncLastRun": "Letzter automatischer Lauf",
   "autoSyncNever": "noch nicht",
-  "autoSyncNote": "Der Lauf umfasst jedes verbundene Google-Konto. Google veröffentlicht die Daten eines Tages etwa zwei Tage später, also ist das neueste Datum, das du sehen wirst, vorgestern.",
+  "autoSyncNote": "Der Lauf umfasst jedes verbundene Google-Konto. Google veröffentlicht die Daten eines Tages etwa zwei Tage später, also ist das neueste Datum, das du sehen wirst, vorgestern. Bing und Yandex werden, sofern ihre Schlüssel hinterlegt sind, direkt danach für die Ansichten 7 Tage, 28 Tage und 3 Monate aktualisiert; andere Zeiträume, wenn du auf Daten synchronisieren klickst.",
   "autoSyncNotMigrated": "Konnte nicht speichern — führe `npx prisma db push` aus, um die neue Spalte hinzuzufügen.",
   "digestTitle": "Digest",
   "digestSubtitle": "Eine Zusammenfassung Ihrer Websites — alle oder ein Tag (z. B. Ihr Lieblingsnetzwerk) — auf dem Bildschirm oder in Ihre Benachrichtigungskanäle.",
