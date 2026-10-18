@@ -80,5 +80,10 @@ export async function register() {
     // Client reports: render + mail reports whose nextSendAt has passed, hourly (N8).
     const { startReportsScheduler } = await import('@/lib/reports/scheduler');
     startReportsScheduler();
+    // Scheduled backups (issue #32): SQLite copy on a cron inside the Settings → Backups
+    // config, optional gzip/encryption and SFTP upload. Opt-in — the tick is a no-op
+    // until the owner enables it, and one fire is one attempt, no back-fill.
+    const { startBackupScheduler } = await import('@/lib/backup/scheduler');
+    startBackupScheduler();
   }
 }

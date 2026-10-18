@@ -3,6 +3,9 @@ import { bumpReportCacheVersion } from "@/lib/gsc/reportCache";
 import { QUERY_PAGE_DAILY_DAYS } from "@/lib/gsc/reportData";
 import { google } from 'googleapis';
 import { recordSyncCompleted } from '@/lib/syncSchedule';
+import { planQueryHistory, type DayRange } from "@/lib/gsc/queryHistoryPlan";
+import { localYmd, utcDay } from "@/lib/periodWindow";
+import { isGscQuotaError } from "@/lib/gsc/gscFailure";
 
 let isSyncing = false;
 
@@ -60,11 +63,7 @@ async function pooled<T>(items: T[], limit: number, worker: (item: T) => Promise
   await Promise.all(lanes);
 }
 
-function isQuotaError(err: unknown): boolean {
-  const e = err as { code?: number | string; status?: number; message?: string };
-  const status = Number(e?.code ?? e?.status);
-  return status === 429 || /quota|rate.?limit|too many requests/i.test(String(e?.message ?? ''));
-}
+const isQuotaError = isGscQuotaError;
 
 /** Search Console's maximum rows per searchanalytics request. */
 const GSC_ROW_LIMIT = 25_000;
@@ -76,6 +75,15 @@ const URL_DAILY_MAX_PAGES = 8;
 const QUERY_PAGE_MAX_PAGES = 8;
 /** Upper bound on date×query×page pages per site per sync (×25k rows) — see Step 5. */
 const QUERY_PAGE_DAILY_MAX_PAGES = 8;
+/** Upper bound on date×query pages per planned range per sync (×25k rows) — see Step 6. */
+const QUERY_HISTORY_MAX_PAGES = 8;
+
+// A backfill chunk that died on quota must not come back on the very next sync: retrying the
+// same heavy 30-day fetch every run keeps the property pinned at its load ceiling, which is
+// what starves the dashboard's live tables for days (issue #38). The site's backfill (never
+// its tail) pauses for this long after a quota failure. In-memory: a restart just retries.
+const QUERY_HISTORY_QUOTA_PAUSE_MS = 6 * 60 * 60_000;
+const queryHistoryPausedUntil = new Map<string, number>();
 
 /**
  * Retry a Google call that came back over quota.
@@ -549,6 +557,92 @@ export async function runGscSync() {
           }
         } catch (err) {
           console.error(`[GSC Sync]     Per-day query+page rows skipped for ${hostname}: ${(err as Error).message}`);
+        }
+
+        // ── Step 6: per-day query history (QueryDaily — accumulated, never wiped) ──
+        // Each run rewrites only the ranges planQueryHistory() picks: the recent tail (Google
+        // revises its freshest days) and a few older 30-day slices walking back to Google's
+        // ~16-month floor. Days Google has since dropped stay stored. A missing table
+        // (`prisma db push` not run since the update) skips only this step.
+        try {
+          const [newest, cursorRow] = await Promise.all([
+            prisma.queryDaily.findFirst({ where: { siteId: dbSite.id }, orderBy: { date: 'desc' }, select: { date: true } }),
+            prisma.site.findUnique({ where: { id: dbSite.id }, select: { queryHistoryFrom: true } }),
+          ]);
+          const storedDay = (d: Date) => d.toISOString().slice(0, 10); // stored as UTC midnights
+          const plan = planQueryHistory({
+            endStr: localYmd(endDate),
+            newestStr: newest ? storedDay(newest.date) : null,
+            historyFromStr: cursorRow?.queryHistoryFrom ? storedDay(cursorRow.queryHistoryFrom) : null,
+          });
+
+          const writeRange = async (r: DayRange): Promise<number> => {
+            const rows: { keys?: string[] | null; clicks?: number | null; impressions?: number | null; position?: number | null }[] = [];
+            for (let page = 0; ; page++) {
+              if (page >= QUERY_HISTORY_MAX_PAGES) {
+                console.warn(`[GSC Sync]     ${hostname}: query history ${r.start}..${r.end} hit the ${QUERY_HISTORY_MAX_PAGES * GSC_ROW_LIMIT}-row cap — the lowest-traffic query-days are missing.`);
+                break;
+              }
+              const res = await withQuotaRetry(hostname, () => wm.searchanalytics.query({
+                siteUrl: gscUrl,
+                requestBody: {
+                  startDate:  r.start,
+                  endDate:    r.end,
+                  dimensions: ['date', 'query'],
+                  rowLimit:   GSC_ROW_LIMIT,
+                  startRow:   page * GSC_ROW_LIMIT,
+                  dataState:  'all',
+                },
+              }));
+              const batch = res.data.rows ?? [];
+              rows.push(...batch);
+              if (batch.length < GSC_ROW_LIMIT) break;
+            }
+            // Replace exactly this range, atomically: a failed insert must not leave a hole.
+            await prisma.$transaction([
+              prisma.queryDaily.deleteMany({ where: { siteId: dbSite.id, date: { gte: utcDay(r.start), lte: utcDay(r.end) } } }),
+              prisma.queryDaily.createMany({
+                data: rows
+                  .filter(x => x.keys?.[0] && x.keys?.[1])
+                  .map(x => ({
+                    siteId:      dbSite.id,
+                    date:        utcDay(x.keys![0]),
+                    query:       x.keys![1],
+                    clicks:      x.clicks      ?? 0,
+                    impressions: x.impressions ?? 0,
+                    posWeighted: (x.position ?? 0) * (x.impressions ?? 0),
+                  })),
+              }),
+            ]);
+            return rows.length;
+          };
+          const saveCursor = (ymd: string) =>
+            prisma.site.update({ where: { id: dbSite.id }, data: { queryHistoryFrom: utcDay(ymd) } });
+
+          let written = await writeRange(plan.tail);
+          // The tail is complete from its start; a cursor already further back stays there.
+          const known = newest && cursorRow?.queryHistoryFrom ? storedDay(cursorRow.queryHistoryFrom) : null;
+          let cursor = known && known < plan.tail.start ? known : plan.tail.start;
+          await saveCursor(cursor);
+          const pausedUntil = queryHistoryPausedUntil.get(dbSite.id) ?? 0;
+          if (Date.now() < pausedUntil) {
+            note.push(`${written} query/day (backfill paused — quota)`);
+          } else {
+            for (const r of plan.backfill) {
+              written += await writeRange(r);
+              cursor = r.start;
+              await saveCursor(cursor);
+            }
+            queryHistoryPausedUntil.delete(dbSite.id);
+            note.push(`${written} query/day (history from ${cursor})`);
+          }
+        } catch (err) {
+          if (isQuotaError(err)) {
+            queryHistoryPausedUntil.set(dbSite.id, Date.now() + QUERY_HISTORY_QUOTA_PAUSE_MS);
+            console.warn(`[GSC Sync]     ${hostname}: query history over quota — backfill paused for ${QUERY_HISTORY_QUOTA_PAUSE_MS / 3_600_000}h (tail still refreshes)`);
+          } else {
+            console.error(`[GSC Sync]     Query history skipped for ${hostname}: ${(err as Error).message}`);
+          }
         }
 
         // Reports computed from these rows (cannibalization, …) are cached per site; this

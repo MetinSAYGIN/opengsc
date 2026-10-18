@@ -17,7 +17,7 @@ all (see `extractLinksFromText` in `src/lib/seo/geo.ts`).
 
 ## Setup
 
-1. Configure the A-Parser connection in **Settings → SEO Tools** (base URL + API password), or
+1. Configure the A-Parser connection in **Settings → SERP & scraping** (base URL + API password), or
    set `OPENGSC_APARSER_BASE_URL` / `OPENGSC_APARSER_PASSWORD` on the instance. The env var wins:
    an instance that never fetches a URL typed into a browser is the safer deployment.
 2. Make sure `FreeAI::ChatGPT` is installed in that build (the `/aparser` screen lists what the

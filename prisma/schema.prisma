@@ -184,6 +184,10 @@ model Site {
   // Archived sites keep all their history but are hidden from the main dashboard.
   archivedAt       DateTime?
 
+  // Oldest day whose per-query rows (QueryDaily) are stored completely — the backfill cursor.
+  // Null until the first sync that writes query history. See src/lib/gsc/queryHistoryPlan.ts.
+  queryHistoryFrom DateTime?
+
   // Dashboard decluttering, as workspace properties rather than browser state. A hidden site
   // drops out of the site-wide opportunity reports (striking distance, cannibalization, decay)
   // the same way an archived one does — hiding is how you shelve a property you no longer work
@@ -221,6 +225,7 @@ model Site {
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   metrics               DailyMetric[]
   queryPageDaily        QueryPageDaily[]
+  queryDaily            QueryDaily[]
   contentGroups         ContentGroup[]
   topicClusters         TopicCluster[]
   pageInspections       PageInspection[]
@@ -661,6 +666,28 @@ model QueryPageDaily {
 
   @@index([siteId, date])
   @@index([siteId, query])
+}
+
+// Per-day clicks / impressions / position for every query Search Console reports (web), kept
+// for good. Unlike QueryPageDaily (a 28-day window replaced each sync) this ACCUMULATES: a sync
+// rewrites only its recent tail and backfills older days, so history outlives Google's own
+// ~16 months. One row per site × day × query — no page, which keeps it small and keeps
+// impressions exact (query+page rows count a query once per ranking page).
+// Feeds the dashboard's period comparison (tables, Winners & Losers, New Rankings).
+model QueryDaily {
+  id           String   @id @default(cuid())
+  siteId       String
+  date         DateTime // UTC midnight of the GSC day
+  query        String
+  clicks       Int
+  impressions  Int
+  // Σ position × impressions for the day. Summed over days and divided by summed impressions
+  // it is the period position Search Console itself shows — a plain average of days is not.
+  posWeighted  Float
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, date])
 }
 
 // ─── Rank Tracker (SERP position monitoring) ─────────────────────────────────
@@ -2431,6 +2458,7 @@ model ClientReport {
   sendDay     Int       @default(1)            // weekday 1..7 or day of month 1..28
   recipients  String    @default("")           // comma-separated e-mails
   notes       String    @default("")           // operator's "what we did" text, markdown
+  lang        String    @default("en")           // issue #36 — report/PDF/e-mail language (ReportLang)
   shareToken  String?   @unique                  // client link /share/report/<token> (N8); null = link off
   lastSentAt  DateTime?
   nextSendAt  DateTime?
@@ -2684,4 +2712,26 @@ model PublishedPost {
   connection BlogConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@index([siteId, createdAt])
+}
+
+// ─── Scheduled backups (issue #32) ────────────────────────────────────────────
+// History of backup runs — scheduled and manual. The backup artifacts themselves are
+// files next to the database (backups/), not rows; this table exists because a failed
+// run leaves no file, and "the last three nights silently failed" is exactly what the
+// notification needs to say. Retention: the runner keeps the newest 100 rows.
+model BackupRun {
+  id          String    @id @default(cuid())
+  kind        String    // scheduled | manual
+  status      String    // running | success | failed
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  durationMs  Int?
+  method      String    @default("") // vacuum | copy — how the database was copied
+  sizeBytes   Int       @default(0)  // final artifact size (after gzip/encryption)
+  fileName    String    @default("") // basename in backups/, "" when nothing was produced
+  uploaded    Boolean   @default(false)
+  uploadError String    @default("") // set when the local backup is fine but SFTP was not
+  error       String    @default("") // why a run failed, "" on success
+
+  @@index([startedAt])
 }

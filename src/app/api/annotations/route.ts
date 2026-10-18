@@ -15,6 +15,11 @@ import { purchaseOrderEvents, providerName } from "@/lib/magiclinks/purchases";
 // snapshot would freeze that emptiness in place and would also go stale whenever history is
 // re-synced.
 //
+// A note's date is a calendar day on the wire (strict YYYY-MM-DD) and that day's UTC midnight in
+// the column — never a local-time instant. The client-locale-string / server-local-parse / UTC
+// serialize mix this file used to have walked every save one day backwards on any server east of
+// UTC, silently re-dating notes and, with them, their before/after windows.
+//
 // Raw SQL throughout, following the convention this codebase already uses for tables added after
 // the initial schema (see docs/ARCHITECTURE.md §2): an instance that has not run `prisma db push`
 // yet returns an empty list instead of crashing the site page.
@@ -28,6 +33,35 @@ const DAY_EXPR = dayExpr("date");
 
 const iso = (d: Date) => d.toISOString().split("T")[0];
 const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+
+/**
+ * UTC midnight (ms) of the day a request names — the one canonical storage form for Annotation.date.
+ *
+ * The wire format is a strict `YYYY-MM-DD`, parsed at UTC so the same string means the same day
+ * whatever timezone the server happens to run in. A note's date is a calendar day, not an instant:
+ * "what happened on Oct 12" cannot depend on the VPS's TZ env var. Anything looser than the strict
+ * form is still accepted (floored to its UTC date) so an older client or a hand-rolled API call
+ * cannot produce a 400 where the day is still recoverable, but the modal only ever sends the strict
+ * form. Returns null only when no day can be read at all.
+ */
+function parseDayMs(s: string): number | null {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const t = Date.parse(`${s}T00:00:00Z`);
+    return Number.isNaN(t) ? null : t;
+  }
+  const t = Date.parse(s);
+  if (Number.isNaN(t)) return null;
+  const d = new Date(t);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
+/**
+ * The YYYY-MM-DD a stored Annotation.date value means. The column has historically held either
+ * integer milliseconds or an ISO string (see {@link dayExpr}), and the pre-UTC-fix writes were
+ * local midnights — for those, the UTC date of the instant is the date the tab was already
+ * displaying, so taking the UTC date here preserves what readers saw instead of shifting it.
+ */
+const dayOf = (v: Date | string | number): string => new Date(v as never).toISOString().slice(0, 10);
 
 /** Per-day totals for a window. Position is impression-weighted — a plain average would let a
  *  one-impression query at rank 90 count as much as a 10 000-impression query at rank 3.
@@ -240,8 +274,13 @@ export async function GET(req: Request) {
     const shared = dates.length ? await dailySeries(siteId, spanFrom, spanTo, []) : [];
 
     const notes = await Promise.all(rows.map(async r => {
-      const d = new Date(r.date);
-      d.setHours(0, 0, 0, 0);
+      // The day the row names, normalized once at the boundary — a UTC-midnight anchor for all the
+      // window math below. No setHours() anywhere: flooring an instant to the server's local
+      // midnight and later re-serializing through the UTC iso() used to walk a note's date one day
+      // into the past per save on any TZ-east-of-UTC server, which re-dated notes the operator had
+      // just written and dragged their after-window into whatever partial data was nearest.
+      const dayStr = dayOf(r.date);
+      const d = new Date(`${dayStr}T00:00:00Z`);
       const beforeFrom = addDays(d, -days);
       const afterTo = addDays(d, days);
       const urls = (r.urls || "").split(/[\n,]/).map(s => s.trim()).filter(Boolean);
@@ -250,8 +289,16 @@ export async function GET(req: Request) {
         ? await dailySeries(siteId, beforeFrom, afterTo, urls)
         : shared.filter(x => x.day >= iso(beforeFrom) && x.day < iso(afterTo));
 
-      const before = series.filter(x => x.day < iso(d));
-      const after = series.filter(x => x.day >= iso(d));
+      const beforeAll = series.filter(x => x.day < dayStr);
+      const afterAll = series.filter(x => x.day >= dayStr);
+      // Equal windows: however many synced days exist after the event, the before side is capped to
+      // the same count (its last, i.e. nearest, days). Comparing a full week before against the
+      // single lagging day Search Console has after is what printed a confident "-91%" on a note
+      // written two days ago — a window-length artifact, not traffic. Both sides grow together as
+      // sync catches up, so the numbers are fair at every moment rather than eventually.
+      const w = Math.min(days, afterAll.length);
+      const before = w > 0 ? beforeAll.slice(-w) : beforeAll;
+      const after = afterAll;
       const b = totals(before), a = totals(after);
 
       return {
@@ -267,15 +314,16 @@ export async function GET(req: Request) {
         mlQuantity: (r as { mlQuantity?: number }).mlQuantity ?? null,
         mlProvider: (r as { mlProvider?: string }).mlProvider ?? null,
         orderId: (r as { orderId?: string }).orderId ?? null,
-        date: iso(d),
+        date: dayStr,
         title: r.title,
         description: r.description || "",
         scope: r.scope,
         urls,
         dateRange: `${iso(beforeFrom)} → ${iso(addDays(afterTo, -1))}`,
         // `hasAfter` lets the UI say "waiting for data" instead of showing a confident 0 — the
-        // normal state for a note written today.
-        hasAfter: after.some(x => x.impressions > 0),
+        // normal state for a note written today. A synced day with zero impressions still counts:
+        // zero traffic on a day the sync wrote is data, not absence.
+        hasAfter: after.length > 0,
         clicks: { before: b.clicks, after: a.clicks, pct: pct(b.clicks, a.clicks) },
         impressions: { before: b.impressions, after: a.impressions, pct: pct(b.impressions, a.impressions) },
         ctr: { before: +b.ctr.toFixed(2), after: +a.ctr.toFixed(2), pct: pct(b.ctr, a.ctr) },
@@ -304,9 +352,11 @@ export async function POST(req: Request) {
   const b = await req.json().catch(() => ({}));
   const siteId = String(b.siteId || "");
   const title = String(b.title || "").trim();
-  const date = b.date ? new Date(b.date) : new Date();
+  // A calendar day, stored as its UTC midnight — see parseDayMs. The client always sends the
+  // strict form; the fallback keeps a bare API call working in UTC rather than 400-ing.
+  const dayMs = parseDayMs(b.date ? String(b.date) : iso(new Date()));
   if (!siteId || !title) return NextResponse.json({ error: "missing_fields" }, { status: 400 });
-  if (isNaN(+date)) return NextResponse.json({ error: "bad_date" }, { status: 400 });
+  if (dayMs == null) return NextResponse.json({ error: "bad_date" }, { status: 400 });
   if (!(await ownedSite(userId, siteId))) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
   const urls = Array.isArray(b.urls) ? b.urls.map(String).filter(Boolean).join("\n") : String(b.urls || "");
@@ -314,11 +364,10 @@ export async function POST(req: Request) {
 
   try {
     const id = `ann_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    date.setHours(0, 0, 0, 0);
     await rawExec(
       `INSERT INTO "Annotation" ("id","siteId","date","title","description","scope","urls","createdAt")
        VALUES (?,?,?,?,?,?,?,?)`,
-      id, siteId, date, title, String(b.description || ""), scope, urls || null, new Date(),
+      id, siteId, new Date(dayMs), title, String(b.description || ""), scope, urls || null, new Date(),
     );
     return NextResponse.json({ ok: true, id });
   } catch (e) {
@@ -358,16 +407,18 @@ export async function PUT(req: Request) {
   const title = String(b.title || "").trim();
   if (!id || !title) return NextResponse.json({ error: "missing_fields" }, { status: 400 });
 
-  const date = b.date ? new Date(b.date) : null;
-  if (date && isNaN(+date)) return NextResponse.json({ error: "bad_date" }, { status: 400 });
+  const date = b.date ? parseDayMs(String(b.date)) : null;
+  if (b.date && date == null) return NextResponse.json({ error: "bad_date" }, { status: 400 });
 
   try {
     // Same ownership guard as DELETE: the row can only be touched through a site the caller owns.
-    date?.setHours(0, 0, 0, 0);
+    // COALESCE rather than `date ?? null`: writing a bare NULL used to blank the column outright on
+    // an edit that carried no date, destroying the note's anchor — an absent date now keeps the
+    // stored one.
     await rawExec(
-      `UPDATE "Annotation" SET "title" = ?, "description" = ?, "date" = ?
+      `UPDATE "Annotation" SET "title" = ?, "description" = ?, "date" = COALESCE(?, "date")
        WHERE "id" = ? AND "siteId" IN (SELECT "id" FROM "Site" WHERE "userId" = ?)`,
-      title, String(b.description || ""), date ?? null, id, userId,
+      title, String(b.description || ""), date != null ? new Date(date) : null, id, userId,
     );
     return NextResponse.json({ ok: true });
   } catch (e) {

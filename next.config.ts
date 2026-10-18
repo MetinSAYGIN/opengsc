@@ -5,6 +5,14 @@ const nextConfig: NextConfig = {
   // small VPS instances. Types are checked during development instead — the
   // production build only compiles.
   typescript: { ignoreBuildErrors: true },
+  // ssh2 ships an optional native addon (lib/protocol/crypto → sshcrypto.node) that compiles
+  // wherever a toolchain exists. Turbopack follows the literal createRequire("ssh2") in
+  // src/lib/backup/sftp.ts, tries to place the .node asset into an ESM chunk, and fails the
+  // whole build ("non-ecmascript placeable asset") — the failure only shows on a real
+  // `next build`, which is how it slipped past tsc/eslint/tsx checks. External: the module
+  // is loaded from node_modules at runtime, addon and all. better-sqlite3 needs no entry —
+  // Next externalizes it by default.
+  serverExternalPackages: ["ssh2"],
   async headers() {
     return [
       {

@@ -6,9 +6,9 @@
 // URLs are fixed vendor endpoints, so unlike A-Parser there is nothing user-named to guard.
 
 import { getUserSettings } from "@/lib/mcp/shared";
-import { FieldLinkClient, FIELDLINK_DEFAULT_BASE, POST_UNIT_MINOR } from "./fieldlink";
 import { Magic369Client, MAGIC369_DEFAULT_BASE } from "./magic369";
-import { PROVIDER_FIELDLINK, PROVIDER_MAGIC369, PROVIDER_MAGIC369_LINKS, type MagicProviderId } from "./purchases";
+import { FieldLinkClient, FIELDLINK_DEFAULT_BASE, POST_UNIT_MINOR, LINK_TIERS } from "./fieldlink";
+import { PROVIDER_FIELDLINK, PROVIDER_FIELDLINK_LINKS, PROVIDER_MAGIC369, PROVIDER_MAGIC369_LINKS, type BuyProductId } from "./purchases";
 
 const envToken = (name: string) => (process.env[name] ?? "").trim() || undefined;
 
@@ -41,7 +41,7 @@ export async function magic369ClientFor(userId: string): Promise<Magic369Client 
 }
 
 export interface MagicProviderInfo {
-  id: MagicProviderId;
+  id: BuyProductId;
   name: string;
   /** Balance unit for labelling sums in the UI ("cr." / "tok."). */
   unit: string;
@@ -62,7 +62,8 @@ export async function magicProviderInfos(userId: string): Promise<MagicProviderI
   const [fl, m] = await Promise.all([
     fieldlink
       ? fieldlink.balance()
-        .then(b => ({ configured: true, balanceMinor: b.balanceMinor as number | null, priceMinor: POST_UNIT_MINOR as number | null, error: null as string | null }))
+        // A personal post price (prices.post) wins over the default; the quote stays the truth.
+        .then(b => ({ configured: true, balanceMinor: b.balanceMinor as number | null, priceMinor: (Number(b.prices?.post) > 0 ? Number(b.prices?.post) : POST_UNIT_MINOR) as number | null, error: null as string | null }))
         .catch((e: Error) => ({ configured: true, balanceMinor: null, priceMinor: null, error: e.message }))
       : Promise.resolve({ configured: false, balanceMinor: null, priceMinor: null, error: null }),
     m369
@@ -73,8 +74,9 @@ export async function magicProviderInfos(userId: string): Promise<MagicProviderI
   ]);
 
   return [
-    { id: PROVIDER_FIELDLINK, name: "FieldLink", unit: "cr.", configured: fl.configured, balanceMinor: fl.balanceMinor, priceMinor: fl.priceMinor, error: fl.error },
-    { id: PROVIDER_MAGIC369, name: "369Team", unit: "tok.", configured: m.configured, balanceMinor: m.balanceMinor, priceMinor: m.priceMinor, error: m.error },
-    { id: PROVIDER_MAGIC369_LINKS, name: "369Team · links", unit: "tok.", configured: m.configured, balanceMinor: m.balanceMinor, priceMinor: m.linkPriceMinor, error: m.error },
+    { id: PROVIDER_FIELDLINK, name: "FieldLink · Posts", unit: "cr.", configured: fl.configured, balanceMinor: fl.balanceMinor, priceMinor: fl.priceMinor, error: fl.error },
+    { id: PROVIDER_FIELDLINK_LINKS, name: "FieldLink · Homepage links", unit: "cr.", configured: fl.configured, balanceMinor: fl.balanceMinor, priceMinor: LINK_TIERS[0].creditsMinor, error: fl.error },
+    { id: PROVIDER_MAGIC369, name: "369 Links Market · Magic links", unit: "tok.", configured: m.configured, balanceMinor: m.balanceMinor, priceMinor: m.priceMinor, error: m.error },
+    { id: PROVIDER_MAGIC369_LINKS, name: "369 Links Market · Homepage links", unit: "tok.", configured: m.configured, balanceMinor: m.balanceMinor, priceMinor: m.linkPriceMinor, error: m.error },
   ];
 }

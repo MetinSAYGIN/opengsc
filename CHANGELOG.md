@@ -5,12 +5,49 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 ## [Unreleased]
 
+### Added — Dutch language and per-report languages for client reports (#36)
+
+- **Dutch (nl) is the eighth interface language** — the full UI dictionary (login screen and dashboard switchers included), the audit share-markdown links, and the lead-widget contour (findings texts, report e-mail, first letter, proposal skeleton) all speak Dutch. Alerts and digests pick it up automatically: they always rendered in the language the UI saved into the notification settings.
+- **Every client report now has its own language**, chosen per report in the editor (Language dropdown, defaulting to the operator's dashboard language) — independently of the dashboard. The frozen snapshot, the PDF, the client e-mail (summary lines, "Open the report" button, period line) and the public `/share/report/` link all render in it, with per-language number formatting (1,180 en · 1.180 nl · 1 180 ru). The language shows on the report card, and `list_reports` (MCP) carries a `lang` field. Existing reports stay English — the column defaults to `en` (deploy needs `prisma db push`).
+- **The report renderer's strings moved into a server-side dictionary** (`lib/reports/i18n.ts`, one block per language — the notifyI18n pattern; the snapshot never depended on browser locale files and still doesn't). The deterministic summary and next-steps sentences are template functions per language, unit-tested for Dutch and Russian; a parity test walks all languages so no section title can ever render as `undefined`.
+
+### Fixed — Key Pages could not be removed from Site Context (Project Memory)
+
+- **Remove silently deleted nothing.** The card shows each key page in its stored form ("site.com/pricing") and sends that exact text back on Remove, but normalization prefixed the site host again, so the delete looked for "site.com/site.com/pricing" — a row that doesn't exist — and still reported success. `normalizeKeyPageUrl` is now idempotent (the stored form re-normalizes to itself, for the site's host and for foreign-host pages alike), the homepage is matched in both stored spellings ("site.com" and "site.com/"), and a remove that matches nothing is reported as skipped instead of silently applied. Fixes #35.
+
+### Changed — Settings regrouped: one tab per job, nothing piled under Notifications
+
+- **The sidebar is grouped** into Data sources (Google, Bing, Yandex) · Providers (AI models, SERP & scraping, SEO metrics, Indexing, AEO & site health, Provider log) · Alerts & integrations (Notifications, Integrations) · Instance (Members, Preferences, Sync, Uptime, Backups).
+- **Each integration is configured in one place.** AI keys and the model/per-task/fact-check settings used to sit on two tabs ("API Keys" and "SEO Tools"); they are now one tab, **AI models**. The same for SERP: keys, A-Parser, XMLRiver and the default / Rank Tracker / fallback provider pickers are all on **SERP & scraping**. The provider-log body-capture switch moved next to the log it controls.
+- **Notifications holds only notifications** — Telegram, Slack, other channels, push, alert rules and recent alerts. Backups (#32) are now the **Settings → Backups** tab (owner-only, hidden for members without `manageSecrets`), uptime defaults are **Settings → Uptime**, automatic GSC sync is **Settings → Sync**, report branding moved to **Preferences**, and the MCP token, browser-extension token and audit widget are together under **Integrations**.
+- **The tab is kept in the URL** (`/settings?tab=…`), so a reload stays on it and it can be linked. Old ids still work: `api-keys` → AI models, `seo-tools` → SERP & scraping, `api` → Integrations. In-app links and hints that named the old tabs point at the new ones (the "set up AI" link on a site page went to a non-existent `/settings#ai`).
+- **Removed:** the Microsoft Clarity card on the indexing tab (text only, its button went nowhere — Clarity is configured per site), and the `NEXT_PUBLIC_EXPERIMENTAL_TEAM_UI` mock screens (Teams, Super Sites, sharing / "use AI" toggles that saved nothing). Real members live under Members.
+- **Fixed:** "Run alerts now" printed its result inside the Telegram card instead of next to the button.
+
+### Changed — the per-site AEO model setting is labelled "ChatGPT model"
+
+- Its picker has always listed OpenAI models, and since the fix below it drives the ChatGPT engine only; the label used to say just "Model". Models for the other engines live in Settings → AI models.
+
+### Fixed — AEO Tracker sent the OpenAI model to Claude, Gemini, Perplexity and Grok
+
+- **Claude and Gemini checks failed on every question.** The site's AEO model fell back to `AEO_DEFAULT_MODEL` (an OpenAI id) and was copied into every engine's options; only a per-engine model in Settings replaced it. With the default empty Settings, Claude and Gemini answered `404 model: gpt-…` on every check and dropped out of share of voice, and Perplexity and Grok took the same path. The site model now applies to ChatGPT only; every other engine uses its model from Settings or its own default (`sonar`, `grok-4-fast`, the Claude and Gemini defaults).
+- **The account OpenAI model (Settings → AI models) was ignored by AEO.** The always-filled site model sat in front of it. It now applies whenever the site has no model of its own.
+- Engine option assembly moved to `lib/aeoEngineOptions.ts` with unit tests.
+
+### Fixed — MCP `get_optimization_brief` briefed the homepage for every URL
+
+- **Any page on the site matched the homepage.** URL matching accepted the stored URL being a substring of the requested one, and `https://host` is a substring of every URL on the host. The brief came back with the homepage's queries, cannibalization rivals and live content. Pages now match on the normalized path (host, query string, fragment, case and trailing slash ignored); a fragment such as `pricing` is a fallback used only when nothing matches exactly, and when it names several pages the tool lists them instead of guessing.
+- **Subdomain pages no longer fold into the main host's brief.** Matching ignored the host entirely, so on an sc-domain site `blog.example.com/pricing` and `example.com/pricing` answered as one page whenever the agent named a full URL. Hosts are now compared whenever both sides carry one (`www.` counts as the same); a bare path — the common `/pricing` argument — still matches any host, since it cannot discriminate.
+
+## [1.10.0] — 2026-10-12
+
 ### Changed — Site Audit health score weighs findings by severity (#30)
 
 - **A site with only minor warnings no longer scores 0/100.** The old score was the share of pages with no scored finding at all, so one image without alt counted as much as a 404, and a 4-page WordPress site with a small warning on every template scored the same as a site that was down — tripping the "health score below 50" alert. Each page is now scored on its own: 100, minus 8 per distinct warning (never below 40), or 0 with any critical finding (HTTP error, failed fetch, broken links, noindex, redirect loop). The site score is the average.
 - **A plain internal redirect is not a page.** A single 301/308 to the same site (http→https, www↔apex, trailing slash) is left out of the average; it is still listed as a finding. Redirect chains, loops and redirects off the site still count.
 - **History stays comparable.** Stored audits are rescored once at startup from their saved page findings, so the trend shows no jump on update day; the previous value is kept in the summary as `healthScoreV1`. The new score is never lower than the old one on the same audit, so rescoring cannot trigger a low-score alert. No schema change.
 - Hovering the score explains how it is calculated; the Markdown export says the same.
+- **Head metadata is read from the whole `<head>`, not the first 200 KB.** Divi-style themes ship megabytes of inline CSS before half of their meta tags: tantist.be printed its viewport at byte 266k of a 284k head, and the audit reported "no viewport" on pages that had one (viewport, but also hreflang, Open Graph and canonical signals were at risk). The window now follows the actual `</head>` boundary; 200 KB remains only as the fallback for markup with no closing tag (#30 follow-up).
 
 ### Added — Cannibalization: real "winner changes", a site picker in Related intent, MCP on the shared computation
 
@@ -61,6 +98,17 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 - The button was hard-wired to Ahrefs: with DataForSEO selected it still quoted an Ahrefs export (≈ $3.33 for ~1 660 links on the reporter's site) for a profile DataForSEO exports for a few cents. It now exports from the provider selected in Settings → SEO Metrics — Ahrefs, DataForSEO or Keys.so — and names it on the button, in the quote and in the result line. Semrush and Majestic have no per-link export, so with either selected it stays on Ahrefs and says "Ahrefs".
 - The quote is in the provider's own currency (dollars for DataForSEO, credits for Keys.so, units for Ahrefs), and the note names what the pricing read actually cost instead of a fixed "50 units". Key and balance errors are named per provider (401/402/403).
 - The separate «Links from DataForSEO» button on the Toxicity tab is gone — the main button covers it. The «Links from Keys.so» loader stays while another provider is selected (a second market, not a duplicate) and hides when Keys.so is the selected one.
+
+### Added — Audits overview: fleet sorting, honest statuses, shareable .md audit links, per-site run retention
+
+- The workspace-wide **/audits table sorts** by site, last audit, health, next run and status — each column opens in its natural direction and flips on the second click. A finished run reads "✓ Checked" instead of a dash, a failed one is finally visible on the Sites tab ("✗ Error" with the message in the tooltip — it used to render as "—"), never-audited sites say so; History tab icons gained words too.
+- **"Copy .md link"** in the Audit tab mints an HMAC-signed public URL (`/share/audit/<id>.<sig>.md`) serving the same Markdown export the download button produces — hand it to a client or an AI agent without a download/re-upload round trip. Served with `X-Robots-Tag: noindex, nofollow`; a link opens exactly one audit and guests cannot mint links.
+- **historyKeep** in the audit queue settings caps stored runs per site (0–200, 0 = keep everything — an upgrade never silently deletes). Only terminal runs (completed/error) are pruned: after each settled run, and workspace-wide the moment the number is lowered. No schema change.
+
+### Fixed — Self-hosted panels no longer outrank opengsc.org in search
+
+- Private installs served no robots.txt (it redirected to the login page) and carried no noindex, so panel domains of individual installs were ranking above the project's own site for its name. The root layout now emits `noindex,nofollow` and `next.config.ts` adds the `X-Robots-Tag` header (covers non-HTML responses too). robots.txt is served anonymously and deliberately allows crawl — a Disallow would hide the noindex from crawlers and leave URLs stuck as "Indexed, though blocked by robots.txt".
+- The release gate now accepts an `[Unreleased]` changelog section between releases, so work dockets before the release commit instead of failing `check:release`.
 
 ## [1.9.2] — 2026-10-10
 

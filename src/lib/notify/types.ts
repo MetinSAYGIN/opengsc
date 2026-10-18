@@ -1,9 +1,10 @@
 // wave-nov (CONTRACT.md §2): "lead" (new lead from the audit widget, N9), "local" (map-pack
 // changes + GBP reviews, N3/N4), "trend" (rising queries, N5). "test" stays a filter-only
 // value and deliberately not in NOTIFY_EVENTS (types.test.ts asserts this).
-export type NotifyEvent = "alert" | "digest" | "uptime" | "index" | "mention" | "lead" | "local" | "trend" | "test";
+// Issue #32: "backup" — scheduled-backup failures (dump.ts), delivered to the owner.
+export type NotifyEvent = "alert" | "digest" | "uptime" | "index" | "mention" | "lead" | "local" | "trend" | "backup" | "test";
 
-export const NOTIFY_EVENTS: NotifyEvent[] = ["alert", "digest", "uptime", "index", "mention", "lead", "local", "trend"];
+export const NOTIFY_EVENTS: NotifyEvent[] = ["alert", "digest", "uptime", "index", "mention", "lead", "local", "trend", "backup"];
 
 // wave-nov (CONTRACT.md §2): "webpush" is the PWA push channel (N10). N0 only widens the union
 // and patches the exhaustive switches it breaks with a not_implemented stub; N10 owns delivery.

@@ -7,6 +7,7 @@
 
 import { readChannels, sendEmail } from "@/lib/notify/channels";
 import type { NotifyChannelsConfig } from "@/lib/notify/types";
+import { REPORT_L, type ReportLang } from "./i18n";
 
 export interface ReportEmail {
   to: string[];
@@ -46,24 +47,26 @@ export interface ReportEmailContent {
   periodFrom: string; // YYYY-MM-DD
   periodTo: string;
   clientUrl: string | null; // /share/report/<token> when the link is on
+  lang: ReportLang; // issue #36 — the e-mail speaks the report's language
   branding: { companyName: string; accentColor: string; footer: string };
 }
 
 /** The e-mail the client receives. Deterministic, scriptless, no external images. */
 export function buildReportEmail(c: ReportEmailContent, summaryLines: string[]): ReportEmail {
   const accent = c.branding.accentColor || "#2563eb";
+  const L = REPORT_L[c.lang];
   const link = c.clientUrl
-    ? `<p style="margin:22px 0 26px"><a href="${esc(c.clientUrl)}" style="display:inline-block;background:${esc(accent)};color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:12px 26px;border-radius:8px">Open the report</a></p>`
+    ? `<p style="margin:22px 0 26px"><a href="${esc(c.clientUrl)}" style="display:inline-block;background:${esc(accent)};color:#fff;text-decoration:none;font-weight:600;font-size:15px;padding:12px 26px;border-radius:8px">${esc(L.openReport)}</a></p>`
     : "";
   const summary = summaryLines.length
     ? `<ul style="color:#3c4046;padding-left:20px;margin:10px 0">${summaryLines.map(l => `<li style="margin:4px 0">${esc(l)}</li>`).join("")}</ul>`
     : "";
   const text = [
     `${c.title} — ${c.siteDomain}`,
-    `Period: ${c.periodFrom} — ${c.periodTo}`,
+    L.mailPeriod(c.periodFrom, c.periodTo),
     "",
     ...summaryLines,
-    c.clientUrl ? `\nOpen the report: ${c.clientUrl}` : "",
+    c.clientUrl ? `\n${L.openReport}: ${c.clientUrl}` : "",
     c.branding.footer ? `\n${c.branding.footer}` : "",
   ].filter(s => s !== "").join("\n");
 

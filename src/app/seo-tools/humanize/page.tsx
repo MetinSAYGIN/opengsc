@@ -616,7 +616,7 @@ function BenchTab({ active }: { active: StoredModel | null }) {
 
       {!configured.length && (
         <div className={card} style={{ fontSize: "13px", color: "var(--color-text-secondary)" }}>
-          {t("seoNeedKeysPrefix")} <Link href="/settings?tab=api-keys" style={{ color: "var(--color-accent-blue)" }}>{t("seoSettingsShort")}</Link>
+          {t("seoNeedKeysPrefix")} <Link href="/settings?tab=ai" style={{ color: "var(--color-accent-blue)" }}>{t("seoSettingsShort")}</Link>
         </div>
       )}
     </>

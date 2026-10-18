@@ -10,6 +10,8 @@
 // Targets OUTSIDE the crawl are never errors: we did not look at them, so we know nothing
 // ("unknown is not an error"). Same principle for a target whose fetch failed.
 
+import { headWindow } from "./headWindow";
+
 // ─── code validity (BCP 47 as used by hreflang: ISO 639-1 primary + optional script/region) ───
 
 /** ISO 639-1 two-letter language codes (the complete registry; "eng"-style 3-letter codes are not valid here). */
@@ -117,9 +119,9 @@ function tagAttributes(tag: string): Record<string, string> {
   return attrs;
 }
 
-/** `<link rel="alternate" hreflang="fr" href="…">` tags from the document head (first 200 KB, same window as the other head signals). */
+/** `<link rel="alternate" hreflang="fr" href="…">` tags from the document head (whole head, same window as the other head signals). */
 export function parseHreflangHead(html: string): HreflangEntry[] {
-  const head = html.slice(0, 200_000);
+  const head = headWindow(html);
   const out: HreflangEntry[] = [];
   for (const tag of head.match(/<link\b[^>]*>/gi) ?? []) {
     const attrs = tagAttributes(tag);

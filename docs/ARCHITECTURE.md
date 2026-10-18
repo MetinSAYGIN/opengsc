@@ -299,7 +299,7 @@ Three separate questions, deliberately answered in three places.
 **Which task is running?** `AI_TASKS` in `aiTasks.ts` is the registry — `outline`, `text`,
 `landing`, `analysis`, `policy`, `utility` — each with a description, a default *tier* (never a
 model id), and `PATH_TASKS` mapping tool routes to the tasks they run. Both surfaces render it:
-Settings → SEO Tools builds its per-task table from the list, and the SEO Tools header names the
+Settings → AI models builds its per-task table from the list, and the SEO Tools header names the
 tasks the current page will run. They used to be written out separately and drifted — the
 settings table offered four tasks while `getTaskCreds` read five, so `seoTaskModel_landing` was
 readable but not writable and the Landing tool ignored a setting the user believed they had made.
@@ -512,7 +512,7 @@ OpenGSC speaks MCP (Model Context Protocol) over the **Streamable HTTP** transpo
 stateless mode: every JSON-RPC message arrives as a POST and is answered with a plain JSON
 body (the spec allows this in place of an SSE stream), so the endpoint needs no session
 state and survives process restarts trivially. Authentication is a per-user bearer token
-(`User.mcpToken`, managed in **Settings → API & MCP** via `/api/settings/mcp-token`).
+(`User.mcpToken`, managed in **Settings → Integrations** via `/api/settings/mcp-token`).
 
 Authentication is the token in an `Authorization: Bearer` header, or — because one important
 client cannot send one — in a `?token=` query parameter. Claude Desktop's *Add custom

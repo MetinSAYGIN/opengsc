@@ -5,6 +5,7 @@ import { X, RefreshCw, ExternalLink } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { LANGUAGE_OPTIONS, defaultLanguageForHost } from "@/lib/magiclinks/languages";
 import { linkRowProblem, MAGIC369_LINK_TEXT_MAX } from "@/lib/magiclinks/magic369";
+import { LINK_TIERS, LINK_CONTENT_HINT_MAX, contentHintProblem } from "@/lib/magiclinks/fieldlink";
 
 // The buy window for link purchases from the striking-distance table.
 //
@@ -13,10 +14,17 @@ import { linkRowProblem, MAGIC369_LINK_TEXT_MAX } from "@/lib/magiclinks/magic36
 // the operator back to a fresh quote rather than charging a different number than the one on
 // the button. The provider with the larger balance is preselected but never forced.
 //
-// "369Team · links" is 369Team's homepage-link product (POST /link-orders): no language, an
+// "Homepage links" is 369 Links Market's homepage-link product (POST /link-orders): no language, an
 // optional one-line surrounding text with $LINK, anchors up to 200 chars, flat link_price.
 
-type ProviderId = "fieldlink" | "magic369" | "magic369links";
+// One id per PRODUCT; the picker groups them per vendor (vendorOf). "fieldlinklinks" exists only
+// here and in quote/submit — FieldLink's links share the posts order space server-side.
+type ProviderId = "fieldlink" | "fieldlinklinks" | "magic369" | "magic369links";
+const vendorOf = (id: string) => (id.startsWith("magic369") ? "magic369" : id.startsWith("fieldlink") ? "fieldlink" : id);
+const VENDOR_NAMES: Record<string, string> = { magic369: "369 Links Market", fieldlink: "FieldLink" };
+const PRODUCT_LABEL_KEYS = {
+  fieldlink: "mlProductPosts", fieldlinklinks: "mlProductHomepage", magic369: "mlProductMagic", magic369links: "mlProductHomepage",
+} as const satisfies Record<ProviderId, string>;
 
 interface ProviderInfo {
   id: ProviderId;
@@ -39,6 +47,7 @@ interface QuoteResponse {
   balanceMinor: number | null;
   shortfallMinor: number;
   canSubmit: boolean;
+  indexingIncluded?: boolean;
 }
 
 export interface BuyRow {
@@ -66,6 +75,9 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
   const [providerId, setProviderId] = useState<ProviderId | "">("");
   // 369Team links only: one surrounding-text template for every row ("" = bare link).
   const [linkText, setLinkText] = useState("");
+  // FieldLink links only: traffic tier (decides price and donor pool) and an optional topic.
+  const [flTier, setFlTier] = useState<string>("traffic_0_1");
+  const [flHint, setFlHint] = useState("");
   const [count, setCount] = useState(5);
   const [langs, setLangs] = useState<Record<string, string>>({});
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
@@ -122,13 +134,29 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
       .catch(() => setProviders([]));
   }, []);
 
+  // Provider ids stay per PRODUCT (the ledger and the order routes key on them); the picker
+  // groups them per vendor.
+  const vendorCards = useMemo(() => {
+    const out: { key: string; name: string; members: ProviderInfo[] }[] = [];
+    for (const p of providers ?? []) {
+      const key = vendorOf(p.id);
+      const hit = out.find(v => v.key === key);
+      if (hit) hit.members.push(p);
+      else out.push({ key, name: VENDOR_NAMES[key] ?? p.name, members: [p] });
+    }
+    return out;
+  }, [providers]);
+
   const isLinks = providerId === "magic369links";
+  const isFlLinks = providerId === "fieldlinklinks";
+  const flHintProblem = isFlLinks ? contentHintProblem(flHint.trim()) ?? "" : "";
+  const flTierInfo = LINK_TIERS.find(x => x.id === flTier);
   // Homepage links have no article language — the picker and the requirement disappear.
   const missingLang = isLinks ? [] : hosts.filter(h => !langs[h]);
   // The service rejects the WHOLE order on one bad row; say which row before anything is priced.
   const linkProblem = isLinks
     ? rows.map((_, i) => linkRowProblem({ anchor: anchorOf(i).trim(), text: linkText.trim() })).map((m, i) => (m ? `${i + 1}: ${m}` : "")).find(Boolean) ?? ""
-    : "";
+    : flHintProblem;
   const provider = providers?.find(p => p.id === providerId) ?? null;
   const context = rows.map((r, i) => ({ siteId: r.siteId ?? siteId ?? "", targetUrl: r.targetUrl, query: r.query, anchor: anchorOf(i) }));
 
@@ -144,6 +172,7 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
             targetUrl: r.targetUrl, query: r.query, anchor: anchorOf(i),
             language: isLinks ? "" : langs[hostOf(r.targetUrl)] ?? "", count,
             ...(isLinks ? { text: linkText.trim() } : {}),
+            ...(isFlLinks ? { tier: flTier, contentHint: flHint.trim() } : {}),
           })),
         }),
       });
@@ -170,6 +199,7 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
             targetUrl: r.targetUrl, query: r.query, anchor: anchorOf(i),
             language: isLinks ? "" : langs[hostOf(r.targetUrl)] ?? "", count,
             ...(isLinks ? { text: linkText.trim() } : {}),
+            ...(isFlLinks ? { tier: flTier, contentHint: flHint.trim() } : {}),
             siteId: r.siteId ?? siteId ?? "",
           })),
         }),
@@ -224,7 +254,7 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
               {providers && providers.length > 0 && providers.every(p => !p.configured) && (
                 <div style={{ padding: "12px 14px", borderRadius: "10px", border: "1px solid rgba(245,158,11,0.35)", background: "rgba(245,158,11,0.08)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
                   {t("mlNoProviders")}{" "}
-                  <a href="/settings?tab=seo-tools" style={{ color: "var(--color-accent-blue)" }}>{t("mlOpenSettings")}</a>
+                  <a href="/settings?tab=serp" style={{ color: "var(--color-accent-blue)" }}>{t("mlOpenSettings")}</a>
                 </div>
               )}
 
@@ -232,24 +262,55 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
               <div>
                 <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>{t("mlProvider")}</div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                  {(providers ?? []).map(p => (
-                    <button key={p.id} onClick={() => { setProviderId(p.id); setQuote(null); }} disabled={!p.configured}
-                      style={{
-                        flex: "1 1 150px", padding: "9px 12px", borderRadius: "10px", cursor: p.configured ? "pointer" : "not-allowed",
-                        border: `1px solid ${providerId === p.id ? "#7C3AED" : "var(--color-border)"}`,
-                        background: providerId === p.id ? "rgba(124,58,237,0.1)" : "var(--color-bg)",
-                        color: providerId === p.id ? "#7C3AED" : "var(--color-text-secondary)",
-                        fontSize: "12px", fontWeight: 600, textAlign: "left", opacity: p.configured ? 1 : 0.45,
-                      }}>
-                      <div>{p.name}{!p.configured ? ` · ${t("mlNotSet")}` : ""}</div>
-                      <div style={{ fontSize: "11px", fontWeight: 500, fontFamily: "monospace" }}>
-                        {p.error ? t("mlProviderError") : p.balanceMinor != null ? `${t("mlBalance")}: ${money(p.balanceMinor)} ${p.unit}` : "…"}
-                      </div>
-                    </button>
-                  ))}
+                  {/* One card per VENDOR. 369 Links Market sells two products through one key and
+                      one balance (articles / homepage links), so it is one card here and the
+                      product is picked below — not two cards that read like two sellers. */}
+                  {vendorCards.map(v => {
+                    const selected = v.members.some(m => m.id === providerId);
+                    const p = v.members[0];
+                    const configured = v.members.some(m => m.configured);
+                    return (
+                      <button key={v.key} onClick={() => { if (!selected) setProviderId(p.id); setQuote(null); }} disabled={!configured}
+                        style={{
+                          flex: "1 1 150px", padding: "9px 12px", borderRadius: "10px", cursor: configured ? "pointer" : "not-allowed",
+                          border: `1px solid ${selected ? "#7C3AED" : "var(--color-border)"}`,
+                          background: selected ? "rgba(124,58,237,0.1)" : "var(--color-bg)",
+                          color: selected ? "#7C3AED" : "var(--color-text-secondary)",
+                          fontSize: "12px", fontWeight: 600, textAlign: "left", opacity: configured ? 1 : 0.45,
+                        }}>
+                        <div>{v.name}{!configured ? ` · ${t("mlNotSet")}` : ""}</div>
+                        <div style={{ fontSize: "11px", fontWeight: 500, fontFamily: "monospace" }}>
+                          {p.error ? t("mlProviderError") : p.balanceMinor != null ? `${t("mlBalance")}: ${money(p.balanceMinor)} ${p.unit}` : "…"}
+                        </div>
+                      </button>
+                    );
+                  })}
                   {providers === null && <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", padding: "9px 0" }}>{t("loading")}</div>}
                 </div>
               </div>
+
+              {providerId && (vendorCards.find(v => v.key === vendorOf(providerId))?.members.length ?? 0) > 1 && (
+                <div>
+                  <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "8px" }}>{t("mlProduct")}</div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {(providers ?? []).filter(p => vendorOf(p.id) === vendorOf(providerId)).map(p => {
+                      const on = providerId === p.id;
+                      return (
+                        <button key={p.id} onClick={() => { setProviderId(p.id); setQuote(null); }}
+                          style={{
+                            padding: "6px 14px", borderRadius: "999px", cursor: "pointer", fontSize: "12px", fontWeight: 600,
+                            border: `1px solid ${on ? "#7C3AED" : "var(--color-border)"}`,
+                            background: on ? "rgba(124,58,237,0.1)" : "var(--color-bg)",
+                            color: on ? "#7C3AED" : "var(--color-text-secondary)",
+                          }}>
+                          {t(PRODUCT_LABEL_KEYS[p.id])}
+                          {p.priceMinor != null ? <span style={{ fontWeight: 500, fontFamily: "monospace", marginLeft: "6px", opacity: 0.8 }}>{t("mlFrom")} {money(p.priceMinor)}</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Count + languages */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
@@ -279,6 +340,31 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
                     style={{ ...inp, width: "100%", boxSizing: "border-box", fontFamily: "monospace" }} />
                   <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>{t("mlLinkTextHint")}</span>
                 </label>
+              )}
+              {isFlLinks && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                  <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("mlFlTier")}</span>
+                    <select value={flTier} onChange={e => { setFlTier(e.target.value); setQuote(null); }}
+                      style={{ ...inp, width: "100%", boxSizing: "border-box" }}>
+                      {LINK_TIERS.map(x => (
+                        <option key={x.id} value={x.id} disabled={!x.available}>
+                          {t("mlFlTraffic")} {x.label} · {money(x.creditsMinor)} cr.{x.available ? "" : ` · ${t("mlSoon")}`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("mlFlTopic")}</span>
+                    <input value={flHint} maxLength={LINK_CONTENT_HINT_MAX}
+                      onChange={e => { setFlHint(e.target.value.replace(/[\r\n\t]+/g, " ")); setQuote(null); }}
+                      placeholder={t("mlFlTopicPh")}
+                      style={{ ...inp, width: "100%", boxSizing: "border-box" }} />
+                  </label>
+                  <span style={{ gridColumn: "1 / -1", fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
+                    {t("mlFlLinksHint")}{flTierInfo ? ` ${money(flTierInfo.creditsMinor)} cr. × ${count} × ${rows.length} = ${money(flTierInfo.creditsMinor * count * rows.length)} cr.` : ""}
+                  </span>
+                </div>
               )}
               {linkProblem && (
                 <div style={{ fontSize: "11px", color: "#F59E0B" }}>{t("mlLinkRowInvalid")} {linkProblem}</div>
@@ -337,8 +423,8 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span style={{ color: "var(--color-text-secondary)" }}>{t("mlPlacements")}</span>
                     <span style={{ fontFamily: "monospace", color: "var(--color-text-primary)" }}
-                      title={quote.provider !== "fieldlink" && quote.bonusCount > 0 ? t("mlBonusEstimate") : undefined}>
-                      {quote.placementCount}{quote.bonusCount > 0 ? ` +${quote.provider !== "fieldlink" ? "≈" : ""}${quote.bonusCount} ${t("mlBonus")}` : ""}
+                      title={!quote.provider.startsWith("fieldlink") && quote.bonusCount > 0 ? t("mlBonusEstimate") : undefined}>
+                      {quote.placementCount}{quote.bonusCount > 0 ? ` +${!quote.provider.startsWith("fieldlink") ? "≈" : ""}${quote.bonusCount} ${t("mlBonus")}` : ""}
                     </span>
                   </div>
                   {quote.unitMinor != null && (
@@ -356,6 +442,9 @@ export default function BuyLinksModal({ siteId, rows, onClose, onDone }: {
                       <span style={{ color: "var(--color-text-secondary)" }}>{t("mlBalanceAfter")}</span>
                       <span style={{ fontFamily: "monospace", color: quote.shortfallMinor > 0 ? "#EF4444" : "var(--color-text-primary)" }}>{money(quote.balanceMinor - quote.amountMinor)} {provider?.unit ?? ""}</span>
                     </div>
+                  )}
+                  {quote.indexingIncluded && (
+                    <div style={{ color: "#F59E0B", fontSize: "11px", lineHeight: 1.5 }}>{t("mlIndexingLocked")}</div>
                   )}
                   {quote.shortfallMinor > 0 && (
                     <div style={{ color: "#EF4444", fontSize: "11px" }}>{t("mlShortfall")}: {money(quote.shortfallMinor)} {provider?.unit ?? ""}</div>

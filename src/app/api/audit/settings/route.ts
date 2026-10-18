@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { workspaceUserId } from "@/lib/team/workspace";
 import { prisma } from "@/lib/prisma";
-import { getAuditQueueSettings, saveAuditQueueSettings, kickAuditQueue } from "@/lib/audit/queue";
+import { getAuditQueueSettings, saveAuditQueueSettings, kickAuditQueue, pruneAuditHistory } from "@/lib/audit/queue";
 import { validateCron } from "@/lib/cron";
 
 // GET  /api/audit/settings              → the workspace queue settings (defaults merged in)
@@ -39,6 +39,12 @@ export async function POST(req: Request) {
     }
     const current = await getAuditQueueSettings(userId);
     await saveAuditQueueSettings(userId, { ...current, ...b.queue, paused: current.paused });
+    // Lowering the retention must free disk now, not after the next run finishes — the
+    // operator who just cut the number did so precisely because of the space.
+    if ("historyKeep" in b.queue) {
+      const saved = await getAuditQueueSettings(userId);
+      await pruneAuditHistory(userId, saved.historyKeep).catch(() => {});
+    }
   }
 
   if (b.siteId) {

@@ -347,7 +347,7 @@ function MetaFitCard({ state, t, onRunLlm }: {
 
 
 export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const guest = isGuestView();
   const [audits, setAudits] = useState<AuditListRow[]>([]);
   const [current, setCurrent] = useState<AuditDetailView | null>(null); // { audit, pages }
@@ -366,6 +366,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
   const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [mdLinkCopied, setMdLinkCopied] = useState(false);
   // Meta-fit suggestions for the four meta-length issues. Nothing is written to the database —
   // the card only shows proposed texts (and copies them to the clipboard on request).
   const [metaFit, setMetaFit] = useState<{ busy: boolean; error: string; results: MetaFitResultView[] }>({ busy: false, error: "", results: [] });
@@ -472,6 +473,21 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
     setExporting(false);
   };
 
+  // The signed share URL is minted server-side (the HMAC secret never reaches the client);
+  // the absolute origin makes the copied link work from anywhere — an AI agent's context
+  // window included, which is the whole point of not downloading the file first.
+  const copyMdLink = async () => {
+    const id = current?.audit?.id;
+    if (!id) return;
+    try {
+      const d = await fetch(withShare(`/api/audit/${id}/md-link?lang=${language}`)).then(r => r.json());
+      if (!d?.path) return;
+      navigator.clipboard?.writeText(`${location.origin}${d.path}`).catch(() => {});
+      setMdLinkCopied(true);
+      setTimeout(() => setMdLinkCopied(false), 2000);
+    } catch { /* the transient ✓ state simply never shows */ }
+  };
+
   const filterIssue = (code: string) => {
     if (!current?.audit) return;
     const next = issueFilter === code ? "" : code;
@@ -565,6 +581,12 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
             <button onClick={exportMd} disabled={exporting} title={t("auditExportMdHint")}
               style={{ display: "inline-flex", alignItems: "center", gap: "7px", padding: "10px 14px", borderRadius: "9px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "13px", fontWeight: 600, cursor: exporting ? "default" : "pointer" }}>
               {exporting ? <Loader2 size={14} className="spin" /> : <Download size={14} />} {t("auditExportMd")}
+            </button>
+          )}
+          {!guest && summary && (
+            <button onClick={copyMdLink} title={t("auditCopyMdLinkHint")}
+              style={{ display: "inline-flex", alignItems: "center", gap: "7px", padding: "10px 14px", borderRadius: "9px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: mdLinkCopied ? "#34c759" : "var(--color-text-secondary)", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+              {mdLinkCopied ? <CheckCircle size={14} /> : <Copy size={14} />} {mdLinkCopied ? t("auditMdLinkCopied") : t("auditCopyMdLink")}
             </button>
           )}
           {!guest && summary && current?.audit?.status === "completed" && (

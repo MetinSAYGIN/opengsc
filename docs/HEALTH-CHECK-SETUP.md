@@ -9,7 +9,7 @@ The **Health tab** on each site page runs four checks:
 | Core Web Vitals (LCP, INP, CLS, TTFB, Performance score) | PageSpeed Insights API | Google API key |
 | Malware / engine scan | VirusTotal API | VirusTotal key |
 
-Keys are configured in **Settings → API Keys → Health Check API Keys**. This guide covers
+Keys are configured in **Settings → AEO & site health → Health Check API Keys**. This guide covers
 getting each key and the restrictions that actually work — the three Google-side traps in
 this doc account for nearly every "the check returns an error" report.
 
@@ -50,7 +50,7 @@ overwrites the cache immediately.
    - **Application restrictions → None** is the simplest reliable option.
      **IP addresses** also works if you list the server's IPv4 *and* IPv6.
      **Websites** will NOT work (see the referrer warning above).
-5. Paste the key into **Settings → API Keys → Health Check API Keys → Google Safe Browsing** → Save.
+5. Paste the key into **Settings → AEO & site health → Health Check API Keys → Google Safe Browsing** → Save.
 
 ## PageSpeed Insights (Core Web Vitals)
 
@@ -59,7 +59,7 @@ overwrites the cache immediately.
 2. Create an API key the same way (Credentials → Create credentials → API key).
 3. Restrict it: **API restrictions → PageSpeed Insights API**; **Application restrictions → None**
    (or IP with IPv4 + IPv6).
-4. Paste into **Settings → API Keys → Health Check API Keys → PageSpeed Insights** → Save.
+4. Paste into **Settings → AEO & site health → Health Check API Keys → PageSpeed Insights** → Save.
 
 > A mobile Lighthouse run on a slow site can legitimately take tens of seconds. If it
 > can't finish in time you'll see `PageSpeed timed out after 45 s` — re-run the check;
@@ -72,7 +72,7 @@ APIs in the key's API restrictions.
 
 1. Register free at [virustotal.com](https://www.virustotal.com).
 2. Click your avatar → **API key** ([direct link](https://www.virustotal.com/gui/my-apikey)) and copy the key.
-3. Paste into **Settings → API Keys → Health Check API Keys → VirusTotal** → Save.
+3. Paste into **Settings → AEO & site health → Health Check API Keys → VirusTotal** → Save.
 
 Free quota is 4 requests/min and 500/day — plenty for periodic health checks. VirusTotal
 offers no key restrictions; keep the key private. Brand-new domains may return `not_found`

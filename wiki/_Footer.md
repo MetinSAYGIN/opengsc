@@ -1,0 +1,1 @@
+OpenGSC · [opengsc.org](https://opengsc.org) · [Repository](https://github.com/fenjo26/OpenGSC) · [Issues](https://github.com/fenjo26/OpenGSC/issues) · [Changelog](https://github.com/fenjo26/OpenGSC/blob/main/CHANGELOG.md) · MIT licence

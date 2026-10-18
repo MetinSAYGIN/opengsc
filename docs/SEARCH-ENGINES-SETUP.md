@@ -7,7 +7,8 @@ every engine exposes.
 
 Where things live in the app:
 
-- **Settings → Indexing API** — paste the Bing API key, Yandex OAuth token, and IndexNow key.
+- **Settings → Bing Webmaster** and **Settings → Яндекс.Вебмастер** — paste the Bing API key and the
+  Yandex OAuth token; **Settings → Indexing** — the IndexNow key.
 - **Site page → engine switcher** (G | Bing | Я next to the chart toolbar) — live dashboard
   per engine: clicks, impressions, CTR, weighted average position, traffic chart, top
   queries (+ top pages and index/crawl stats for Bing, SQI and site diagnostics for Yandex).
@@ -45,7 +46,7 @@ parties beyond the engine's own API.
 2. Click the **⚙ Settings** gear (top right) → **API Access**.
 3. Choose **API Key** (not *OAuth Client*), then click **Generate API Key**. One key is
    generated per user and works for all your verified sites.
-4. Copy the key and add it in **OpenGSC → Settings → Indexing API → Bing Webmaster** as a
+4. Copy the key and add it in **OpenGSC → Settings → Bing Webmaster** as a
    connected account (an optional name + the key). If you manage several Bing accounts, add
    each one; then pick which account a site uses in that site's **Indexing** tab.
 
@@ -126,7 +127,7 @@ new/changed URLs. No account needed — just a key file on your site:
 1. Generate a key — any 8–128 char hex string works, e.g. `openssl rand -hex 16`.
 2. Host it as a text file at `https://your-domain.com/<key>.txt`, containing the key itself
    as the file's only content.
-3. Paste the key into **OpenGSC → Settings → Indexing API → IndexNow**.
+3. Paste the key into **OpenGSC → Settings → Indexing → IndexNow**.
 4. Push URLs from the site's **Indexing tab → Search engines panel** (one per line).
 
 OpenGSC submits through `api.indexnow.org`, which fans out to all participating engines —

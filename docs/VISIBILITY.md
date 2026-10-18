@@ -38,8 +38,8 @@ LLM вообще читают. Ключ вкладки — `?tab=aeo`, подв�
   поэтому такой ответ имеет собственный статус и **не входит в знаменатель долей** на
   «Доле голоса»: пара (вопрос, AI Overviews) покидает окно, а не тянет за собой старый ответ.
 - **Ключи:** ChatGPT/Claude/Gemini переиспользуют ключи AI-провайдеров из
-  Settings → API keys (`aiKey_openai` / `aiKey_anthropic` / `aiKey_gemini`), Perplexity и
-  xAI — отдельные ключи в Settings → SEO Tools. Ключ Gemini — тот же, что у провайдера
+  Settings → AI models (`aiKey_openai` / `aiKey_anthropic` / `aiKey_gemini`), Perplexity и
+  xAI — отдельные ключи в Settings → AEO & site health. Ключ Gemini — тот же, что у провайдера
   «Google Gemini» в SEO Tools; отдельной настройки не нужно. AI Overviews настраек не имеет:
   он берёт ключ DataForSEO или подключение A-Parser, уже настроенные для SERP-инструментов.
 - **Стоимость:** каждая проверка — платный вызов на вашем ключе (у Gemini grounding платен

@@ -199,7 +199,7 @@ export default function AparserPage() {
           <AlertTriangle size={18} color="var(--color-accent-orange)" style={{ flexShrink: 0, marginTop: "2px" }} />
           <div>
             <div style={{ fontSize: "13px", color: "var(--color-text-primary)", marginBottom: "6px" }}>{t("aparserNotConfigured")}</div>
-            <Link href="/settings?tab=api-keys" style={{ fontSize: "13px", color: "var(--color-accent-blue)", textDecoration: "none" }}>{t("aparserOpenSettings")} →</Link>
+            <Link href="/settings?tab=serp" style={{ fontSize: "13px", color: "var(--color-accent-blue)", textDecoration: "none" }}>{t("aparserOpenSettings")} →</Link>
           </div>
         </div>
       </div>
@@ -394,7 +394,7 @@ function Header({ t, host, fromEnv }: { t: (k: TranslateKey) => string; host: st
       {host && <code style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{host}</code>}
       {fromEnv && <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "6px", background: "rgba(16,185,129,0.12)", color: "#10B981" }}>{t("aparserFromEnv")}</span>}
       <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "6px", background: "rgba(255,255,255,0.06)", color: "var(--color-text-secondary)" }}>{t("aparserNoCost")}</span>
-      <Link href="/settings?tab=api-keys" style={{ marginLeft: "auto", fontSize: "12px", color: "var(--color-text-secondary)", textDecoration: "none", display: "flex", alignItems: "center", gap: "5px" }}>
+      <Link href="/settings?tab=serp" style={{ marginLeft: "auto", fontSize: "12px", color: "var(--color-text-secondary)", textDecoration: "none", display: "flex", alignItems: "center", gap: "5px" }}>
         <Settings2 size={13} /> {t("aparserOpenSettings")}
       </Link>
     </div>

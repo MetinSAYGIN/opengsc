@@ -1,4 +1,5 @@
 import { parseHreflangHead, type HreflangEntry } from "./hreflang";
+import { headWindow } from "./headWindow";
 
 const strip = (value: string) => value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 const decode = (value: string) => value
@@ -76,7 +77,7 @@ export interface AuditHtmlSignals {
 }
 
 export function extractAuditHtml(html: string): AuditHtmlSignals {
-  const head = html.slice(0, 200_000);
+  const head = headWindow(html);
   const title = decode(strip(head.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ""));
   const metaDesc = metaValues(head, "description")[0] ?? "";
   const robots = [...metaValues(head, "robots"), ...metaValues(head, "googlebot")].join(", ").toLowerCase();

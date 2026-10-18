@@ -41,7 +41,7 @@ import {
   SlidersHorizontal, ChevronDown, Smartphone, Monitor, Tablet,
   Users, Activity, Zap, DollarSign, Link2, Check, Star,
   FileText, Globe, Search, ArrowLeftRight, BookmarkCheck, Calendar, X, Download,
-  ChevronLeft, ChevronRight, ExternalLink, Pencil, Trash2,
+  ChevronLeft, ChevronRight, ExternalLink, Pencil, Trash2, AlertTriangle,
 } from "lucide-react";
 import {
   ComposedChart, LineChart, Area, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -239,7 +239,12 @@ function iso3ToName(code: string, locale?: string): string {
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
 // ─── Shared components ────────────────────────────────────────────────────────
-function Change({ pct, invert = false }: { pct: number; invert?: boolean }) {
+function Change({ pct, invert = false }: { pct: number | null; invert?: boolean }) {
+  const { t } = useLanguage();
+  // null = up from zero. That growth has no percentage; "+100%" read like a doubling.
+  if (pct === null) {
+    return <span style={{ fontSize: "11px", color: "#10B981", fontWeight: 500, marginLeft: "3px" }}>{t("chgNew")}</span>;
+  }
   const good = invert ? pct <= 0 : pct >= 0;
   const color = good ? "#10B981" : "#EF4444";
   const sign = pct >= 0 ? "+" : "";
@@ -340,11 +345,13 @@ const SortTh = ({ col, label, color, sortCol, sortDir, onSort }: { col: DtSortCo
 };
 
 
-function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }: {
+function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked, cut }: {
   title: string;
-  rows: { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number }[];
+  rows: { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null }[];
   blur?: boolean;
   csvFilename?: string;
+  /** Set when the API sent only the top rows: the table must not pass the cut off as the site. */
+  cut?: { shown: number; total: number };
   /** Rank tracker: adds a per-row "Track" button (queries table only) */
   onTrack?: (label: string) => void;
   tracked?: Set<string>;
@@ -379,7 +386,7 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
     exportCSV(
       csvFilename ?? `${title.toLowerCase().replace(/\s+/g, "-")}.csv`,
       ["Query/Page", "Clicks", "Impressions", "CTR%", "Position", "Clicks%Change", "Impr%Change"],
-      sorted.map(r => [r.label, r.clicks, r.impr, r.ctr, r.pos, r.cPct, r.iPct])
+      sorted.map(r => [r.label, r.clicks, r.impr, r.ctr, r.pos, r.cPct ?? "new", r.iPct ?? "new"])
     );
   };
 
@@ -388,12 +395,19 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
   // Totals row
   const totalClicks = rows.reduce((s, r) => s + r.clicks, 0);
   const totalImpr   = rows.reduce((s, r) => s + r.impr, 0);
-  const avgPos      = rows.length ? (rows.reduce((s, r) => s + r.pos, 0) / rows.length) : 0;
+  // Weighted by impressions, as Search Console does: a plain mean let a query seen once at 90
+  // weigh as much as the one carrying the site.
+  const avgPos      = totalImpr > 0 ? rows.reduce((s, r) => s + r.pos * r.impr, 0) / totalImpr : 0;
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{title}</h3>
+        {cut && cut.total > cut.shown && (
+          <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
+            {t("tblShownOfTotal").replace("{shown}", cut.shown.toLocaleString()).replace("{total}", cut.total.toLocaleString())}
+          </span>
+        )}
         <button onClick={handleCSV} title={t("exportCsv")}
           style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "4px", padding: "4px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "12px", cursor: "pointer" }}>
           <Download size={12} /> {t("exportCsv")}
@@ -464,7 +478,7 @@ function DataTable({ title, rows, blur = false, csvFilename, onTrack, tracked }:
   );
 }
 
-type CountryRow = { name: string; flag?: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number };
+type CountryRow = { name: string; flag?: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null };
 function CountryTable({ rows }: { rows: CountryRow[] }) {
   const { t, language } = useLanguage();
   const [page,     setPage]     = useState(1);
@@ -538,7 +552,7 @@ function CountryTable({ rows }: { rows: CountryRow[] }) {
   );
 }
 
-type DeviceRow = { name: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number; ctrPct: number; posDelta: number };
+type DeviceRow = { name: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null; ctrPct: number; posDelta: number };
 function DeviceTable({ rows }: { rows: DeviceRow[] }) {
   const { t } = useLanguage();
   const iconFor = (name: string) => {
@@ -1115,7 +1129,7 @@ function SetupModal({ domain, siteDbId, onClose, onApplied }: {
 
                     {!anyConfigured && (
                       <a
-                        href="/settings#ai"
+                        href="/settings?tab=ai"
                         target="_blank"
                         rel="noreferrer"
                         style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 600, color: '#F59E0B', textDecoration: 'none', padding: '6px 12px', borderRadius: '8px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)' }}
@@ -4182,16 +4196,32 @@ function AnnotationsFilterDd({ onSetupBranded }: { onSetupBranded?: () => void }
 // ─── Add Note Modal ───────────────────────────────────────────────────────────
 function AddNoteModal({ onClose, onSave, editNote }: {
   onClose: () => void;
-  onSave: (note: { id?: string; date: string; title: string; desc: string; scope: string }) => void;
+  /** Persists the note. Resolves false when the write failed — the modal then stays open with the
+   *  draft intact and an error shown, instead of closing and silently discarding what was typed. */
+  onSave: (note: { id?: string; date: string; title: string; desc: string; scope: string }) => Promise<boolean>;
   /** When set, the modal opens in edit mode: fields are pre-filled and the label/button reflect editing. */
   editNote?: { id: string; title: string; desc: string; date: string } | null;
 }) {
   const { t } = useLanguage();
-  const today = new Date();
-  const todayStr = today.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  // The wire format is a strict ISO day (YYYY-MM-DD) — the API stores that day's UTC midnight, so
+  // the date never shifts through anyone's timezone. Built from the client's own calendar date: at
+  // 00:30 in Athens, toISOString() would still name yesterday.
+  const n = new Date();
+  const todayIso = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+  const [dateVal, setDateVal] = useState(editNote?.date ?? todayIso);
   const [title, setTitle] = useState(editNote?.title ?? "");
   const [desc, setDesc]   = useState(editNote?.desc ?? "");
   const [scope, setScope] = useState<"all" | "specific" | "group">("all");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+
+  // A stray click on the backdrop or the X used to throw a long draft away instantly. Those two are
+  // "clicked somewhere to dismiss" gestures, so with text on screen they ask first; Cancel is an
+  // explicit, labelled choice and stays one click.
+  const guardedClose = () => {
+    if ((title.trim() || desc.trim()) && !confirm(t("annDiscardConfirm"))) return;
+    onClose();
+  };
 
   // l holds an i18n KEY. Both render (3238) and onSave (3246) translate it via t(), so the stored
   // note scope is the localized label — same as the old hardcoded English, but in the active language.
@@ -4203,18 +4233,25 @@ function AddNoteModal({ onClose, onSave, editNote }: {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={onClose}>
+      onClick={guardedClose}>
       <div style={{ background: "#fff", borderRadius: "16px", padding: "32px", width: "90%", maxWidth: "640px", color: "#111", boxShadow: "0 20px 60px rgba(0,0,0,0.4)", position: "relative" }}
         onClick={e => e.stopPropagation()}>
         {/* Close */}
-        <button onClick={onClose} style={{ position: "absolute", top: "16px", right: "16px", background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X size={20} /></button>
+        <button onClick={guardedClose} style={{ position: "absolute", top: "16px", right: "16px", background: "none", border: "none", cursor: "pointer", color: "#9ca3af" }}><X size={20} /></button>
 
         {/* Label */}
         <p style={{ fontSize: "12px", color: "#9ca3af", fontWeight: 500, marginBottom: "4px" }}>{editNote ? t("annEditNote") : "Note"}</p>
 
-        {/* Date */}
+        {/* Date — a real input: it used to be a decorative span, so a note could only ever be dated
+            "today" (and the day it meant still drifted with the server's timezone). */}
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px" }}>
-          <span style={{ fontSize: "24px", fontWeight: 700 }}>{editNote?.date ?? todayStr}</span>
+          <input
+            type="date"
+            value={dateVal}
+            max={todayIso}
+            onChange={e => setDateVal(e.target.value)}
+            style={{ fontSize: "18px", fontWeight: 700, color: "#111", border: "none", borderBottom: "2px solid #d1d5db", outline: "none", padding: "2px 0", background: "transparent", cursor: "pointer", borderRadius: 0 }}
+          />
           <Calendar size={18} color="#9ca3af" />
         </div>
 
@@ -4251,10 +4288,25 @@ function AddNoteModal({ onClose, onSave, editNote }: {
         </div>
 
         {/* Buttons */}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-          <button onClick={onClose} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#f3f4f6", color: "#374151", fontSize: "14px", fontWeight: 500, cursor: "pointer" }}>{t("cancel")}</button>
-          <button onClick={() => { if (title.trim()) { onSave({ id: editNote?.id, date: editNote?.date ?? todayStr, title, desc, scope: t(scopeOptions.find(o => o.v === scope)!.l as never) }); onClose(); } }}
-            style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: title.trim() ? "#374151" : "#9ca3af", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: title.trim() ? "pointer" : "not-allowed" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", alignItems: "center" }}>
+          {saveError && (
+            <span style={{ fontSize: "12px", color: "#EF4444", marginRight: "auto" }}>{t("annSaveFailed")}</span>
+          )}
+          <button onClick={guardedClose} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#f3f4f6", color: "#374151", fontSize: "14px", fontWeight: 500, cursor: "pointer" }}>{t("cancel")}</button>
+          <button
+            onClick={async () => {
+              if (!title.trim() || saving) return;
+              setSaving(true); setSaveError(false);
+              // The parent owns the write and reports whether it landed; closing is earned, not
+              // assumed — this used to fire onClose() unconditionally next to a fire-and-forget
+              // fetch, so a failed save (expired session, 503, a dropped request) looked exactly
+              // like a successful one, minus the note.
+              const ok = await onSave({ id: editNote?.id, date: dateVal || todayIso, title, desc, scope: t(scopeOptions.find(o => o.v === scope)!.l as never) });
+              setSaving(false);
+              if (ok) onClose(); else setSaveError(true);
+            }}
+            disabled={saving}
+            style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: title.trim() ? "#374151" : "#9ca3af", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: title.trim() && !saving ? "pointer" : "not-allowed", opacity: saving ? 0.7 : 1 }}>
             {editNote ? t("annSave") : "Save"}
           </button>
         </div>
@@ -4390,12 +4442,6 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
   algoMarkers?: AlgoMarker[];
 }) {
   const { t } = useLanguage();
-  // Was `useState(true)`, which blurred the table and covered it with a panel advertising four
-  // invented notes from 2024 ("Moved to Astro", and so on). It appeared before the real notes had
-  // even loaded, so an operator with a full history saw fake data first. The onboarding panel now
-  // waits until the request has come back empty, and the fake rows are gone entirely — an empty
-  // table with a working "add note" button says the same thing without pretending to have data.
-  const [onboarding, setOnboarding] = useState(false);
   const [showAddNote, setShowAddNote] = useState(false);
   // When set, AddNoteModal opens in edit mode with this note's fields pre-filled.
   const [editingNote, setEditingNote] = useState<{ id: string; title: string; desc: string; date: string } | null>(null);
@@ -4405,10 +4451,9 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
   const [activeMetrics, setActiveMetrics] = useState<Set<Metric>>(new Set(["clicks", "impressions", "ctr", "position"]));
 
   const days = period === "custom" && customDays ? customDays : annotationWindow(period);
-  // The list always reaches across the whole tracking history: hiding a note because it is older
-  // than the selected period is exactly the trap that made the onboarding panel appear over notes
-  // that were sitting there all along. The period now controls only the before/after comparison
-  // window (`days`), not which notes are visible.
+  // The list always reaches across the whole tracking history: the period controls only the
+  // before/after comparison window (`days`), never which notes are visible — hiding a note
+  // because it is older than the selected period would make it look lost rather than old.
   const lookback = 1200;
 
   // Notes and their figures both come from the server: the note rows persist in the Annotation
@@ -4451,15 +4496,6 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
       }))
       .filter((n): n is { id: string; title: string; x: string; kind?: "note" | "purchase"; label?: string } => n.x !== null);
   }, [ownNotes, chartData, t]);
-  // The onboarding panel is an absolutely-positioned overlay covering everything below the
-  // sub-header, so it can only appear when there is genuinely nothing underneath. Keying it on
-  // "no notes of your own" would hide the Google-update timeline the moment a fresh instance
-  // opened the tab — a card inviting you to add something, drawn over the only thing on screen.
-  // The "+ add note" button is always present when the panel is not.
-  useEffect(() => {
-    if (loading) return;
-    setOnboarding(notes.length === 0 && !unavailable);
-  }, [loading, notes.length, unavailable]);
 
   const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
 
@@ -4468,7 +4504,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
   const fK = (n: number) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : String(n);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div>
       {/* ── Sub-header controls ── */}
       <div style={{ padding: "10px 32px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", gap: "8px", background: "var(--color-card)", flexWrap: "wrap" }}>
         <AnnotationsFilterDd onSetupBranded={onSetupBranded} />
@@ -4583,7 +4619,7 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
             <div style={{ padding: "18px 24px 18px 0" }}>
               <div style={{ fontSize: "13px", fontWeight: 700, color: note.kind === "purchase" ? "#7C3AED" : "var(--color-text-primary)", marginBottom: "4px" }}>
                 {note.kind === "purchase"
-                  ? t("mlPurchaseRow").replace("{n}", String(note.mlQuantity ?? "?")).replace("{p}", String(note.mlProvider ?? "").startsWith("magic369") ? "369Team" : "FieldLink")
+                  ? t("mlPurchaseRow").replace("{n}", String(note.mlQuantity ?? "?")).replace("{p}", String(note.mlProvider ?? "").startsWith("magic369") ? "369 Links Market" : "FieldLink")
                   : note.title}
               </div>
               <div style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>
@@ -4655,33 +4691,13 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
         ))}
       </div>
 
-      {/* Empty state when not onboarding and no notes */}
-      {!onboarding && !loading && notes.length === 0 && (
+      {/* Empty state: no notes of your own in the tracking history. The "+ add note" button says
+          the rest — an onboarding overlay used to sit here restating it. */}
+      {!loading && notes.length === 0 && (
         <div style={{ padding: "64px 32px", textAlign: "center" }}>
           <p style={{ fontSize: "14px", color: "var(--color-text-secondary)" }}>
             {t("annEmptyDesc")}
           </p>
-        </div>
-      )}
-
-      {/* ── Onboarding overlay ── */}
-      {onboarding && (
-        <div style={{ position: "absolute", top: "61px", left: 0, right: 0, bottom: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "24px", zIndex: 10 }}>
-          <div style={{ background: "var(--color-card)", borderRadius: "20px", border: "1px solid var(--color-border)", boxShadow: "0 16px 64px rgba(0,0,0,0.45)", width: "100%", maxWidth: "620px", overflow: "hidden", padding: "32px" }}>
-            <h2 style={{ fontSize: "22px", fontWeight: 700, color: "var(--color-text-primary)", textAlign: "center", marginBottom: "6px" }}>{t("tabAnnotations")}</h2>
-            <p style={{ fontSize: "14px", color: "var(--color-text-secondary)", textAlign: "center", marginBottom: "24px" }}>{t("annCreateFirstNote")}</p>
-
-            {/* CTA */}
-            <button
-              onClick={() => { setOnboarding(false); setShowAddNote(true); }}
-              style={{ width: "100%", padding: "13px", borderRadius: "10px", border: "none", background: "linear-gradient(90deg, #2563EB 0%, #7C3AED 100%)", color: "#fff", fontSize: "15px", fontWeight: 700, cursor: "pointer", marginBottom: "14px", boxShadow: "0 4px 16px rgba(37,99,235,0.35)" }}>
-              {t("annCreateNoteBtn")}
-            </button>
-
-            {/* No "try it with Google updates" line any more: the panel only shows when the
-                timeline is empty, so there are no updates in this period to point at. Claiming
-                otherwise would be false exactly when someone reads it. */}
-          </div>
         </div>
       )}
 
@@ -4691,14 +4707,19 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
           onClose={() => setShowAddNote(false)}
           // Persist, then re-read: the figures are computed server-side from DailyMetric, so the
           // row can only be filled in by the API. Writing a locally-invented placeholder is what
-          // produced the permanent 0 → 0 +0% this tab used to show.
+          // produced the permanent 0 → 0 +0% this tab used to show. The boolean tells the modal
+          // whether its draft may be discarded.
           onSave={async note => {
-            if (!siteDbId) return;
-            await fetch("/api/annotations", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ siteId: siteDbId, date: note.date, title: note.title, description: note.desc }),
-            }).catch(() => {});
+            if (!siteDbId) return false;
+            try {
+              const res = await fetch("/api/annotations", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ siteId: siteDbId, date: note.date, title: note.title, description: note.desc }),
+              });
+              if (!res.ok) return false;
+            } catch { return false; }
             await loadNotes();
+            return true;
           }}
         />
       )}
@@ -4709,24 +4730,26 @@ function AnnotationsTab({ period, setPeriod, periodOptions, customDays, onSetupB
           editNote={editingNote}
           onClose={() => setEditingNote(null)}
           onSave={async note => {
-            if (!note.id) return;
-            await fetch("/api/annotations", {
-              method: "PUT", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ id: note.id, date: note.date, title: note.title, description: note.desc }),
-            }).catch(() => {});
+            if (!note.id) return false;
+            try {
+              const res = await fetch("/api/annotations", {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: note.id, date: note.date, title: note.title, description: note.desc }),
+              });
+              if (!res.ok) return false;
+            } catch { return false; }
             await loadNotes();
+            return true;
           }}
         />
       )}
 
-      {/* Add note FAB when onboarding dismissed */}
-      {!onboarding && (
-        <div style={{ position: "fixed", bottom: "32px", right: "32px", zIndex: 50 }}>
-          <button onClick={() => setShowAddNote(true)} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px 20px", borderRadius: "12px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "14px", fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(59,130,246,0.4)" }}>
-            {t("annAddNote")}
-          </button>
-        </div>
-      )}
+      {/* Add note FAB */}
+      <div style={{ position: "fixed", bottom: "32px", right: "32px", zIndex: 50 }}>
+        <button onClick={() => setShowAddNote(true)} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px 20px", borderRadius: "12px", border: "none", background: "#3B82F6", color: "#fff", fontSize: "14px", fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(59,130,246,0.4)" }}>
+          {t("annAddNote")}
+        </button>
+      </div>
     </div>
   );
 }
@@ -4877,7 +4900,7 @@ function OptimizeTab({ siteDbId }: { siteDbId: string }) {
 }
 
 // ─── New Rankings Table ───────────────────────────────────────────────────────
-type RankRow = { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number; iPct: number };
+type RankRow = { label: string; clicks: number; impr: number; ctr: number; pos: number; cPct: number | null; iPct: number | null };
 function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[]; pageRows: RankRow[]; blur: boolean }) {
   const { t } = useLanguage();
   const [tab, setTab] = useState<"Queries" | "Pages">("Queries");
@@ -4970,17 +4993,26 @@ function NewRankingsTable({ queryRows, pageRows, blur }: { queryRows: RankRow[];
 // Top queries/pages by click growth/decline between the current and previous period,
 // with a contribution bar showing each row's share of the total change.
 type WlItem = { label: string; curr: number; prev: number; delta: number };
-type WlData = { queries: { winners: WlItem[]; losers: WlItem[] }; pages: { winners: WlItem[]; losers: WlItem[] } };
+type WlCoverage = { visibleClicks: number; source: "history" | "live"; complete: boolean };
+type WlData = {
+  queries: { winners: WlItem[]; losers: WlItem[] };
+  pages: { winners: WlItem[]; losers: WlItem[] };
+  // Absent from responses of an older server — the panel then simply says nothing about it.
+  coverage?: { totalClicks: number; queries: WlCoverage; pages: WlCoverage };
+};
 
-function WlList({ items, positive, blur, onTrack, tracked }: {
+function WlList({ items, positive, blur, onTrack, tracked, emptyKey }: {
   items: WlItem[]; positive: boolean; blur: boolean;
   onTrack?: (label: string) => void; tracked?: Set<string>;
+  // An empty side is only "not enough data" when BOTH sides are empty; one empty side next to
+  // a full one means "nothing moved this way", and saying "not enough data" there misleads.
+  emptyKey: "wlNoData" | "wlNoWinners" | "wlNoLosers";
 }) {
   const { t } = useLanguage();
   const maxAbs = Math.max(1, ...items.map(x => Math.abs(x.delta)));
   const color = positive ? "#10B981" : "#EF4444";
   if (!items.length) {
-    return <div style={{ padding: "24px", fontSize: "12px", color: "var(--color-text-secondary)", textAlign: "center" }}>{t("wlNoData")}</div>;
+    return <div style={{ padding: "24px", fontSize: "12px", color: "var(--color-text-secondary)", textAlign: "center" }}>{t(emptyKey)}</div>;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -5019,9 +5051,13 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
   const { t } = useLanguage();
   const [dim, setDim] = useState<"queries" | "pages">("queries");
   const d = data?.[dim];
+  const noneAtAll = !d?.winners?.length && !d?.losers?.length;
+  const cov = data?.coverage;
+  const covSide = cov?.[dim];
+  const covPct = cov && covSide && cov.totalClicks > 0 ? Math.round((covSide.visibleClicks / cov.totalClicks) * 100) : null;
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "14px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "14px", flexWrap: "wrap" }}>
         <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("wlTitle")}</h3>
         <div style={{ display: "flex", gap: "4px" }}>
           {(["queries", "pages"] as const).map(k => (
@@ -5031,15 +5067,28 @@ function WinnersLosers({ data, blur, onTrack, tracked }: {
             </button>
           ))}
         </div>
+        {/* The rows carry no column headers; without this "3 → 8" reads as a ranking move. */}
+        <span style={{ fontSize: "12px", color: "var(--color-text-secondary)" }}>{t("wlHint")}</span>
       </div>
+      {/* How much of the traffic this panel can see at all. Search Console withholds anonymized
+          queries; on a small site the listed queries may carry a third of the clicks. */}
+      {cov && covSide && covPct !== null && (
+        <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "-6px 0 12px" }}>
+          {t(dim === "queries" ? "wlCoverageQueries" : "wlCoveragePages")
+            .replace("{visible}", covSide.visibleClicks.toLocaleString())
+            .replace("{total}", cov.totalClicks.toLocaleString())
+            .replace("{pct}", String(Math.min(100, covPct)))}
+          {!covSide.complete && <span style={{ color: "#F59E0B" }}> {t("wlIncomplete")}</span>}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
         <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px" }}>
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#10B981", marginBottom: "10px", letterSpacing: "0.04em", textTransform: "uppercase" }}>▲ {t("wlWinners")}</div>
-          <WlList items={d?.winners ?? []} positive blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} />
+          <WlList items={d?.winners ?? []} positive blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} emptyKey={noneAtAll ? "wlNoData" : "wlNoWinners"} />
         </div>
         <div style={{ background: "var(--color-card)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "16px" }}>
           <div style={{ fontSize: "12px", fontWeight: 700, color: "#EF4444", marginBottom: "10px", letterSpacing: "0.04em", textTransform: "uppercase" }}>▼ {t("wlLosers")}</div>
-          <WlList items={d?.losers ?? []} positive={false} blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} />
+          <WlList items={d?.losers ?? []} positive={false} blur={blur} onTrack={dim === "queries" ? onTrack : undefined} tracked={tracked} emptyKey={noneAtAll ? "wlNoData" : "wlNoLosers"} />
         </div>
       </div>
     </div>
@@ -5069,6 +5118,10 @@ interface SiteData {
   newPages: RankRow[];
   positionBuckets: { "1-3": number; "4-10": number; "11-20": number; "21+": number };
   winnersLosers: WlData;
+  totals?: { queries: number; pages: number };
+  // Why the live sections came back empty — "quota" (transient, self-heals) or "unreachable"
+  // (auth/network). Absent from responses of an older server (issue #38).
+  live?: { failure: "quota" | "unreachable" | null };
   hasData: boolean;
 }
 
@@ -5229,7 +5282,7 @@ export default function SitePage({
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [showBrandedModal, setShowBrandedModal] = useState(false);
   const [brandedKeywords, setBrandedKeywords] = useState<string[]>([]);
-  const [clusterMetrics, setClusterMetrics] = useState<{ clusters: ClusterRow[]; groups: ClusterRow[] } | null>(null);
+  const [clusterMetrics, setClusterMetrics] = useState<{ clusters: ClusterRow[]; groups: ClusterRow[]; error?: "quota" | "unreachable" | null } | null>(null);
   const [clusterLoading, setClusterLoading] = useState(false);
   const siteDbId = propSiteDbId || siteData?.siteDbId || '';
   const toggleMetric = (m: Metric) => setActiveMetrics(p => { const n = new Set(p); if (n.has(m)) n.delete(m); else n.add(m); return n; });
@@ -5492,7 +5545,7 @@ export default function SitePage({
       if (!x) continue;
       out.push({
         id: `purchase-${p.orderId}`,
-        title: `${p.quantity} links · ${p.provider.startsWith("magic369") ? "369Team" : "FieldLink"} · ${p.orderId}`,
+        title: `${p.quantity} links · ${p.provider.startsWith("magic369") ? "369 Links Market" : "FieldLink"} · ${p.orderId}`,
         x,
         kind: "purchase",
         label: `${p.quantity}×${p.provider.startsWith("magic369") ? "369" : "FL"}`,
@@ -5935,6 +5988,11 @@ export default function SitePage({
           {/* Tables or placeholders */}
           {(clusterMetrics?.clusters?.length ?? 0) > 0 || (clusterMetrics?.groups?.length ?? 0) > 0 ? (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
+              {clusterMetrics?.error === "quota" && (
+                <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "#B45309" }}>
+                  <AlertTriangle size={14} color="#F59E0B" /> {t("gscQuotaWarn")}
+                </div>
+              )}
               <ClusterTable
                 title={t("topicClusters")}
                 data={clusterMetrics?.clusters ?? []}
@@ -5977,10 +6035,26 @@ export default function SitePage({
             </span>
           </div>
         )}
+        {/* Empty tables with correct totals above = Search Console refused the live calls, not
+            "this site has no queries". Say which of the two it is (issue #38). */}
+        {siteData?.live?.failure && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: "8px", margin: "0 0 16px", padding: "10px 14px",
+            borderRadius: "8px", fontSize: "13px",
+            background: siteData.live.failure === "quota" ? "rgba(245,158,11,0.08)" : "rgba(239,68,68,0.06)",
+            border: `1px solid ${siteData.live.failure === "quota" ? "rgba(245,158,11,0.3)" : "rgba(239,68,68,0.25)"}`,
+            color: "var(--color-text-primary)",
+          }}>
+            <AlertTriangle size={15} color={siteData.live.failure === "quota" ? "#F59E0B" : "#EF4444"} />
+            <span>{siteData.live.failure === "quota" ? t("gscQuotaWarn") : t("gscUnreachableWarn")}</span>
+          </div>
+        )}
         <div ref={resultsRef} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "32px", scrollMarginTop: "16px" }}>
           <DataTable title={t("queriesTable")} rows={queryRows} tabs={["All", "Growing", "Decaying"]} blur={blur} csvFilename="queries.csv"
-            onTrack={handleTrack} tracked={trackedKws} />
-          <DataTable title={t("pagesTable")}   rows={pageRows}  tabs={["All", "Growing", "Decaying"]} blur={blur} csvFilename="pages.csv" />
+            onTrack={handleTrack} tracked={trackedKws}
+            cut={siteData?.totals ? { shown: siteData.queries.length, total: siteData.totals.queries } : undefined} />
+          <DataTable title={t("pagesTable")}   rows={pageRows}  tabs={["All", "Growing", "Decaying"]} blur={blur} csvFilename="pages.csv"
+            cut={siteData?.totals ? { shown: siteData.pages.length, total: siteData.totals.pages } : undefined} />
         </div>
 
         {/* Winners & Losers (click delta vs previous period) */}

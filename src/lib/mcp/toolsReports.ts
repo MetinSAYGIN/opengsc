@@ -12,7 +12,7 @@ export const REPORTS_TOOLS: McpTool[] = [
     cost: "local",
     readOnly: true,
     description:
-      "Client reports (white-label snapshots): every report of the workspace with site, template, sections, period, schedule (off | weekly | monthly, send day), recipients, client-link state, last/next send, and the last sent snapshots (period, date, whether a PDF exists, sent-to, error state). Local database state only — no report is rendered or sent by this call.",
+      "Client reports (white-label snapshots): every report of the workspace with site, template, sections, period, schedule (off | weekly | monthly, send day), recipients, language (the report/PDF/e-mail language, one of en/ru/uk/fr/es/de/zh/nl — set per report, independently of the dashboard), client-link state, last/next send, and the last sent snapshots (period, date, whether a PDF exists, sent-to, error state). Local database state only — no report is rendered or sent by this call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -33,6 +33,7 @@ export const REPORTS_TOOLS: McpTool[] = [
             schedule: r.schedule,
             sendDay: r.sendDay,
             recipients: r.recipients,
+            lang: r.lang,
             clientLink: Boolean(r.shareToken),
             lastSentAt: r.lastSentAt,
             nextSendAt: r.nextSendAt,

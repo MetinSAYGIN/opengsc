@@ -8,7 +8,7 @@
 
 Self-hosted on your own VPS. No subscriptions, no seat limits, no third party touching your data.
 
-[![Version 1.9.2](https://img.shields.io/badge/version-1.9.2-brightgreen)](https://github.com/fenjo26/opengsc/releases)
+[![Version 1.10.0](https://img.shields.io/badge/version-1.10.0-brightgreen)](https://github.com/fenjo26/opengsc/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue?logo=typescript)](https://www.typescriptlang.org/)
@@ -18,7 +18,7 @@ Self-hosted on your own VPS. No subscriptions, no seat limits, no third party to
 
 [Русская версия](README.ru.md) · [English version](README.md)
 
-[Website](https://opengsc.org) · [Install](#-installation) · [Features](#-features) · [SEO Tools](#-ai-seo-content-suite-seo-tools) · [Indexer](#-private-indexer-network) · [Docs](docs/)
+[Website](https://opengsc.org) · [Wiki](https://github.com/fenjo26/OpenGSC/wiki) · [Install](#-installation) · [Features](#-features) · [SEO Tools](#-ai-seo-content-suite-seo-tools) · [Indexer](#-private-indexer-network) · [Docs](docs/)
 
 </div>
 
@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/fenjo26/opengsc/main/install.sh | s
 
 ## 🌍 Supported languages
 
-OpenGSC's interface is available in **seven languages** — pick one from the language switcher on the login screen or in **Settings → Preferences**:
+OpenGSC's interface is available in **eight languages** — pick one from the language switcher on the login screen or in **Settings → Preferences**:
 
 | Code | Language | Native name |
 |------|----------|-------------|
@@ -49,6 +49,7 @@ OpenGSC's interface is available in **seven languages** — pick one from the la
 | `es` | Spanish | Español 🇪🇸 |
 | `de` | German | Deutsch 🇩🇪 |
 | `zh` | Simplified Chinese | 简体中文 🇨🇳 |
+| `nl` | Dutch | Nederlands 🇳🇱 |
 
 Telegram/Slack alerts and digests are sent in the same language you pick. SEO and Search Console terms that have no native equivalent (CTR, SEO, GSC, sitemap, canonical…) stay in English, the way practitioners use them.
 
@@ -76,7 +77,9 @@ On top of that dashboard, OpenGSC ships two things most GSC tools don't: a full 
 **Signing in:** identity and data are separate. You sign in with an email and a password —
 create the first account from the server console with `npm run create-owner -- --email you@example.com`
 — while Google OAuth stays what it should be: the grant that pulls Search Console and Analytics
-data in. The owner can also keep signing in with Google — after setting a password both work — while a
+data in. While the owner has no password, signing in with Google works too — once a password is
+set, Google stops being a login method (`OPENGSC_ALLOW_GOOGLE_LOGIN=true` reopens it after a lost
+password) — and a
 Google account that is not the owner's is refused rather than quietly attached. Lost the password? `npm run set-password -- --email you@example.com`
 from the server.
 
@@ -254,7 +257,7 @@ Share a site's dashboard with a client without giving them an account: **site �
 
 ### MCP Server — Connect AI Agents
 
-OpenGSC ships a built-in **MCP (Model Context Protocol) server** at `/api/mcp` with **95 tools**, so Claude Code, Claude Desktop, Cursor, Codex, or any MCP client can work with your SEO data directly: sites, search performance, striking-distance keywords, cannibalization, content decay, CTR benchmarks, content groups, rank tracking and history, AEO visibility and share of voice vs competitors, GEO audits, brand mentions (Google News, Wikipedia, Wikidata), backlinks, Link Monitor mentions and the manual Outreach Workspace, stored Source Audit findings, keyword demand and difficulty, competitor gaps, site health, uptime status, indexing status with automatic index-check coverage on Google's free URL Inspection quota, audit results, GA4, Clarity, Bing/Yandex portfolios, the indexer network, SERP Monitor projects, markets, storms and domain catalogues, fired alerts, digests, generation history, meta-tag fitting, network footprints, backlink toxicity and the disavow file, the local business profile and NAP checks, trend radar, plagiarism and `site:` index checks, client reports and inbound leads, per-site AI context (project memory: business, goal, positioning, competitors, key pages, research log), self-publishing to WordPress with AI respin, local geo-grid scans, and arbitrary read-only SQL. Generate a token under **Settings → API & MCP**, then:
+OpenGSC ships a built-in **MCP (Model Context Protocol) server** at `/api/mcp` with **95 tools**, so Claude Code, Claude Desktop, Cursor, Codex, or any MCP client can work with your SEO data directly: sites, search performance, striking-distance keywords, cannibalization, content decay, CTR benchmarks, content groups, rank tracking and history, AEO visibility and share of voice vs competitors, GEO audits, brand mentions (Google News, Wikipedia, Wikidata), backlinks, Link Monitor mentions and the manual Outreach Workspace, stored Source Audit findings, keyword demand and difficulty, competitor gaps, site health, uptime status, indexing status with automatic index-check coverage on Google's free URL Inspection quota, audit results, GA4, Clarity, Bing/Yandex portfolios, the indexer network, SERP Monitor projects, markets, storms and domain catalogues, fired alerts, digests, generation history, meta-tag fitting, network footprints, backlink toxicity and the disavow file, the local business profile and NAP checks, trend radar, plagiarism and `site:` index checks, client reports and inbound leads, per-site AI context (project memory: business, goal, positioning, competitors, key pages, research log), self-publishing to WordPress with AI respin, local geo-grid scans, and arbitrary read-only SQL. Generate a token under **Settings → Integrations**, then:
 
 ```bash
 claude mcp add --transport http opengsc https://your-domain.com/api/mcp \
@@ -319,8 +322,6 @@ The drops funnel ends at *acquired*; this tab is what happens next — from a fr
 - **Donor accelerator:** doorways from the indexer network enqueue **donor** URLs only. A doorway qualifies by confirmed Google crawl — at least 1,000 hits over 30 days, recomputed from live stats on every run, never a stored list.
 - **Measure by uploading the access log:** paste the nginx log of the asset host and the parser counts Googlebot hits (total, 7-day window, last seen) onto the asset — garbage lines are skipped, never an error.
 
-Runbook with the nginx ordering trap, doorway numbers and the footprint rule: [docs/DROPS-ACTIVATION.md](docs/DROPS-ACTIVATION.md). Requires `npx prisma db push` on deploy (the `Drop*` activation tables).
-
 <br/>
 
 
@@ -346,11 +347,11 @@ Traffic comes in waves: a new slot, a provider release, a law change — whoever
 
 ### Magic Links — Buy Posts from Striking Distance (`/magiclinks`)
 
-The striking-distance table has a **Buy** button: query and URL are filled in for you, and the paid post goes out through one of two connected services — **FieldLink** or **369Team** (articles priced by volume tier with a +30% bonus per row, or homepage links at a flat price with a +20% bonus and optional surrounding text). The buy window quotes before it charges (FieldLink prices server-side and re-checks the amount at the pay boundary — a moved price is a 409, never a surprise deduction), preselects the provider with the larger balance, and a selection of rows becomes one order. Every row's anchor is editable, with one-click presets (exact / diluted / URL / domain) — a batch of identical exact-match commercial anchors is an over-optimization footprint, so the default is a deliberate choice, not a habit. The purchase ledger marks already-bought query+URL pairs back in striking, feeds `/magiclinks` (progress, indexing state, CSV of publication URLs), and lands on the site's traffic chart and annotations timeline as one purple marker per order — with the same before/after figures every annotation gets, so "did the links work" is answered by your own Search Console data. Tokens live in Settings → SEO Tools; purchases are deliberately absent from MCP (an agent with a key must not be able to spend your balance). Client code adapted from [gsc-hub](https://github.com/izzipizzy/gsc-hub) (MIT), without its affiliate tags.
+The striking-distance table has a **Buy** button: query and URL are filled in for you, and the paid placement goes out through one of two connected sellers — **FieldLink** or **369 Links Market** — each selling two products from one card: posts / magic links (volume-tier pricing; +25% bonus on the FieldLink order total, +50% per row on 369) and homepage links (369 at a flat price with a +20% bonus and optional surrounding text; FieldLink priced by the donor's traffic tier, no bonus). The buy window quotes before it charges (FieldLink prices server-side and re-checks the amount at the pay boundary — a moved price is a 409, never a surprise deduction), preselects the provider with the larger balance, and a selection of rows becomes one order. Every row's anchor is editable, with one-click presets (exact / diluted / URL / domain) — a batch of identical exact-match commercial anchors is an over-optimization footprint, so the default is a deliberate choice, not a habit. The purchase ledger marks already-bought query+URL pairs back in striking, feeds `/magiclinks` (progress, indexing state, CSV of publication URLs), and lands on the site's traffic chart and annotations timeline as one purple marker per order — with the same before/after figures every annotation gets, so "did the links work" is answered by your own Search Console data. Tokens live in Settings → SERP & scraping (Link purchase) — the same card links to the FieldLink cabinet and the 369 Links Market Telegram bot (top-ups, API keys) and shows the 369 referral earnings the stored key accrues; purchases are deliberately absent from MCP (an agent with a key must not be able to spend your balance). Client code adapted from [gsc-hub](https://github.com/izzipizzy/gsc-hub) (MIT), without its affiliate tags.
 
 ### Publishing — Send Generated Posts to WordPress (`/publishing`)
 
-The other half of the Magic links coin: there you pay somebody else to place posts, here you publish your own. A generated article (text/landing in SEO Tools history) goes straight to the site's WordPress over the REST API with an **application password** — no OAuth app, no plugin. One click on a history row opens the publish window: pick connections, optionally **adapt for the platform (AI)** — the respin task, its own cheap slot in Settings → SEO Tools, one call per platform that changes tone and length while facts, structure and links stay pinned — and publish.
+The other half of the Magic links coin: there you pay somebody else to place posts, here you publish your own. A generated article (text/landing in SEO Tools history) goes straight to the site's WordPress over the REST API with an **application password** — no OAuth app, no plugin. One click on a history row opens the publish window: pick connections, optionally **adapt for the platform (AI)** — the respin task, its own cheap slot in Settings → AI models, one call per platform that changes tone and length while facts, structure and links stay pinned — and publish.
 
 Every successful publish **joins the backlink pipeline as a donor**: a `SiteBacklink` row with `source: "self"`, riding the same placement checker, event history and toxicity pass as a bought placement. Target resolution is honest — the explicit URL you give it, else the first money-site link in the post, else the site root. Publishing is footprint-aware by construction. Every connection is typed — **own satellite / money site / external platform** — and **respin is only allowed for external platforms**: own satellites each get their own post (own topic, own angle), because one canonical text respun across your network hands Google a ready-made footprint. At send time a **uniqueness gate** compares the post against every published post in the instance (the same trigram engine as `analyze_text`; textual near-duplicates block, paraphrases honestly pass — the UI says so); **publications spread over a configurable jitter window** instead of going out as one batch, and a deferred post that hits the gate fires an alert, not just a status change. A pre-publish review shows the **anchor distribution across the network** and warns on shared title skeletons or hour-clustering. Thresholds are calibrated from your own data (`npx tsx src/lib/publish/calibrate.ts`) and documented in the code. MCP: `publish_list_connections`, `publish_post` (items-per-satellite, spread windows, gate results), `publish_list_posts`.
 
@@ -418,7 +419,7 @@ A **volume guard** keeps the final word count within your target (±15%): expand
 
 Optional **sampling controls** (both off by default, so existing runs are unchanged): a **temperature** field — warned above 1.2 and flagged red at 1.5, where output degrades into nonsense — and a **ban-markers** toggle that injects the vocabulary from your AI-Fingerprint model as forbidden words. Because chunks are separate model calls, the temperature is nudged per chunk by a small deterministic offset, so the finished article isn't the product of one uniform sampling pass. On the Outline step temperature is capped at 0.8 and the parse-retry drops to 0 — outlines must return valid JSON, and sampling randomness is exactly what breaks that.
 
-Every finished article also passes through an **invisible-marks scrub** (on by default; Settings → SEO Tools): zero-width characters, bidi controls, soft hyphens, exotic spaces, private-use and control code points a model can leave behind. Invisible to readers — but the cheapest possible marker for any scanner, findable with a plain grep. Legitimate uses are preserved (emoji ZWJ sequences, ZWNJ in Arabic/Indic scripts, subdivision-flag tag characters), curly quotes are straightened only in Latin-quote text, and whatever was removed is counted in the article's diagnostics. Scoped honestly at output hygiene, not anti-detection.
+Every finished article also passes through an **invisible-marks scrub** (on by default; Settings → AI models): zero-width characters, bidi controls, soft hyphens, exotic spaces, private-use and control code points a model can leave behind. Invisible to readers — but the cheapest possible marker for any scanner, findable with a plain grep. Legitimate uses are preserved (emoji ZWJ sequences, ZWNJ in Arabic/Indic scripts, subdivision-flag tag characters), curly quotes are straightened only in Latin-quote text, and whatever was removed is counted in the article's diagnostics. Scoped honestly at output hygiene, not anti-detection.
 </details>
 
 <details open>
@@ -607,6 +608,8 @@ Every step below is a direct link that opens exactly the right page in Google Cl
    > **Note:** Google does not accept bare IP addresses here — a domain is required (the only exception is `http://localhost` for local development). Any subdomain you control works fine, e.g. `gsc.your-domain.com`.
 5. Copy the **Client ID** and **Client Secret** from the confirmation dialog — the installer asks for both. You can always find them again at [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials).
 
+> **Warning:** Test users are fine for a first look, but while the app stays in **Testing**, Google issues refresh tokens that expire after **7 days** — a week in, your accounts quietly disconnect and syncs stop, with everything else still looking normal. For a long-running instance press **Publish app** on the Audience page ([console.cloud.google.com/auth/audience](https://console.cloud.google.com/auth/audience)); no Google verification is needed for a self-hosted tool. Details: [Wiki → Google Cloud Setup](https://github.com/fenjo26/OpenGSC/wiki/Google-Cloud-Setup#testing-vs-in-production-read-this).
+>
 > **Tip:** if sign-in later fails with `access_denied`, your account isn't in Test users (step 3) — either add it there, or publish the app on the same page (**Publish app**).
 
 ### 2. Run the one-line installer
@@ -734,6 +737,26 @@ npx prisma db push
 npm run build
 pm2 restart opengsc --update-env
 ```
+
+### Backups — scheduled, encrypted, offsite (Settings → Backups)
+
+Updates already back the database up before touching anything (see above); **Settings → Backups** adds the scheduled half of the story, for everything that happens *between* updates:
+
+- **Automatic backups on a cron** (UTC, e.g. `0 3 * * *`), plus a **Back up now** button. Each run takes one consistent snapshot of the live SQLite database (`VACUUM INTO`, then an `integrity_check` on the copy — the same mechanics the updater uses, run in a worker thread so a few-hundred-MB database never freezes the web app), optionally gzips and encrypts it, and records a row in the run history. Free space is checked before anything is written — the 2026-09-22 disk-full incident is exactly why. One fire is one attempt: a failed night notifies you and the next fire retries; nothing back-fills in a burst.
+- **Retention by days** (7/14/30, or any 1–90). Both locally and on the SFTP destination, old copies are pruned after each successful run — but the newest database backup always survives the window, so an instance that was down for a month still finds its last backup when it comes back.
+- **SFTP upload to your own NAS/server** — with two hard gates before any byte leaves the server: the artifact must be **encrypted** (the database stores SMTP passwords, provider keys and the SFTP credentials themselves), and the destination's **host key must be pinned**. The **Test connection** button proves the destination is writable and returns the server's SHA256 fingerprint — the exact string `ssh-keygen -lf` prints, so you can verify it against your server by hand — which the card fills into the form; **Save** pins it together with the host. With a fingerprint pinned, a different key (a wrong or intercepted host) is refused — by later Tests and by the nightly upload alike. Uploads go to a `.part` file and are renamed into place, so a killed transfer never leaves a truncated file under a valid name; the remote directory is pruned by the same retention.
+- **Encryption** (required for SFTP): AES-256-CBC in the exact `openssl enc` envelope, PBKDF2-SHA256 with 200 000 iterations pinned in the format, random salt per file. Any OpenSSL ≥ 1.1.1 decrypts it (`-pass stdin` prompts for the passphrase so it stays out of the shell history):
+  ```bash
+  openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 \
+    -in opengsc-scheduled-….db.gz.enc -pass stdin | gunzip > restored.db
+  ```
+  ⚠️ The passphrase lives **only** in this database — and the database is inside the encrypted backups. Write it down in your password manager when you set it: without it, the backups cannot be decrypted by anyone, including you.
+- **`.env` companion** (optional): a copy of `.env` travels with each backup — but it is only *uploaded offsite when encryption is on*, because a plaintext `.env` holds every secret of the instance.
+- **Failure notifications** go through the existing notification channels (Telegram / Slack / e-mail / webhook / push) under the new **Backups** event — add that event to a channel in Settings → Notifications, and a failed night reaches you wherever you already read alerts. Automatic backups are SQLite-only; MySQL/MariaDB instances are told to use their database's own tooling (`mysqldump`, snapshots).
+
+Backups land in the `backups/` directory next to the database (default `/root/opengsc/data/backups/`), named `opengsc-scheduled-<stamp>.db[.gz][.enc]` — the updater's `opengsc-before-update-*` files live there too, and neither's retention touches the other's.
+
+**Restoring** (the Settings card spells this out too): download the artifact or take it from the server, `pm2 stop opengsc`, **delete or move the old `prod.db-wal`/`-shm` next to the database** (a leftover WAL from the old database would be applied to the restored one and corrupt it), decrypt/gunzip if needed (commands above), replace the database file, `pm2 start opengsc`. A running app never swaps its own database under itself — restore is deliberately an operator action, not a button.
 
 <br/>
 
@@ -910,6 +933,7 @@ docs/
 
 ## Documentation
 
+- **[Wiki](https://github.com/fenjo26/OpenGSC/wiki)** — the user manual: quick start, Google Cloud setup, every screen and setting, what needs which key, troubleshooting and FAQ. Source in [`wiki/`](wiki/).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the app is built: the background job system, the multi-pass SEO generation pipeline, the multi-provider LLM abstraction, the MCP server, the audit crawler, the indexer's cloaking/verification mechanism, and the full data model.
 - **[docs/GA4-SETUP.md](docs/GA4-SETUP.md)** — connecting Google Analytics 4, step by step.
 - **[docs/METRICS-SETUP.md](docs/METRICS-SETUP.md)** — keyword weights, backlink profiles and the competitor gap: importing exports for free, configuring an Ahrefs/Semrush/Majestic key, and what each action costs.

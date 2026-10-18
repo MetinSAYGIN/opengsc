@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
-import { resolveWindow } from '@/lib/periodWindow';
+import { resolveWindow, windowDays, utcDay, shiftYmd } from '@/lib/periodWindow';
+import { comparePeriods, aggFromGscRows, pctChange } from '@/lib/gsc/periodCompare';
+import { queryHistoryFor } from '@/lib/gsc/queryHistory';
+import { classifyGscFailure, type GscFailure } from '@/lib/gsc/gscFailure';
 
 function pct(curr: number, prev: number) {
   if (prev === 0) return curr > 0 ? 100 : 0;
@@ -34,7 +37,10 @@ function makeOAuth2(account: GscAccount) {
   return oauth2;
 }
 
-// Try each linked account until one successfully queries GSC for the given siteUrl
+// Try each linked account until one successfully queries GSC for the given siteUrl.
+// Returns WHY it failed when none could: a dashboard over quota used to show empty
+// Queries/Pages tables next to correct totals, with nothing anywhere saying why (issue #38).
+type GscRow = { keys?: string[] | null; clicks?: number | null; impressions?: number | null; ctr?: number | null; position?: number | null };
 async function queryGSC(
   accounts: GscAccount[],
   siteUrl: string,
@@ -42,7 +48,8 @@ async function queryGSC(
   endDate: string,
   dimension: string,
   rowLimit = 250
-) {
+): Promise<{ rows: GscRow[]; failure: GscFailure | null }> {
+  let failure: GscFailure | null = null;
   for (const account of accounts) {
     try {
       const oauth2 = makeOAuth2(account);
@@ -57,13 +64,19 @@ async function queryGSC(
           dataState: 'all',
         },
       });
-      return res.data.rows ?? [];
-    } catch {
-      continue;
+      return { rows: res.data.rows ?? [], failure: null };
+    } catch (err) {
+      const f = classifyGscFailure(err);
+      if (failure !== "quota") failure = f;
     }
   }
-  return [];
+  return { rows: [], failure };
 }
+
+// Once Google answers 429, hammering it with four 25k-row fetches per page view only keeps
+// the quota pinned. Remember the quota answer for two minutes and answer "quota" directly.
+const LIVE_QUOTA_BACKOFF_MS = 2 * 60_000;
+let liveQuotaUntil = 0;
 
 import { verifyAuthOrShare } from '@/lib/authShare';
 
@@ -81,22 +94,16 @@ export async function GET(req: Request) {
   // carries as ?start=&end= when it was left on a manually-picked window.
   // GSC 'final' data lags ~2 days
   const window = resolveWindow(period, searchParams.get('start'), searchParams.get('end'));
-  const { start: startDate, end: endDate, days } = window;
+  const { days } = window;
 
-  const prevEnd = new Date(startDate);
-  prevEnd.setDate(startDate.getDate() - 1);
-  prevEnd.setHours(23, 59, 59, 999);
-
-  const prevStart = new Date(prevEnd);
-  prevStart.setDate(prevEnd.getDate() - days + 1);
-  prevStart.setHours(0, 0, 0, 0);
-
-  // A custom window brings its own exact calendar strings; presets keep the historic
-  // derivation from the window instants.
-  const startStr    = window.startStr ?? startDate.toISOString().split('T')[0];
-  const endStr      = window.endStr   ?? endDate.toISOString().split('T')[0];
-  const prevStartStr = prevStart.toISOString().split('T')[0];
-  const prevEndStr   = prevEnd.toISOString().split('T')[0];
+  // Both periods as calendar days: the previous one has the same length and ends the day
+  // before the current one starts. These used to come from toISOString() on local-midnight
+  // instants, which on a server east of UTC read every start as the day before — "7 days"
+  // asked Google for 8, and the two periods shared a day (a query clicked only on that day
+  // counted on both sides, so a real 1 → 0 loss showed as no change). See windowDays().
+  const { curr: currDays, prev: prevDays } = windowDays(window);
+  const { startStr, endStr } = currDays;
+  const { startStr: prevStartStr, endStr: prevEndStr } = prevDays;
 
   // Get user's Google accounts
   const accounts = await prisma.account.findMany({
@@ -107,11 +114,14 @@ export async function GET(req: Request) {
   // ── Chart data from DB ────────────────────────────────────────────────────────
   const [currRows, prevRows] = await Promise.all([
     prisma.dailyMetric.findMany({
-      where: { siteId: site.id, date: { gte: startDate, lte: endDate }, url: '', query: '', searchType: 'web' },
+      where: { siteId: site.id, date: { gte: utcDay(startStr), lte: utcDay(endStr) }, url: '', query: '', searchType: 'web' },
       orderBy: { date: 'asc' },
     }),
+    // The previous period ONLY. summary.change compares its totals with the current ones; this
+    // used to run on to the current period's end, so 7 days were compared with 14 and every
+    // KPI % on the dashboard was skewed toward a drop.
     prisma.dailyMetric.findMany({
-      where: { siteId: site.id, date: { gte: prevStart, lte: endDate }, url: '', query: '', searchType: 'web' },
+      where: { siteId: site.id, date: { gte: utcDay(prevStartStr), lte: utcDay(prevEndStr) }, url: '', query: '', searchType: 'web' },
     }),
   ]);
 
@@ -119,11 +129,11 @@ export async function GET(req: Request) {
   for (const r of prevRows) prevMap.set(r.date.toISOString().split('T')[0], r);
 
   const chartData = currRows.map((r) => {
-    const compDate = new Date(r.date);
-    compDate.setDate(compDate.getDate() - days);
-    const comp = prevMap.get(compDate.toISOString().split('T')[0]);
+    const comp = prevMap.get(shiftYmd(r.date.toISOString().split('T')[0], -days));
     return {
-      date:         new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      // DailyMetric dates are UTC midnights — label them in UTC, or west of UTC every day
+      // reads as the one before.
+      date:         new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }),
       dateIso:      new Date(r.date).toISOString().split('T')[0],
       clicks:       r.clicks,
       impressions:  r.impressions,
@@ -136,17 +146,19 @@ export async function GET(req: Request) {
     };
   });
 
-  // Summary totals
+  // Summary totals. CTR and position are what Search Console shows for the period: total
+  // clicks / total impressions, and position weighted by impressions. (They used to be plain
+  // averages of the daily values, so a quiet day counted as much as a busy one.)
   const sumRows = (rows: typeof currRows) =>
     rows.reduce(
-      (a, m) => ({ clicks: a.clicks + m.clicks, impressions: a.impressions + m.impressions, ctr: a.ctr + m.ctr, pos: a.pos + m.position, n: a.n + 1 }),
-      { clicks: 0, impressions: 0, ctr: 0, pos: 0, n: 0 }
+      (a, m) => ({ clicks: a.clicks + m.clicks, impressions: a.impressions + m.impressions, posW: a.posW + m.position * m.impressions }),
+      { clicks: 0, impressions: 0, posW: 0 }
     );
 
   const c = sumRows(currRows);
   const p = sumRows(prevRows);
-  const avgCtr = (s: typeof c) => s.n > 0 ? +((s.ctr / s.n) * 100).toFixed(2) : 0;
-  const avgPos = (s: typeof c) => s.n > 0 ? +(s.pos / s.n).toFixed(1) : 0;
+  const avgCtr = (s: typeof c) => s.impressions > 0 ? +((s.clicks / s.impressions) * 100).toFixed(2) : 0;
+  const avgPos = (s: typeof c) => s.impressions > 0 ? +(s.posW / s.impressions).toFixed(1) : 0;
 
   const summary = {
     clicks:      { value: c.clicks,       change: pct(c.clicks, p.clicks) },
@@ -155,74 +167,60 @@ export async function GET(req: Request) {
     position:    { value: avgPos(c),       change: pct(avgPos(c), avgPos(p)) },
   };
 
-  // ── Live GSC: all dimensions (current + previous period) ─────────────────────
+  // ── Queries & pages: COMPLETE per-key sets for both periods ─────────────────
+  // The tables, Winners & Losers, New Rankings and the position buckets all compare the two
+  // periods, and that only means something over complete sets (lib/gsc/periodCompare.ts):
+  // the old top-250 lists turned "fell out of the previous top 250" into "new" and "0 → N".
+  // Queries come from the stored per-day history when it covers both periods, else live at
+  // Google's 25k-row maximum; pages are live (few, and Google's positions are exact).
+  const FULL = 25000;
+  const history = await queryHistoryFor(site.id, currDays, prevDays);
+  const quotaPaused = Date.now() < liveQuotaUntil; // recent 429 — skip Google for now
+  const skipCall = (): Promise<{ rows: GscRow[]; failure: GscFailure | null }> =>
+    Promise.resolve(quotaPaused ? { rows: [], failure: "quota" } : { rows: [], failure: null });
+  const call = (used: boolean, startDate: string, endDate: string, dimension: string, rowLimit: number) =>
+    quotaPaused || !used ? skipCall() : queryGSC(accounts, site.siteId, startDate, endDate, dimension, rowLimit);
   const [
-    queryRows, pageRows, countryRows, deviceRows,
-    prevQueryRows, prevPageRows, prevCountryRows, prevDeviceRows,
+    qCurr, qPrev, pageCall, prevPageCall,
+    countryCall, deviceCall, prevCountryCall, prevDeviceCall,
   ] = await Promise.all([
-    queryGSC(accounts, site.siteId, startStr, endStr, 'query', 250),
-    queryGSC(accounts, site.siteId, startStr, endStr, 'page', 250),
-    queryGSC(accounts, site.siteId, startStr, endStr, 'country', 100),
-    queryGSC(accounts, site.siteId, startStr, endStr, 'device', 10),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'query', 250),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'page', 250),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'country', 100),
-    queryGSC(accounts, site.siteId, prevStartStr, prevEndStr, 'device', 10),
+    call(!history, startStr, endStr, 'query', FULL),
+    call(!history, prevStartStr, prevEndStr, 'query', FULL),
+    call(true, startStr, endStr, 'page', FULL),
+    call(true, prevStartStr, prevEndStr, 'page', FULL),
+    call(true, startStr, endStr, 'country', 100),
+    call(true, startStr, endStr, 'device', 10),
+    call(true, prevStartStr, prevEndStr, 'country', 100),
+    call(true, prevStartStr, prevEndStr, 'device', 10),
   ]);
+  const { rows: qCurrRows } = qCurr;
+  const { rows: qPrevRows } = qPrev;
+  const { rows: pageRows } = pageCall;
+  const { rows: prevPageRows } = prevPageCall;
 
-  const prevQueryMap   = new Map(prevQueryRows.map(r => [r.keys?.[0], r]));
-  const prevPageMap    = new Map(prevPageRows.map(r => [r.keys?.[0], r]));
-  const prevCountryMap = new Map(prevCountryRows.map(r => [r.keys?.[0], r]));
-  const prevDeviceMap  = new Map(prevDeviceRows.map(r => [r.keys?.[0], r]));
+  // One honest verdict for everything fetched live here. "quota" wins over "unreachable":
+  // it is transient and the banner must say so, and seeing it arms the backoff above.
+  const worst = (a: GscFailure | null, b: GscFailure | null): GscFailure | null =>
+    a === "quota" || b === "quota" ? "quota" : a ?? b;
+  const liveFailure = history
+    ? worst(pageCall.failure, worst(prevPageCall.failure, worst(countryCall.failure, worst(deviceCall.failure, worst(prevCountryCall.failure, prevDeviceCall.failure)))))
+    : [qCurr, qPrev, pageCall, prevPageCall, countryCall, deviceCall, prevCountryCall, prevDeviceCall].reduce(
+        (acc, c) => worst(acc, c.failure), null as GscFailure | null);
+  if (liveFailure === "quota") liveQuotaUntil = Date.now() + LIVE_QUOTA_BACKOFF_MS;
 
-  type GscRow = typeof queryRows[0];
-  const mapRows = (rows: GscRow[], pm: Map<string | undefined, GscRow>) =>
-    rows.map(r => {
-      const key  = r.keys?.[0] ?? '';
-      const prev = pm.get(key);
-      return {
-        label:  key,
-        clicks: r.clicks ?? 0,
-        impr:   r.impressions ?? 0,
-        ctr:    +((( r.ctr ?? 0) * 100).toFixed(1)),
-        pos:    +(( r.position ?? 0).toFixed(1)),
-        cPct:   pct(r.clicks ?? 0, prev?.clicks ?? 0),
-        iPct:   pct(r.impressions ?? 0, prev?.impressions ?? 0),
-      };
-    });
+  const qCmp = comparePeriods(history?.curr ?? aggFromGscRows(qCurrRows), history?.prev ?? aggFromGscRows(qPrevRows));
+  const pCmp = comparePeriods(aggFromGscRows(pageRows), aggFromGscRows(prevPageRows));
 
-  const queries = mapRows(queryRows, prevQueryMap);
-  const pages   = mapRows(pageRows,  prevPageMap);
+  const queries    = qCmp.rows;
+  const pages      = pCmp.rows;
+  const newQueries = qCmp.newRows;
+  const newPages   = pCmp.newRows;
 
-  // ── New Rankings: in current period but NOT in prev period ────────────────────
-  const newQueries = queryRows
-    .filter(r => !prevQueryMap.has(r.keys?.[0]))
-    .map(r => ({
-      label:  r.keys?.[0] ?? '',
-      clicks: r.clicks ?? 0,
-      impr:   r.impressions ?? 0,
-      ctr:    +((( r.ctr ?? 0) * 100).toFixed(1)),
-      pos:    +(( r.position ?? 0).toFixed(1)),
-      cPct:   100,  // new = +∞ (was 0, now exists)
-      iPct:   100,
-    }))
-    .slice(0, 25);
-
-  const newPages = pageRows
-    .filter(r => !prevPageMap.has(r.keys?.[0]))
-    .map(r => ({
-      label:  r.keys?.[0] ?? '',
-      clicks: r.clicks ?? 0,
-      impr:   r.impressions ?? 0,
-      ctr:    +((( r.ctr ?? 0) * 100).toFixed(1)),
-      pos:    +(( r.position ?? 0).toFixed(1)),
-      cPct:   100,
-      iPct:   100,
-    }))
-    .slice(0, 25);
+  const prevCountryMap = new Map(prevCountryCall.rows.map(r => [r.keys?.[0], r]));
+  const prevDeviceMap  = new Map(prevDeviceCall.rows.map(r => [r.keys?.[0], r]));
 
   // ── Countries with real change % ──────────────────────────────────────────────
-  const countries = countryRows.map(r => {
+  const countries = countryCall.rows.map(r => {
     const key  = r.keys?.[0] ?? '';
     const prev = prevCountryMap.get(key);
     return {
@@ -232,13 +230,13 @@ export async function GET(req: Request) {
       impr:   r.impressions ?? 0,
       ctr:    +((( r.ctr ?? 0) * 100).toFixed(1)),
       pos:    +(( r.position ?? 0).toFixed(1)),
-      cPct:   pct(r.clicks ?? 0, prev?.clicks ?? 0),
-      iPct:   pct(r.impressions ?? 0, prev?.impressions ?? 0),
+      cPct:   pctChange(r.clicks ?? 0, prev?.clicks ?? 0),
+      iPct:   pctChange(r.impressions ?? 0, prev?.impressions ?? 0),
     };
   });
 
   // ── Devices with real change % ────────────────────────────────────────────────
-  const devices = deviceRows.map(r => {
+  const devices = deviceCall.rows.map(r => {
     const key      = r.keys?.[0] ?? '';
     const prev     = prevDeviceMap.get(key);
     const currCtr  = (r.ctr ?? 0) * 100;
@@ -251,45 +249,37 @@ export async function GET(req: Request) {
       impr:     r.impressions ?? 0,
       ctr:      +currCtr.toFixed(1),
       pos:      +currPos.toFixed(1),
-      cPct:     pct(r.clicks ?? 0, prev?.clicks ?? 0),
-      iPct:     pct(r.impressions ?? 0, prev?.impressions ?? 0),
+      cPct:     pctChange(r.clicks ?? 0, prev?.clicks ?? 0),
+      iPct:     pctChange(r.impressions ?? 0, prev?.impressions ?? 0),
       ctrPct:   prev ? +(currCtr - prevCtr).toFixed(1) : 0,
       posDelta: prev ? +(currPos - prevPos).toFixed(1) : 0,
     };
   });
 
-  // ── Winners & Losers: click delta between the two periods ────────────────────
-  // Union of current + previous rows, so queries that dropped to zero still show up.
-  const computeWinnersLosers = (curr: GscRow[], pm: Map<string | undefined, GscRow>) => {
-    const currMap = new Map(curr.map(r => [r.keys?.[0], r]));
-    const keys = new Set([...currMap.keys(), ...pm.keys()]);
-    const deltas: { label: string; curr: number; prev: number; delta: number }[] = [];
-    for (const k of keys) {
-      if (!k) continue;
-      const c = currMap.get(k)?.clicks ?? 0;
-      const p = pm.get(k)?.clicks ?? 0;
-      if (c === p) continue;
-      deltas.push({ label: k, curr: c, prev: p, delta: c - p });
-    }
-    const winners = deltas.filter(d => d.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 20);
-    const losers  = deltas.filter(d => d.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 20);
-    return { winners, losers };
-  };
-
+  // ── Winners & Losers: click delta between the two periods, over complete sets ─
+  // `coverage` lets the panel say how much of the site's traffic it can see at all: Search
+  // Console withholds anonymized queries, so on a small site the keyed queries may carry a
+  // third of the clicks. Saying so beats a list that silently looks like the whole picture.
   const winnersLosers = {
-    queries: computeWinnersLosers(queryRows, prevQueryMap),
-    pages:   computeWinnersLosers(pageRows,  prevPageMap),
+    queries: { winners: qCmp.winners, losers: qCmp.losers },
+    pages:   { winners: pCmp.winners, losers: pCmp.losers },
+    coverage: {
+      totalClicks: c.clicks,
+      queries: {
+        visibleClicks: qCmp.visibleClicks,
+        source:   history ? 'history' as const : 'live' as const,
+        complete: history ? true : qCurrRows.length < FULL && qPrevRows.length < FULL,
+      },
+      pages: {
+        visibleClicks: pCmp.visibleClicks,
+        source:   'live' as const,
+        complete: pageRows.length < FULL && prevPageRows.length < FULL,
+      },
+    },
   };
 
-  // ── Position buckets (from all fetched queries) ───────────────────────────────
-  const positionBuckets = { '1-3': 0, '4-10': 0, '11-20': 0, '21+': 0 };
-  for (const r of queryRows) {
-    const pos = r.position ?? 0;
-    if      (pos <= 3)  positionBuckets['1-3']++;
-    else if (pos <= 10) positionBuckets['4-10']++;
-    else if (pos <= 20) positionBuckets['11-20']++;
-    else                positionBuckets['21+']++;
-  }
+  // ── Position buckets: every query with impressions, at its period position ────
+  const positionBuckets = qCmp.buckets;
 
   return NextResponse.json({
     siteDbId: site.id,
@@ -303,6 +293,13 @@ export async function GET(req: Request) {
     newPages,
     positionBuckets,
     winnersLosers,
+    // How many queries/pages the period has in all — the tables carry the top TABLE_ROWS.
+    totals: { queries: qCmp.total, pages: pCmp.total },
+    // Why the live sections (queries when not covered by history, pages, countries, devices)
+    // came back empty: "quota" = Search Console is over its quota right now and will recover,
+    // "unreachable" = no linked account could query the property. Totals and charts come from
+    // the synced database either way. Absent in responses of an older server.
+    live: { failure: liveFailure },
     hasData: currRows.length > 0,
   });
 }

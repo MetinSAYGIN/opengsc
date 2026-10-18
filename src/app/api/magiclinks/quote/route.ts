@@ -4,7 +4,7 @@ import { fieldLinkClientFor, magic369ClientFor } from "@/lib/magiclinks/provider
 import { idempotencyKeyFor } from "@/lib/magiclinks/fieldlink";
 import { quoteArticles, quoteLinks } from "@/lib/magiclinks/magic369";
 import { parseRequestItems } from "@/lib/magiclinks/requestItems";
-import { isMagicProviderId, PROVIDER_FIELDLINK, PROVIDER_MAGIC369_LINKS, type MagicProviderId } from "@/lib/magiclinks/purchases";
+import { isMagicProviderId, PROVIDER_FIELDLINK, PROVIDER_FIELDLINK_LINKS, PROVIDER_MAGIC369_LINKS, type BuyProductId } from "@/lib/magiclinks/purchases";
 
 // POST /api/magiclinks/quote — price a selection WITHOUT paying for it.
 //
@@ -13,13 +13,13 @@ import { isMagicProviderId, PROVIDER_FIELDLINK, PROVIDER_MAGIC369_LINKS, type Ma
 // 369Team: there is no quote call in that API — the prices come from /balance and are computed
 // here, which is also why submit re-checks them before charging. Articles are priced by the
 // volume tier the WHOLE order's paid count falls into (price_tiers); homepage links at the flat
-// link_price. The bonus (+30% / +20% per row) is an estimate — the spec gives no rounding.
+// link_price. The bonus (+50% / +20% per row) is an estimate — the spec gives no rounding.
 
 export const dynamic = "force-dynamic";
 
 /** What the buy modal shows and what submit echoes back as the expected amount. */
 export interface QuoteResponse {
-  provider: MagicProviderId;
+  provider: BuyProductId;
   taskId?: string;
   placementCount: number;
   /** Estimated for 369Team (rate × count per row, rounded down); exact for FieldLink. */
@@ -30,6 +30,8 @@ export interface QuoteResponse {
   balanceMinor: number | null;
   shortfallMinor: number;
   canSubmit: boolean;
+  /** FieldLink: the new order includes auto-indexing and then CANNOT be cancelled. */
+  indexingIncluded?: boolean;
 }
 
 const MAX_ITEMS = 50;
@@ -39,12 +41,13 @@ export async function POST(req: Request) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const b = await req.json().catch(() => ({}));
-  const provider = isMagicProviderId(b?.provider) ? b.provider : PROVIDER_FIELDLINK;
+  const flLinks = b?.provider === PROVIDER_FIELDLINK_LINKS;
+  const provider = flLinks ? PROVIDER_FIELDLINK : isMagicProviderId(b?.provider) ? b.provider : PROVIDER_FIELDLINK;
   const rawItems = Array.isArray(b?.items) ? b.items : [];
   if (rawItems.length === 0 || rawItems.length > MAX_ITEMS) {
     return NextResponse.json({ error: "bad_items", message: `1-${MAX_ITEMS} rows expected` }, { status: 400 });
   }
-  const items = parseRequestItems(rawItems, { links: provider === PROVIDER_MAGIC369_LINKS });
+  const items = parseRequestItems(rawItems, { links: provider === PROVIDER_MAGIC369_LINKS, flLinks });
   if (typeof items === "string") return NextResponse.json({ error: "bad_brief", message: items }, { status: 400 });
 
   try {
@@ -52,15 +55,28 @@ export async function POST(req: Request) {
       const client = await fieldLinkClientFor(userId);
       if (!client) return NextResponse.json({ error: "not_configured", message: "FieldLink token is not set" }, { status: 400 });
 
-      // FieldLink gets exactly the brief shape it always got: the idempotency key hashes it.
-      const briefs = items.map(it => ({ targetUrl: it.targetUrl, anchor: it.anchor, titleKeyword: it.titleKeyword, language: it.language, count: it.count }));
-      const payload = { topic: `OpenGSC striking ${new Date().toISOString().slice(0, 10)}`, items: briefs };
-      const created = await client.createPosts(payload, idempotencyKeyFor(payload));
+      // The idempotency key hashes the exact body, so re-quoting the same selection the same
+      // day returns the same saved task instead of forking a new one. `topic` is a MODE since
+      // contract 1.19 ("auto" | "casino" | "other") — the task label goes in `name`.
+      const name = `OpenGSC striking ${new Date().toISOString().slice(0, 10)}`;
+      let created: { taskId?: string; task?: { id: string } };
+      if (flLinks) {
+        const briefs = items.map(it => ({
+          targetUrl: it.targetUrl, anchor: it.anchor, language: it.language, count: it.count, tier: it.tier,
+          ...(it.contentHint ? { contentHint: it.contentHint } : {}),
+        }));
+        const payload = { name: `${name} · links`, items: briefs };
+        created = await client.createLinks(payload, idempotencyKeyFor(payload));
+      } else {
+        const briefs = items.map(it => ({ targetUrl: it.targetUrl, anchor: it.anchor, titleKeyword: it.titleKeyword, language: it.language, count: it.count }));
+        const payload = { name, topic: "auto" as const, items: briefs };
+        created = await client.createPosts(payload, idempotencyKeyFor(payload));
+      }
       const taskId = created.taskId ?? created.task?.id;
       if (!taskId) return NextResponse.json({ error: "no_task" }, { status: 502 });
       const q = await client.quote(taskId);
       const res: QuoteResponse = {
-        provider,
+        provider: flLinks ? PROVIDER_FIELDLINK_LINKS : provider,
         taskId,
         placementCount: q.placementCount,
         bonusCount: q.bonusCount,
@@ -68,18 +84,19 @@ export async function POST(req: Request) {
         balanceMinor: q.balanceMinor,
         shortfallMinor: q.shortfallMinor,
         canSubmit: q.canSubmit,
+        indexingIncluded: !!q.indexingIncluded,
       };
       return NextResponse.json(res);
     }
 
     const client = await magic369ClientFor(userId);
-    if (!client) return NextResponse.json({ error: "not_configured", message: "369Team token is not set" }, { status: 400 });
+    if (!client) return NextResponse.json({ error: "not_configured", message: "369 Links Market token is not set" }, { status: 400 });
 
     const balance = await client.balance();
     const counts = items.map(it => it.count ?? 1);
     const q = provider === PROVIDER_MAGIC369_LINKS ? quoteLinks(balance, counts) : quoteArticles(balance, counts);
     if (!q) {
-      return NextResponse.json({ error: "no_link_price", message: "369Team did not report link_price in /balance" }, { status: 502 });
+      return NextResponse.json({ error: "no_link_price", message: "369 Links Market did not report link_price in /balance" }, { status: 502 });
     }
     const res: QuoteResponse = {
       provider,

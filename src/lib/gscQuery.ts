@@ -4,6 +4,7 @@
 
 import { google } from 'googleapis';
 import { prisma } from '@/lib/prisma';
+import { classifyGscFailure, type GscFailure } from '@/lib/gsc/gscFailure';
 
 export type GscAccount = {
   id: string;
@@ -51,8 +52,15 @@ export interface GscQueryOpts {
   filters?: { dimension: string; operator: string; expression: string }[];
 }
 
-// Try each linked account until one successfully queries GSC for the given siteUrl.
-export async function queryGsc(accounts: GscAccount[], siteUrl: string, opts: GscQueryOpts) {
+export interface GscStatusResult<T> {
+  rows: T[];
+  /** Why every linked account failed — null when Google answered. "quota" outranks
+   *  "unreachable": it is transient, and it is the one the UI must explain (issue #38). */
+  failure: GscFailure | null;
+}
+
+async function queryGscOnce<T>(accounts: GscAccount[], siteUrl: string, opts: GscQueryOpts): Promise<GscStatusResult<T>> {
+  let failure: GscFailure | null = null;
   for (const account of accounts) {
     try {
       const oauth2 = makeOAuth2(account);
@@ -70,41 +78,31 @@ export async function queryGsc(accounts: GscAccount[], siteUrl: string, opts: Gs
             : {}),
         },
       });
-      return res.data.rows ?? [];
-    } catch {
-      continue;
+      return { rows: (res.data.rows ?? []) as T[], failure: null };
+    } catch (err) {
+      const f = classifyGscFailure(err);
+      if (failure !== "quota") failure = f;
     }
   }
-  return [];
+  return { rows: [] as T[], failure };
+}
+
+// Try each linked account until one successfully queries GSC for the given siteUrl.
+export async function queryGsc(accounts: GscAccount[], siteUrl: string, opts: GscQueryOpts) {
+  return (await queryGscOnce(accounts, siteUrl, opts)).rows;
+}
+
+/** The account-fallback loop with the failure reason attached (see GscStatusResult). */
+export async function queryGscWithStatus<T>(accounts: GscAccount[], siteUrl: string, opts: GscQueryOpts) {
+  return queryGscOnce<T>(accounts, siteUrl, opts);
 }
 
 /** Like queryGsc, but tells "Google answered with no rows" ([]) apart from "no linked account
  *  could query this property" (null). Callers that would otherwise fall back to a different
  *  data source — or show a misleading zero — need that distinction (issue #27). */
 export async function queryGscStrict(accounts: GscAccount[], siteUrl: string, opts: GscQueryOpts) {
-  for (const account of accounts) {
-    try {
-      const oauth2 = makeOAuth2(account);
-      const wm = google.webmasters({ version: 'v3', auth: oauth2 });
-      const res = await wm.searchanalytics.query({
-        siteUrl,
-        requestBody: {
-          startDate: opts.startDate,
-          endDate: opts.endDate,
-          dimensions: opts.dimensions,
-          rowLimit: opts.rowLimit ?? 250,
-          dataState: 'all',
-          ...(opts.filters?.length
-            ? { dimensionFilterGroups: [{ filters: opts.filters }] }
-            : {}),
-        },
-      });
-      return res.data.rows ?? [];
-    } catch {
-      continue;
-    }
-  }
-  return null;
+  const r = await queryGscOnce(accounts, siteUrl, opts);
+  return r.failure ? null : r.rows;
 }
 
 export function isoDaysAgo(days: number): string {

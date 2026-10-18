@@ -18,7 +18,7 @@ import { sovForSite } from "@/lib/visibility/store";
 import { AUDIT_RULES } from "@/lib/audit/rules";
 import type { PsiSummary } from "@/lib/audit/psi";
 import { normDomain } from "@/lib/mcp/shared";
-import { getUserGoogleAccounts, queryGscStrict, type GscAccount } from "@/lib/gscQuery";
+import { getUserGoogleAccounts, queryGscWithStatus, type GscAccount } from "@/lib/gscQuery";
 // The two windows (calendar vs Search Console) and their date math live in ./window, which
 // is pure and unit-tested; re-exported so existing imports keep working.
 import { summarizeBacklinks, type BacklinksData, type StoredBacklink } from "./backlinks";
@@ -128,11 +128,18 @@ async function gscSource(userId: string, siteId: string): Promise<GscSource | nu
 async function liveTop(src: GscSource, dimension: "query" | "page", w: ReportWindow): Promise<RowsData | undefined | null> {
   const s = w.search;
   const [cur, prev] = await Promise.all([
-    queryGscStrict(src.accounts, src.property, { startDate: s.startStr, endDate: s.endStr, dimensions: [dimension], rowLimit: TOP_N }),
-    queryGscStrict(src.accounts, src.property, { startDate: s.prevStartStr, endDate: s.prevEndStr, dimensions: [dimension], rowLimit: PREV_DEPTH }),
+    queryGscWithStatus<{ keys?: string[] | null; clicks?: number | null; impressions?: number | null; position?: number | null }>(
+      src.accounts, src.property, { startDate: s.startStr, endDate: s.endStr, dimensions: [dimension], rowLimit: TOP_N }),
+    queryGscWithStatus<{ keys?: string[] | null; clicks?: number | null; impressions?: number | null; position?: number | null }>(
+      src.accounts, src.property, { startDate: s.prevStartStr, endDate: s.prevEndStr, dimensions: [dimension], rowLimit: PREV_DEPTH }),
   ]);
-  if (cur === null) return null; // GSC unreachable — let the caller decide what is honest
-  const rows = mergeTopRows(gscRowsToTop(cur), prev === null ? null : gscRowsToTop(prev), TOP_N);
+  if (cur.failure) {
+    // Named on purpose: "over quota" is transient and passes by the next scheduled report,
+    // "unreachable" means a human should look at the Google connection (issue #38).
+    console.warn(`[reports] Top ${dimension}s: Search Console ${cur.failure === "quota" ? "is over quota" : "is unreachable"} for ${src.property}`);
+    return null;
+  }
+  const rows = mergeTopRows(gscRowsToTop(cur.rows), prev.failure ? null : gscRowsToTop(prev.rows), TOP_N);
   return rows.length ? { rows } : undefined;
 }
 

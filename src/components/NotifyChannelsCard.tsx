@@ -54,6 +54,7 @@ export function EventPicker({ events, onToggle }: { events: NotifyEvent[]; onTog
     alert: t("notifyEv_alert"), digest: t("notifyEv_digest"), uptime: t("notifyEv_uptime"),
     index: t("notifyEv_index"), mention: t("notifyEv_mention"), test: "",
     lead: t("notifyEv_lead"), local: t("notifyEv_local"), trend: t("notifyEv_trend"),
+    backup: t("notifyEv_backup"),
   };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>

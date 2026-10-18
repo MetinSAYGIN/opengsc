@@ -60,7 +60,8 @@ export function contextTablesMissing(e: unknown): boolean {
 
 /** Key page identity: a path is kept relative to the site ("/pricing"), an absolute URL is
  *  normalized to host+path — so the operator's "/pricing" and the agent's absolute URL meet
- *  on one row instead of fighting over the unique key. */
+ *  on one row instead of fighting over the unique key. Idempotent: the stored host+path form
+ *  re-normalizes to itself, so a Remove sent back the row as shown deletes that row. */
 export function normalizeKeyPageUrl(input: string, siteHost = ""): string {
   let u = String(input ?? "").trim();
   if (!u) return "";
@@ -68,9 +69,18 @@ export function normalizeKeyPageUrl(input: string, siteHost = ""): string {
     try { const p = new URL(u); u = p.hostname.replace(/^www\./, "") + p.pathname.replace(/\/+$/, "") + p.search; }
     catch { return ""; }
   } else {
-    if (!u.startsWith("/")) u = "/" + u;
-    u = u.replace(/\/+$/, "") || "/";
-    if (siteHost) u = siteHost.replace(/^www\./, "") + u;
+    // A stored url already carries its host ("site.com/pricing") — that is the form the card
+    // shows and sends back on Remove, and the form an absolute-URL add keeps for foreign
+    // hosts. Treat "domain.tld/…" as host-carrying instead of prefixing the site host again:
+    // a second prefix would search for "site.com/site.com/pricing" and silently match nothing.
+    const carriesHost = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}([/?]|$)/i.test(u);
+    if (carriesHost) {
+      u = u.replace(/\/+$/, "") || u;
+    } else {
+      if (!u.startsWith("/")) u = "/" + u;
+      u = u.replace(/\/+$/, "") || "/";
+      if (siteHost) u = siteHost.replace(/^www\./, "") + u;
+    }
   }
   return u.slice(0, 500);
 }
@@ -337,11 +347,18 @@ export async function applyContextUpdates(
         }
         out.applied++;
       } else if (Array.isArray(op.removeKeyPages)) {
+        let removed = 0;
         for (const u of op.removeKeyPages) {
           const url = normalizeKeyPageUrl(String(u ?? ""), siteHost);
-          if (url) await prisma.siteKeyPage.deleteMany({ where: { siteId, url } });
+          if (!url) continue;
+          // The homepage was stored as "site.com/" when added as "/" (an absolute-URL add
+          // stored "site.com"), and the normalized key now strips the trailing slash — match
+          // both spellings rather than silently deleting nothing.
+          const n = await prisma.siteKeyPage.deleteMany({ where: { siteId, url: { in: [url, `${url}/`] } } });
+          removed += n.count;
         }
-        out.applied++;
+        if (removed > 0) out.applied++;
+        else out.skipped.push(`no key page matched: ${op.removeKeyPages.slice(0, 3).map(v => String(v ?? "").slice(0, 60)).join(", ")}`);
       } else if (op.appendResearchLog && typeof (op.appendResearchLog as { summary?: unknown }).summary === "string") {
         const summary = String((op.appendResearchLog as { summary: string }).summary).trim().slice(0, 500);
         if (!summary) { out.skipped.push("empty research log entry"); continue; }

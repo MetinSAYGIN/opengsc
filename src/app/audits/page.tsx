@@ -25,6 +25,9 @@ type NeverAudited = { id: string; url: string; auditSettings?: string | null };
 type SortKey = "newest" | "issues" | "regressions" | "health";
 type StatusFilter = "all" | "queued" | "completed" | "running" | "error";
 type Tab = "history" | "sites";
+// Fleet columns a click on the header can sort by. "site" asc is the rest state — the
+// fleet's alphabetical default predates sorting and stays the landing view.
+type FleetSortKey = "site" | "last" | "health" | "next" | "status";
 
 // Fleet row: one per site — its scheduling override plus its latest audit (rows arrive
 // newest-first, so the first row seen per site is the latest run).
@@ -76,6 +79,7 @@ export default function AuditsPage() {
   const [tab, setTab] = useState<Tab>("history");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sitesSearch, setSitesSearch] = useState("");
+  const [fleetSort, setFleetSort] = useState<{ key: FleetSortKey; dir: 1 | -1 }>({ key: "site", dir: 1 });
   const [queueSettings, setQueueSettings] = useState<AuditQueueSettings>(DEFAULT_AUDIT_QUEUE_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<AuditQueueSettings>(DEFAULT_AUDIT_QUEUE_SETTINGS);
@@ -164,7 +168,7 @@ export default function AuditsPage() {
   const visible = useMemo(() => filtered.slice(safePage * PAGE, safePage * PAGE + PAGE), [filtered, safePage]);
 
   // Fleet: audited sites carry their settings on the history rows; never-audited ones
-  // arrive in their own list. Search matches the host.
+  // arrive in their own list. Search matches the host; the header-click sort applies after.
   const fleet = useMemo<FleetRow[]>(() => {
     const map = new Map<string, FleetRow>();
     for (const r of rows) {
@@ -174,10 +178,32 @@ export default function AuditsPage() {
       if (!map.has(s.id)) map.set(s.id, { id: s.id, url: s.url, auditSettings: s.auditSettings ?? null, last: null });
     }
     const q = sitesSearch.trim().toLowerCase();
-    return [...map.values()]
-      .filter(f => !q || hostOf(f.url).toLowerCase().includes(q))
-      .sort((a, b) => hostOf(a.url).localeCompare(hostOf(b.url)));
-  }, [rows, neverAudited, sitesSearch]);
+    const list = [...map.values()].filter(f => !q || hostOf(f.url).toLowerCase().includes(q));
+
+    const lastTs = (f: FleetRow) => {
+      const a = f.last?.finishedAt ?? f.last?.startedAt;
+      return a ? new Date(a).getTime() : 0;
+    };
+    // Cron "next" is an expression, not a computable date here — cron rows sort as "no date",
+    // alongside never-run sites (which are the most overdue thing there is).
+    const nextTs = (f: FleetRow): number => {
+      const sched = effectiveAuditSchedule(f.auditSettings, queueSettings);
+      if (sched.kind !== "interval") return Number.POSITIVE_INFINITY;
+      const anchor = f.last?.finishedAt ?? f.last?.startedAt;
+      return anchor ? new Date(anchor).getTime() + sched.days * 86_400_000 : Number.NEGATIVE_INFINITY;
+    };
+    // Triage order: failures first, then live work, then clean runs, then never-audited.
+    const statusRank = (f: FleetRow) =>
+      !f.last ? 4 : f.last.status === "error" ? 0 : f.last.status === "running" ? 1 : f.last.status === "queued" ? 2 : 3;
+    const byKey: Record<FleetSortKey, (a: FleetRow, b: FleetRow) => number> = {
+      site: (a, b) => hostOf(a.url).localeCompare(hostOf(b.url)),
+      last: (a, b) => lastTs(a) - lastTs(b),
+      health: (a, b) => (a.last?.healthScore ?? -1) - (b.last?.healthScore ?? -1),
+      next: (a, b) => nextTs(a) - nextTs(b),
+      status: (a, b) => statusRank(a) - statusRank(b),
+    };
+    return list.sort((a, b) => byKey[fleetSort.key](a, b) * fleetSort.dir || hostOf(a.url).localeCompare(hostOf(b.url)));
+  }, [rows, neverAudited, sitesSearch, fleetSort, queueSettings]);
 
   const openSite = (url: string) => router.push(`/site/${siteRouteKey(url)}?tab=audit`);
 
@@ -343,6 +369,21 @@ export default function AuditsPage() {
     </label>
   );
 
+  // Sortable fleet header: the first click picks the column's natural direction (newest
+  // first for dates, worst health first, failures first), the next click flips it.
+  const fleetTh = (key: FleetSortKey, label: string, firstDir: 1 | -1, pad = "10px 8px") => (
+    <th style={{ padding: pad }}>
+      <button
+        onClick={() => setFleetSort(p => p.key === key ? { key, dir: p.dir === 1 ? -1 : 1 } : { key, dir: firstDir })}
+        title={t("auditsSortHint")}
+        style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: "4px" }}
+      >
+        {label}
+        {fleetSort.key === key && <span style={{ fontSize: "9px" }}>{fleetSort.dir === 1 ? "▲" : "▼"}</span>}
+      </button>
+    </th>
+  );
+
   return (
     <div className="main-content">
       <div>
@@ -458,8 +499,8 @@ export default function AuditsPage() {
                             : r.status === "queued"
                               ? <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "var(--color-text-secondary)", fontWeight: 700 }}><Clock size={12} /> {t("auditsGQueued")}</span>
                               : r.status === "completed"
-                                ? <span style={{ color: "#34c759", fontWeight: 700 }}>✓</span>
-                                : <span title={r.error ?? undefined} style={{ color: "#ff375f", fontWeight: 700 }}>✗</span>}
+                                ? <span style={{ color: "#34c759", fontWeight: 700 }}>✓ {t("auditsStatusDone")}</span>
+                                : <span title={r.error ?? undefined} style={{ color: "#ff375f", fontWeight: 700 }}>✗ {t("auditsStatusError")}</span>}
                         </td>
                         <td style={{ padding: "8px 8px" }}>
                           <span title={t("auditsGColTrigger")} style={{ padding: "2px 8px", borderRadius: "20px", fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
@@ -545,6 +586,15 @@ export default function AuditsPage() {
               {numInput(t("auditsSettingsRetries"), "retryAttempts", 0, 5)}
               {numInput(t("auditsSettingsRetryDelay"), "retryDelayMin", 1, 1440)}
               <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-secondary)" }}>
+                {t("auditsSettingsKeep")}
+                <input
+                  type="number" min={0} max={200} value={String(settingsDraft.historyKeep)}
+                  onChange={e => setSettingsDraft(d => ({ ...d, historyKeep: Math.min(200, Math.max(0, Math.round(Number(e.target.value) || 0))) }))}
+                  className="tool-input" style={{ ...inputStyle, width: "110px" }}
+                />
+                <span style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{t("auditsSettingsKeepAll")}</span>
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-secondary)" }}>
                 {t("auditsSettingsCron")}
                 <input
                   value={settingsDraft.defaultCron ?? ""}
@@ -595,12 +645,12 @@ export default function AuditsPage() {
                         onChange={e => e.target.checked ? selectFiltered() : clearSelection()}
                       />
                     </th>
-                    <th style={{ padding: "10px 14px" }}>{t("auditsGColSite")}</th>
-                    <th style={{ padding: "10px 8px" }}>{t("auditsColLastAudit")}</th>
-                    <th style={{ padding: "10px 8px" }}>{t("auditsGColHealth")}</th>
-                    <th style={{ padding: "10px 8px" }}>{t("auditsColNextAudit")}</th>
+                    {fleetTh("site", t("auditsGColSite"), 1, "10px 14px")}
+                    {fleetTh("last", t("auditsColLastAudit"), -1)}
+                    {fleetTh("health", t("auditsGColHealth"), 1)}
+                    {fleetTh("next", t("auditsColNextAudit"), 1)}
                     <th style={{ padding: "10px 8px" }}>{t("auditsColInterval")}</th>
-                    <th style={{ padding: "10px 8px" }}>{t("auditsGColStatus")}</th>
+                    {fleetTh("status", t("auditsGColStatus"), 1)}
                     <th style={{ padding: "10px 14px" }} />
                   </tr>
                 </thead>
@@ -651,7 +701,11 @@ export default function AuditsPage() {
                             ? <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "#ff9f0a", fontWeight: 700 }}><Loader2 size={12} className="spin" /> {t("auditRunning")}</span>
                             : f.last?.status === "queued"
                               ? <span style={{ display: "inline-flex", alignItems: "center", gap: "5px", color: "var(--color-text-secondary)", fontWeight: 700 }}><Clock size={12} /> {t("auditsGQueued")}</span>
-                              : "—"}
+                              : !f.last
+                                ? <span style={{ color: "var(--color-text-tertiary)" }}>{t("auditsStatusNever")}</span>
+                                : f.last.status === "error"
+                                  ? <span title={f.last.error ?? undefined} style={{ color: "#ff375f", fontWeight: 700 }}>✗ {t("auditsStatusError")}</span>
+                                  : <span style={{ color: "#34c759", fontWeight: 700 }}>✓ {t("auditsStatusDone")}</span>}
                         </td>
                         <td onClick={() => openSite(f.url)} title={t("auditsGOpen")} style={{ padding: "8px 14px", color: "var(--color-text-tertiary)", cursor: "pointer" }}><ExternalLink size={12} /></td>
                       </tr>

@@ -12,6 +12,7 @@ import {
   REPORT_SECTION_IDS, REPORT_TEMPLATE_IDS, REPORT_TEMPLATES as TPL,
   type ReportSectionId, type ReportTemplateId,
 } from "@/lib/reports/sections";
+import { REPORT_LANG_OPTIONS, type ReportLang } from "@/lib/reports/i18n";
 import type { ReportRow } from "@/lib/reports/store";
 
 export interface EditorDraft {
@@ -24,9 +25,10 @@ export interface EditorDraft {
   sendDay: number;
   recipients: string;
   notes: string;
+  lang: ReportLang;
 }
 
-const emptyDraft = (sites: { id: string; domain: string }[]): EditorDraft => ({
+const emptyDraft = (sites: { id: string; domain: string }[], uiLang: string): EditorDraft => ({
   siteId: sites[0]?.id ?? "",
   title: "",
   template: "executive",
@@ -36,6 +38,8 @@ const emptyDraft = (sites: { id: string; domain: string }[]): EditorDraft => ({
   sendDay: 1,
   recipients: "",
   notes: "",
+  // The operator's own language is the sane default; the per-client choice is one click away.
+  lang: REPORT_LANG_OPTIONS.some(o => o.value === uiLang) ? (uiLang as ReportLang) : "en",
 });
 
 const draftOf = (r: ReportRow): EditorDraft => ({
@@ -48,6 +52,7 @@ const draftOf = (r: ReportRow): EditorDraft => ({
   sendDay: r.sendDay || 1,
   recipients: r.recipients.join(", "),
   notes: r.notes,
+  lang: REPORT_LANG_OPTIONS.some(o => o.value === r.lang) ? r.lang : "en",
 });
 
 const input: React.CSSProperties = {
@@ -69,10 +74,10 @@ export default function ReportEditor({
   onSave: (draft: EditorDraft) => void;
   onClose: () => void;
 }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   // Seeded once during the first render: the parent keys the dialog per open, so mount-time
   // IS the open moment — no prop-to-state sync loop while it is on screen.
-  const [draft, setDraft] = useState<EditorDraft>(() => (editing ? draftOf(editing) : emptyDraft(sites)));
+  const [draft, setDraft] = useState<EditorDraft>(() => (editing ? draftOf(editing) : emptyDraft(sites, language)));
 
   const set = (patch: Partial<EditorDraft>) => setDraft(d => ({ ...d, ...patch }));
 
@@ -105,7 +110,7 @@ export default function ReportEditor({
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
           <div style={{ gridColumn: "1 / -1" }}>
             <label style={label}>{t("repTitle")}</label>
             <input style={input} value={draft.title} onChange={e => set({ title: e.target.value })} placeholder={t("repTitle") || "Title"} maxLength={120} />
@@ -123,6 +128,12 @@ export default function ReportEditor({
               <option value={7}>7</option>
               <option value={30}>30</option>
               <option value={90}>90</option>
+            </select>
+          </div>
+          <div>
+            <label style={label} title={t("repLangHint" as never) || "The snapshot, PDF and e-mail render in this language — independently of your dashboard language."}>{t("repLang" as never) || "Language"}</label>
+            <select style={input} value={draft.lang} onChange={e => set({ lang: e.target.value as ReportLang })}>
+              {REPORT_LANG_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
         </div>

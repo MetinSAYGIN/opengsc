@@ -109,3 +109,41 @@ test("daysParam accepts whole day counts and rejects everything else", () => {
   assert.equal(daysParam("abc"), null);
   assert.equal(daysParam(String(MAX_CUSTOM_SPAN_DAYS + 100)), MAX_CUSTOM_SPAN_DAYS);
 });
+
+// ── windowDays / localYmd / shiftYmd ─────────────────────────────────────────────────────
+// Run under several TZ values (see the check in this change): the bug these guard against —
+// toISOString() on local-midnight instants — only shows up off UTC.
+import { windowDays, localYmd, shiftYmd, utcDay } from "./periodWindow";
+
+const spanDays = (a: string, b: string) => Math.round((utcDay(b).getTime() - utcDay(a).getTime()) / DAY_MS) + 1;
+
+test("localYmd reads the local calendar day, not the UTC one", () => {
+  assert.equal(localYmd(new Date(2026, 9, 6, 0, 0, 0, 0)), "2026-10-06");       // local midnight
+  assert.equal(localYmd(new Date(2026, 9, 12, 23, 59, 59, 999)), "2026-10-12"); // local end-of-day
+});
+
+test("shiftYmd is exact across DST, month and leap-year edges", () => {
+  assert.equal(shiftYmd("2026-10-25", 1), "2026-10-26");  // EU DST ends
+  assert.equal(shiftYmd("2026-03-29", -1), "2026-03-28"); // EU DST starts
+  assert.equal(shiftYmd("2026-03-01", -1), "2026-02-28");
+  assert.equal(shiftYmd("2028-03-01", -1), "2028-02-29");
+});
+
+test("custom window: previous period is the same length and ends the day before", () => {
+  const { curr, prev } = windowDays(win("2026-10-06", "2026-10-12"));
+  assert.deepEqual(curr, { startStr: "2026-10-06", endStr: "2026-10-12" });
+  assert.deepEqual(prev, { startStr: "2026-09-29", endStr: "2026-10-05" });
+});
+
+for (const period of ["yesterday", "7d", "14d", "28d", "3m", "12m"]) {
+  test(`preset ${period}: exactly N days, previous period adjacent and equal (TZ=${process.env.TZ ?? "system"})`, () => {
+    const w = resolveWindow(period);
+    const { curr, prev } = windowDays(w);
+    assert.equal(spanDays(curr.startStr, curr.endStr), w.days, "current window length");
+    assert.equal(spanDays(prev.startStr, prev.endStr), w.days, "previous window length");
+    assert.equal(shiftYmd(prev.endStr, 1), curr.startStr, "no overlap, no gap");
+    // ends 2 days back (GSC final-data lag), in the local calendar
+    const lag = new Date(); lag.setDate(lag.getDate() - 2);
+    assert.equal(curr.endStr, localYmd(lag));
+  });
+}

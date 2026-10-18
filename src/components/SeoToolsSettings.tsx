@@ -1,12 +1,14 @@
 "use client";
 
-// Self-contained settings for the SEO Tools module — keys (SERP/scrape), model
-// selection, and fact-check/generation behavior. Lives inside the SEO Tools tab so
-// the tool is self-contained; no dependency on the main dashboard Settings page.
-// All values are localStorage-only (same keys/logic as before — just relocated).
+// Building blocks of Settings → "AI models", "SERP & scraping", "SEO metrics" and "Provider log".
+//
+// Each integration is configured in exactly ONE tab: the key and the choice of what to use it
+// for sit next to each other. They used to be split ("API Keys" held every key, "SEO Tools" held
+// the model and provider pickers), which meant you could not tell what was connected and active
+// without visiting both. All values are localStorage-only, mirrored to the server by SeoKeysSync.
 
 import { useEffect, useState } from "react";
-import { Globe, RefreshCw, CheckCircle, Eye, X, Sparkles } from "lucide-react";
+import { RefreshCw, CheckCircle, Eye, X, Sparkles } from "lucide-react";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { getConfiguredProviders, AI_PROVIDER_NAMES } from "@/lib/seo/keys";
 import { rankModels, type ModelOpt } from "@/lib/seo/models";
@@ -28,6 +30,15 @@ interface KeyCardProvider {
  */
 export const METRICS_GATEWAY_URL =
   "https://my.groupbuyseo.org/register?affiliate_key=8ino4XJTwJ7EJooF67JUOt2tmbcFk1";
+
+/** 369 Links Market Telegram bot — where 369Team tokens are bought and the API key is issued.
+ *  Also a referral link (the owner's), disclosed like METRICS_GATEWAY_URL above. */
+export const MAGIC369_BOT_URL = "https://t.me/marketplace369_bot?start=ref_58bsvidx";
+
+/** FieldLink sign-up/cabinet: balance top-ups and API tokens (Workspace → API tokens). The
+ *  owner's referral link (20% of referred top-ups, credited to the owner's FieldLink balance) —
+ *  disclosed like METRICS_GATEWAY_URL above. Binds only users who register through it. */
+export const FIELDLINK_CABINET_URL = "https://seoboost-root.info/r/flt_oW6P5bnPM5JTkU44PxbVxFWBUF4e8MBRFDy0kG17t5Y";
 
 export const SEO_PROVIDERS: KeyCardProvider[] = [
   { id: "serper", storageKey: "seoKey_serper", name: "Serper.dev", roleKey: "seoRoleSerp", placeholder: "Serper API key", hintKey: "seoSetHintSerper", instrKey: "seoSetInstrSerper", docsUrl: "https://serper.dev", color: "#10A37F", logo: "S" },
@@ -241,7 +252,7 @@ function AparserCard() {
  * the ordinary settings mirror (`seoKey_fieldlink` / `seoKey_magic369`), so server routes
  * resolve them through the same fallback chain as every other credential.
  */
-function MagicLinksCard() {
+export function MagicLinksCard() {
   const { t } = useLanguage();
   const [flToken, setFlToken] = useState("");
   const [mToken, setMToken] = useState("");
@@ -269,11 +280,15 @@ function MagicLinksCard() {
       });
       const d = await res.json();
       if (!res.ok) { setStatus({ ok: false, text: String(d?.error || res.status) }); setBusy(false); return; }
-      persist(flToken.trim(), mToken.trim());
+      // Each token is saved only if IT passed (an emptied field clears its stored value) — one
+      // provider's typo must neither be persisted nor block saving the other's good token.
+      const keepFl = flToken.trim() ? (d?.fieldlink?.ok ? flToken.trim() : localStorage.getItem("seoKey_fieldlink") || "") : "";
+      const keepM = mToken.trim() ? (d?.magic369?.ok ? mToken.trim() : localStorage.getItem("seoKey_magic369") || "") : "";
+      persist(keepFl, keepM);
       const money = (minor: number | null) => (minor == null ? "—" : `${(minor / 100).toFixed(2)}`);
       const parts: string[] = [];
       if (d?.fieldlink?.tested) parts.push(`FieldLink: ${d.fieldlink.ok ? `✓ ${money(d.fieldlink.balanceMinor)}` : `✕ ${d.fieldlink.message ?? ""}`}`);
-      if (d?.magic369?.tested) parts.push(`369Team: ${d.magic369.ok ? `✓ ${money(d.magic369.balanceMinor)}` : `✕ ${d.magic369.message ?? ""}`}`);
+      if (d?.magic369?.tested) parts.push(`369 Links Market: ${d.magic369.ok ? `✓ ${money(d.magic369.balanceMinor)}` : `✕ ${d.magic369.message ?? ""}`}`);
       setStatus({ ok: parts.every(p => p.includes("✓")), text: parts.join(" · ") || t("mlNothingToTest") });
     } catch (e) {
       setStatus({ ok: false, text: String((e as Error)?.message ?? e) });
@@ -316,6 +331,12 @@ function MagicLinksCard() {
             <RefreshCw size={12} style={{ animation: busy ? "spin 1s linear infinite" : undefined }} /> {busy ? t("aparserChecking") : t("aparserTest")}
           </button>
           <a href="/magiclinks" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center" }}>{t("mlOpenOrders")}</a>
+          <a href={MAGIC369_BOT_URL} target="_blank" rel="noopener noreferrer sponsored" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: "6px" }}>
+            <img src="/partners/369market-logo.png" alt="" style={{ width: "16px", height: "16px", borderRadius: "4px", objectFit: "cover" }} />{t("ml369Bot")}
+          </a>
+          <a href={FIELDLINK_CABINET_URL} target="_blank" rel="noopener noreferrer sponsored" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: "6px" }}>
+            <img src="/partners/fieldlink-logo.svg" alt="" style={{ width: "16px", height: "16px", borderRadius: "4px" }} />{t("mlFlCabinet")}
+          </a>
         </div>
       </div>
 
@@ -325,10 +346,94 @@ function MagicLinksCard() {
         </div>
       )}
 
+      {!!mToken.trim() && <Magic369ReferralsPanel />}
+
       <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.5, marginBottom: "6px" }}>{t("mlCardHint")}</div>
       <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
         📍 {t("mlCardInstr")}
       </div>
+    </div>
+  );
+}
+
+type ReferralsPayload = {
+  configured: boolean;
+  error?: string;
+  summary?: { percent: number; referralsCount: number; depositsTotalMinor: number; earnedTotalMinor: number; paidTotalMinor: number; pendingTotalMinor: number };
+  history?: { referralId: number; depositMinor: number; depositedAt: string | null; percent: number; rewardMinor: number; status: string }[];
+  historyTotal?: number;
+};
+
+/** 369 Market referral earnings — read from the STORED 369Team key (server side), so it shows
+ *  what the saved key earns, not what is typed in the field. */
+function Magic369ReferralsPanel() {
+  const { t } = useLanguage();
+  const [data, setData] = useState<ReferralsPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/magiclinks/referrals", { cache: "no-store" });
+      setData(await res.json());
+    } catch (e) {
+      setData({ configured: true, error: String((e as Error)?.message ?? e) });
+    }
+    setLoading(false);
+  };
+  useEffect(() => { void load(); }, []);
+
+  const m = (minor: number) => (minor / 100).toFixed(2);
+  const s = data?.summary;
+  const cell: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "2px", padding: "6px 8px", borderRadius: "6px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--color-border)", minWidth: 0 };
+  const lbl: React.CSSProperties = { fontSize: "10px", color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" };
+  const val: React.CSSProperties = { fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", fontFamily: "monospace" };
+
+  if (data && !data.configured) return null;
+
+  return (
+    <div style={{ margin: "4px 0 10px", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--color-border)", background: "rgba(0,0,0,0.12)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+        <img src="/partners/369market-logo.png" alt="" style={{ width: "18px", height: "18px", borderRadius: "4px", objectFit: "cover" }} />
+        <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--color-text-primary)", flex: 1 }}>
+          {t("ml369RefTitle")}{s ? ` · ${s.percent}%` : ""}
+        </div>
+        <button onClick={() => void load()} disabled={loading} title={t("ml369RefRefresh")}
+          style={{ background: "none", border: "none", cursor: loading ? "wait" : "pointer", color: "var(--color-text-secondary)", padding: 2, display: "flex" }}>
+          <RefreshCw size={12} style={{ animation: loading ? "spin 1s linear infinite" : undefined }} />
+        </button>
+      </div>
+
+      {data?.error && <div style={{ fontSize: "11px", color: "#f87171", fontFamily: "monospace", wordBreak: "break-all" }}>✕ {data.error}</div>}
+      {!data && <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>{t("loading")}</div>}
+
+      {s && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: "6px" }}>
+            <div style={cell}><span style={lbl}>{t("ml369RefInvited")}</span><span style={val}>{s.referralsCount}</span></div>
+            <div style={cell}><span style={lbl}>{t("ml369RefDeposits")}</span><span style={val}>{m(s.depositsTotalMinor)}</span></div>
+            <div style={cell}><span style={lbl}>{t("ml369RefEarned")}</span><span style={val}>{m(s.earnedTotalMinor)}</span></div>
+            <div style={cell}><span style={lbl}>{t("ml369RefPaid")}</span><span style={val}>{m(s.paidTotalMinor)}</span></div>
+            <div style={cell}><span style={lbl}>{t("ml369RefPending")}</span><span style={{ ...val, color: s.pendingTotalMinor > 0 ? "#10B981" : val.color }}>{m(s.pendingTotalMinor)}</span></div>
+          </div>
+          {(data?.history?.length ?? 0) > 0 && (
+            <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "3px" }}>
+              {data!.history!.map((r, i) => (
+                <div key={i} style={{ display: "flex", gap: "8px", fontSize: "11px", fontFamily: "monospace", color: "var(--color-text-secondary)" }}>
+                  <span>{r.depositedAt ? r.depositedAt.slice(0, 10) : "—"}</span>
+                  <span>#{r.referralId}</span>
+                  <span style={{ flex: 1 }}>{m(r.depositMinor)} × {r.percent}%</span>
+                  <span style={{ color: "var(--color-text-primary)", fontWeight: 600 }}>+{m(r.rewardMinor)}</span>
+                  <span style={{ color: r.status === "paid" ? "#10B981" : "#F59E0B" }}>{r.status === "paid" ? t("ml369RefPaid") : t("ml369RefPending")}</span>
+                </div>
+              ))}
+              {(data?.historyTotal ?? 0) > (data?.history?.length ?? 0) && (
+                <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)" }}>… {data!.historyTotal! - data!.history!.length} {t("ml369RefMore")}</div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -448,7 +553,7 @@ function ToggleRowSetting({ label, desc, on, onToggle }: { label: string; desc: 
  * `seoProviderLogBodies` rides SeoKeysSync's mirror to `User.seoSettings`, like the scheduled
  * warm-up before it, because the thing that reads it is a server process with no browser.
  */
-function BodyCaptureSetting() {
+export function BodyCaptureSetting() {
   const { t } = useLanguage();
   const [on, setOn] = useState(false);
   useEffect(() => { setOn((localStorage.getItem("seoProviderLogBodies") ?? "0") === "1"); }, []);
@@ -461,7 +566,7 @@ function BodyCaptureSetting() {
   };
 
   return (
-    <div style={{ marginBottom: "18px", paddingBottom: "16px", borderBottom: "1px solid var(--color-border)" }}>
+    <div>
       <div style={{ fontSize: "13px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>🧾 {t("seoLogBodiesTitle")}</div>
       <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 4px" }}>{t("seoLogBodiesSub")}</div>
       <ToggleRowSetting label={t("seoLogBodiesLabel")} desc={t("seoLogBodiesDesc")} on={on} onToggle={toggle} />
@@ -728,23 +833,15 @@ function providerPillStyle(isActive: boolean): React.CSSProperties {
   };
 }
 
-// Exported so the unified "API Keys" settings section (Settings → API Keys) can render
-// these same key cards — keeping exactly one place in the UI where any provider key is
-// actually typed in, while this SEO Tools tab keeps only the non-key configuration
-// (model choice, active-provider pickers, fact-check behavior).
+// The SERP / scraping key cards (Settings → SERP & scraping). The tab supplies the heading;
+// the pickers that choose WHICH of these keys a feature uses sit above them in the same tab.
 export function SeoProviderKeysSection() {
   const { t } = useLanguage();
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-        <Globe size={17} color="#10A37F" />
-        <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>{t("seoSetTitle")}</h3>
-      </div>
-      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 14px" }}>{t("seoSetSub")}</p>
       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
         {SEO_PROVIDERS.map(p => <SeoKeyCard key={p.id} provider={p} />)}
         <AparserCard />
-        <MagicLinksCard />
       </div>
       <div style={{ marginTop: "14px", padding: "11px 14px", borderRadius: "8px", background: "rgba(16,163,127,0.06)", border: "1px solid rgba(16,163,127,0.18)", fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
         💡 {t("seoSetTip")}
@@ -770,7 +867,24 @@ export function AeoProviderKeysSection() {
   );
 }
 
-export default function SeoToolsSettings() {
+/**
+ * Everything about how AI text is produced once a key exists: the default model, an
+ * OpenAI-compatible custom endpoint, per-task overrides and the fact-check pipeline.
+ * Rendered under the provider keys in Settings → AI models.
+ */
+export function AiGenerationSettings() {
+  return (
+    <>
+      <ModelSelector />
+      <CustomProviderCard />
+      <PerTaskProviders />
+      <FactCheckSettings />
+    </>
+  );
+}
+
+/** Which configured SERP key each feature uses — Settings → SERP & scraping, above the keys. */
+export function SerpProviderPicker() {
   const { t } = useLanguage();
   const [active, setActive] = useState("serper");
   // Rank Tracker can use its own SERP provider, independent from the one used for content
@@ -798,19 +912,7 @@ export default function SeoToolsSettings() {
   const activeName = SERP_PROVIDER_LIST.find(([id]) => id === active)?.[1] ?? active;
 
   return (
-    <div className="panel">
-      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-        <Globe size={17} color="#10A37F" />
-        <h2 style={{ fontSize: "16px", fontWeight: 700, color: "var(--color-text-primary)", margin: 0 }}>{t("seoSetTitle")}</h2>
-      </div>
-      <p style={{ fontSize: "13px", color: "var(--color-text-secondary)", margin: "0 0 16px" }}>{t("seoSetSub")}</p>
-
-      <ModelSelector />
-      <CustomProviderCard />
-      <PerTaskProviders />
-      <FactCheckSettings />
-      <BodyCaptureSetting />
-
+    <div>
       <div style={{ marginBottom: "14px" }}>
         <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "7px" }}>{t("seoSetActiveProvider")}</div>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -820,7 +922,7 @@ export default function SeoToolsSettings() {
         </div>
       </div>
 
-      <div style={{ marginBottom: "14px", paddingBottom: "16px", borderBottom: "1px solid var(--color-border)" }}>
+      <div>
         <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "4px" }}>{t("seoSetRankProvider")}</div>
         <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 8px" }}>{t("seoSetRankProviderDesc")}</p>
         <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>

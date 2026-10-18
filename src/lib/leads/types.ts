@@ -2,9 +2,9 @@
 // Pure types only: nothing here imports Prisma or Next, so every module (and every test)
 // can use them freely.
 
-export type LeadLang = "en" | "ru" | "uk" | "fr" | "es" | "de" | "zh";
+export type LeadLang = "en" | "ru" | "uk" | "fr" | "es" | "de" | "zh" | "nl";
 
-export const LEAD_LANGS: LeadLang[] = ["en", "ru", "uk", "fr", "es", "de", "zh"];
+export const LEAD_LANGS: LeadLang[] = ["en", "ru", "uk", "fr", "es", "de", "zh", "nl"];
 
 export function normalizeLeadLang(value: unknown): LeadLang {
   return LEAD_LANGS.includes(value as LeadLang) ? (value as LeadLang) : "en";

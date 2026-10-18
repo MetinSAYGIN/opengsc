@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { google } from 'googleapis';
 import { verifyAuthOrShare } from '@/lib/authShare';
 import { daysParam } from '@/lib/periodWindow';
+import { classifyGscFailure, type GscFailure } from '@/lib/gsc/gscFailure';
 
 function periodToDays(period: string): number {
   const today = new Date();
@@ -41,7 +42,8 @@ function makeOAuth2(account: { id: string; access_token: string | null; refresh_
 async function queryGSC(
   accounts: { id: string; access_token: string | null; refresh_token: string | null; expires_at: number | null }[],
   siteUrl: string, startDate: string, endDate: string, dimension: string, rowLimit = 500
-) {
+): Promise<{ rows: { keys?: string[] | null; clicks?: number | null; impressions?: number | null; ctr?: number | null; position?: number | null }[]; failure: GscFailure | null }> {
+  let failure: GscFailure | null = null;
   for (const account of accounts) {
     try {
       const oauth2 = makeOAuth2(account);
@@ -50,10 +52,13 @@ async function queryGSC(
         siteUrl,
         requestBody: { startDate, endDate, dimensions: [dimension], rowLimit, dataState: 'all' },
       });
-      return res.data.rows ?? [];
-    } catch { continue; }
+      return { rows: res.data.rows ?? [], failure: null };
+    } catch (err) {
+      const f = classifyGscFailure(err);
+      if (failure !== "quota") failure = f;
+    }
   }
-  return [];
+  return { rows: [], failure };
 }
 
 // ─── Match a string against a rule set ───────────────────────────────────────
@@ -137,15 +142,20 @@ export async function GET(req: Request) {
   });
 
   // Fetch live GSC data for both periods
+  const noCall = { rows: [], failure: null } as Awaited<ReturnType<typeof queryGSC>>;
   const [currQ, prevQ, currP, prevP] = await Promise.all([
-    clusterDefs.length > 0 ? queryGSC(accounts, site.siteId, fmt(startDate), fmt(endDate), 'query', 500) : Promise.resolve([]),
-    clusterDefs.length > 0 ? queryGSC(accounts, site.siteId, fmt(prevStart), fmt(prevEnd),  'query', 500) : Promise.resolve([]),
-    groupDefs.length   > 0 ? queryGSC(accounts, site.siteId, fmt(startDate), fmt(endDate), 'page',  500) : Promise.resolve([]),
-    groupDefs.length   > 0 ? queryGSC(accounts, site.siteId, fmt(prevStart), fmt(prevEnd),  'page',  500) : Promise.resolve([]),
+    clusterDefs.length > 0 ? queryGSC(accounts, site.siteId, fmt(startDate), fmt(endDate), 'query', 500) : Promise.resolve(noCall),
+    clusterDefs.length > 0 ? queryGSC(accounts, site.siteId, fmt(prevStart), fmt(prevEnd),  'query', 500) : Promise.resolve(noCall),
+    groupDefs.length   > 0 ? queryGSC(accounts, site.siteId, fmt(startDate), fmt(endDate), 'page',  500) : Promise.resolve(noCall),
+    groupDefs.length   > 0 ? queryGSC(accounts, site.siteId, fmt(prevStart), fmt(prevEnd),  'page',  500) : Promise.resolve(noCall),
   ]);
+  // "quota" outranks "unreachable": one honest reason for the zeros below (issue #38).
+  const worst = (a: GscFailure | null, b: GscFailure | null): GscFailure | null =>
+    a === "quota" || b === "quota" ? "quota" : a ?? b;
+  const liveFailure = [currQ, prevQ, currP, prevP].reduce((acc, c) => worst(acc, c.failure), null as GscFailure | null);
 
   // A GSC searchanalytics row exactly as queryGSC above returns it.
-  const toRow = (r: Awaited<ReturnType<typeof queryGSC>>[number]) => ({
+  const toRow = (r: Awaited<ReturnType<typeof queryGSC>>['rows'][number]) => ({
     label:  r.keys?.[0] ?? '',
     clicks: r.clicks ?? 0,
     impr:   r.impressions ?? 0,
@@ -160,19 +170,19 @@ export async function GET(req: Request) {
   type Def = { id: string; name: string; rules: string };
 
   const clusters = aggregate(
-    currQ.map(toRow), prevQ.map(toRow),
+    currQ.rows.map(toRow), prevQ.rows.map(toRow),
     (clusterDefs as Def[]).map(d => ({ id: d.id, name: d.name, rules: parseRules(d) }))
   );
 
   const groups = aggregate(
-    currP.map(toRow), prevP.map(toRow),
+    currP.rows.map(toRow), prevP.rows.map(toRow),
     (groupDefs as Def[]).map(d => ({ id: d.id, name: d.name, rules: parseRules(d) }))
   );
 
-  return NextResponse.json({ clusters, groups });
+  return NextResponse.json({ clusters, groups, error: liveFailure });
  } catch (e) {
   // Never 500 the dashboard over clusters (e.g. topicCluster table not migrated yet).
   console.error('[cluster-metrics]', e);
-  return NextResponse.json({ clusters: [], groups: [] });
+  return NextResponse.json({ clusters: [], groups: [], error: null });
  }
 }

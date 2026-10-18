@@ -484,7 +484,7 @@ export default function RankTracker({ siteDbId }: { siteDbId: string; domain?: s
                       </button>
                     );
                   })}
-                  <a href="/settings?tab=seo-tools" onClick={() => setMenuOpen(false)}
+                  <a href="/settings?tab=serp" onClick={() => setMenuOpen(false)}
                     style={{ display: "block", marginTop: "8px", fontSize: "11px", color: "#3B82F6", textDecoration: "none" }}>
                     {t("rankProviderMenuSettings")}
                   </a>
@@ -511,7 +511,7 @@ export default function RankTracker({ siteDbId }: { siteDbId: string; domain?: s
       {!loading && !hasKey && !guest && (
         <div style={{ padding: "12px 16px", borderRadius: "10px", border: "1px solid rgba(245,158,11,0.35)", background: "rgba(245,158,11,0.08)", color: "#F59E0B", fontSize: "13px" }}>
           ⚠ {t("rankNoKey")}{" "}
-          <a href="/settings?tab=api-keys" style={{ color: "#F59E0B", fontWeight: 700, textDecoration: "underline" }}>Settings → API Keys</a>
+          <a href="/settings?tab=serp" style={{ color: "#F59E0B", fontWeight: 700, textDecoration: "underline" }}>{t("settingsTitle")} → {t("navSerp")}</a>
         </div>
       )}
 
