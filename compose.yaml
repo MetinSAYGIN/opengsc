@@ -15,6 +15,7 @@ services:
       NEXTAUTH_URL: "${NEXTAUTH_URL}"
       GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID}"
       GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET}"
+      NODE_OPTIONS: "--max-old-space-size=4096"
 
     volumes:
       - opengsc-data:/data
