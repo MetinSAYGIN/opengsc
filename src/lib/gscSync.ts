@@ -65,6 +65,22 @@ async function pooled<T>(items: T[], limit: number, worker: (item: T) => Promise
 
 const isQuotaError = isGscQuotaError;
 
+/**
+ * Rows per createMany call. Each createMany is compiled into a single Prisma query plan, and one
+ * call carrying a large property's ~150k url-day rows kept the server busy collecting garbage
+ * for the rest of the sync — or killed it with "JavaScript heap out of memory". Measured on
+ * 151k rows at Node's default heap: one call never finished; 1,000-row slices took 82 s under
+ * 1 GB RSS. Yielding between slices lets the server answer requests while a big site is written.
+ */
+const WRITE_CHUNK_ROWS = 1_000;
+
+async function writeInChunks<T>(rows: T[], write: (chunk: T[]) => Promise<unknown>): Promise<void> {
+  for (let i = 0; i < rows.length; i += WRITE_CHUNK_ROWS) {
+    await write(rows.slice(i, i + WRITE_CHUNK_ROWS));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
 /** Search Console's maximum rows per searchanalytics request. */
 const GSC_ROW_LIMIT = 25_000;
 /** Days of per-URL daily rows refreshed on every sync — see Step 3. */
@@ -429,8 +445,8 @@ export async function runGscSync() {
                 date:   { gte: urlDailyStart, lte: endDate },
               },
             });
-            await prisma.dailyMetric.createMany({
-              data: urlRows
+            await writeInChunks(urlRows, chunk => prisma.dailyMetric.createMany({
+              data: chunk
                 .filter(r => r.keys?.[0] && r.keys?.[1])
                 .map(r => ({
                   siteId:      dbSite.id,
@@ -442,7 +458,7 @@ export async function runGscSync() {
                   ctr:         r.ctr         ?? 0,
                   position:    r.position    ?? 0,
                 })),
-            });
+            }));
           }
         } catch (err) {
           console.error(`[GSC Sync]     Error syncing URL data for ${hostname}: ${(err as Error).message}`);
@@ -489,8 +505,8 @@ export async function runGscSync() {
                 query:  { not: '' },
               },
             });
-            await prisma.dailyMetric.createMany({
-              data: qpRows
+            await writeInChunks(qpRows, chunk => prisma.dailyMetric.createMany({
+              data: chunk
                 .filter(r => r.keys?.[0] && r.keys?.[1])
                 .map(r => ({
                   siteId:      dbSite.id,
@@ -502,7 +518,7 @@ export async function runGscSync() {
                   ctr:         r.ctr         ?? 0,
                   position:    r.position    ?? 0,
                 })),
-            });
+            }));
           }
         } catch (err) {
           console.error(`[GSC Sync]     Error syncing query+page data for ${hostname}: ${(err as Error).message}`);
@@ -541,8 +557,8 @@ export async function runGscSync() {
           note.push(`${qpdRows.length} query+page/day${qpdCapped ? ` (capped)` : ''}`);
           if (qpdRows.length > 0) {
             await prisma.queryPageDaily.deleteMany({ where: { siteId: dbSite.id } });
-            await prisma.queryPageDaily.createMany({
-              data: qpdRows
+            await writeInChunks(qpdRows, chunk => prisma.queryPageDaily.createMany({
+              data: chunk
                 .filter(r => r.keys?.[0] && r.keys?.[1] && r.keys?.[2])
                 .map(r => ({
                   siteId:      dbSite.id,
@@ -553,7 +569,7 @@ export async function runGscSync() {
                   impressions: r.impressions ?? 0,
                   position:    r.position    ?? 0,
                 })),
-            });
+            }));
           }
         } catch (err) {
           console.error(`[GSC Sync]     Per-day query+page rows skipped for ${hostname}: ${(err as Error).message}`);
