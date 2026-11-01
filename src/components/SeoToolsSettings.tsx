@@ -288,7 +288,7 @@ export function MagicLinksCard() {
       const money = (minor: number | null) => (minor == null ? "—" : `${(minor / 100).toFixed(2)}`);
       const parts: string[] = [];
       if (d?.fieldlink?.tested) parts.push(`FieldLink: ${d.fieldlink.ok ? `✓ ${money(d.fieldlink.balanceMinor)}` : `✕ ${d.fieldlink.message ?? ""}`}`);
-      if (d?.magic369?.tested) parts.push(`369 Links Market: ${d.magic369.ok ? `✓ ${money(d.magic369.balanceMinor)}` : `✕ ${d.magic369.message ?? ""}`}`);
+      if (d?.magic369?.tested) parts.push(`369 Links Market: ${d.magic369.ok ? `✓ $${money(d.magic369.balanceMinor)}` : `✕ ${d.magic369.message ?? ""}`}`);
       setStatus({ ok: parts.every(p => p.includes("✓")), text: parts.join(" · ") || t("mlNothingToTest") });
     } catch (e) {
       setStatus({ ok: false, text: String((e as Error)?.message ?? e) });
@@ -331,10 +331,10 @@ export function MagicLinksCard() {
             <RefreshCw size={12} style={{ animation: busy ? "spin 1s linear infinite" : undefined }} /> {busy ? t("aparserChecking") : t("aparserTest")}
           </button>
           <a href="/magiclinks" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center" }}>{t("mlOpenOrders")}</a>
-          <a href={MAGIC369_BOT_URL} target="_blank" rel="noopener noreferrer sponsored" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: "6px" }}>
+          <a href={MAGIC369_BOT_URL} target="_blank" rel="noopener noreferrer" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: "6px" }}>
             <img src="/partners/369market-logo.png" alt="" style={{ width: "16px", height: "16px", borderRadius: "4px", objectFit: "cover" }} />{t("ml369Bot")}
           </a>
-          <a href={FIELDLINK_CABINET_URL} target="_blank" rel="noopener noreferrer sponsored" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: "6px" }}>
+          <a href={FIELDLINK_CABINET_URL} target="_blank" rel="noopener noreferrer" style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", fontSize: "12px", fontWeight: 600, textDecoration: "none", display: "flex", alignItems: "center", gap: "6px" }}>
             <img src="/partners/fieldlink-logo.svg" alt="" style={{ width: "16px", height: "16px", borderRadius: "4px" }} />{t("mlFlCabinet")}
           </a>
         </div>
@@ -383,7 +383,7 @@ function Magic369ReferralsPanel() {
   };
   useEffect(() => { void load(); }, []);
 
-  const m = (minor: number) => (minor / 100).toFixed(2);
+  const m = (minor: number) => `$${(minor / 100).toFixed(2)}`; // 369 "tokens" are US dollars
   const s = data?.summary;
   const cell: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "2px", padding: "6px 8px", borderRadius: "6px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--color-border)", minWidth: 0 };
   const lbl: React.CSSProperties = { fontSize: "10px", color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" };

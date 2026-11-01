@@ -18,6 +18,13 @@ import { checkHreflangSite, mergeHreflangEntries, normalizeHreflangUrl, parseHre
 import { normalizeAuditUrl, pickMainQuery } from "@/lib/audit/queryAlign";
 import { isCwvPoor, pickPsiSample, resolvePsiApiKey, runPsiStage } from "@/lib/audit/psi";
 import { withCallContext } from "@/lib/providerLog/context";
+import { sitemapCoverage } from "@/lib/audit/sitemapCheck";
+import { findTrustPages, missingTrustPages } from "@/lib/audit/eeat";
+import { latestUsableImport } from "@/lib/logs/importer";
+import { logPathKey } from "@/lib/logs/aggregate";
+import { contentShingles, descriptionKey, findNearDuplicates } from "@/lib/audit/duplicates";
+import { canonicalOverride, findGscOrphans, gscPageKey, latestInspections, GSC_INSPECTION_MAX_AGE_DAYS, type InspectionRow } from "@/lib/audit/gscJoin";
+import { hasNoindex, noindexEvidence, noindexNeutralSetting, noindexReasons, summarizeNoindex, type NoindexReason, type NoindexSignals } from "@/lib/audit/noindex";
 import { resolveCaptureBodies } from "@/lib/providerLog/bodies";
 
 const UA = "Mozilla/5.0 (compatible; OpenGSC-Audit/1.0; +https://opengsc.org)";
@@ -233,7 +240,13 @@ async function loadSitemapHreflangs(root: URL): Promise<Map<string, HreflangEntr
 }
 
 /** What fetchPage produces plus the crawl bookkeeping attached in the BFS loop. */
-type CrawledPage = PageResult & { depth: number; ex?: AuditHtmlSignals; internalTargets?: string[] };
+type CrawledPage = PageResult & {
+  depth: number;
+  ex?: AuditHtmlSignals;
+  internalTargets?: string[];
+  /** Hashed main-content shingles for the near-duplicate pass (duplicates.ts); freed after it. */
+  shingles?: Uint32Array;
+};
 
 /** One SiteAuditPage row as held in memory — arrays stay arrays until the storage boundary. */
 type AuditPageRow = {
@@ -257,6 +270,93 @@ type AuditPageRow = {
   evidence: Record<string, string>;
   brokenLinks: string[];
 };
+
+/** What the noindex triage needs from outside the crawl — see noindex.ts for how it is judged. */
+interface NoindexContext {
+  /** The previous completed audit: its date and the URLs it saw as indexable HTML. */
+  previous: { date: string; indexable: Set<string> } | null;
+}
+
+type GscTotals = { impressions: number; clicks: number };
+
+/**
+ * Web-search impressions/clicks per page over 28 days, keyed by the URL exactly as GSC reports it.
+ * Page-level rows are the (url, query='') ones; page/query rows would undercount through
+ * anonymised queries. Shared by the noindex triage and the orphan check — one grouped query.
+ */
+async function loadGscPageTotals(siteId: string): Promise<Map<string, GscTotals>> {
+  const rows = await prisma.dailyMetric.groupBy({
+    by: ["url"],
+    where: { siteId, date: { gte: new Date(Date.now() - 28 * 86_400_000) }, searchType: "web", query: "", url: { not: "" } },
+    _sum: { impressions: true, clicks: true },
+  });
+  return new Map(rows.map(row => [String(row.url), {
+    impressions: Number(row._sum?.impressions ?? 0),
+    clicks: Number(row._sum?.clicks ?? 0),
+  }]));
+}
+
+/**
+ * URL Inspection results the instance already holds — the Indexing tab's PageInspection and the
+ * sitemap inventory's google* columns (the only store with Google's chosen canonical). Read, never
+ * fetched: an audit spends no inspection quota.
+ */
+async function loadInspectionRows(siteId: string): Promise<InspectionRow[]> {
+  const since = new Date(Date.now() - GSC_INSPECTION_MAX_AGE_DAYS * 86_400_000);
+  const [pages, sitemap] = await Promise.all([
+    prisma.pageInspection.findMany({
+      where: { siteId, lastInspect: { gte: since } },
+      select: { url: true, status: true, lastInspect: true },
+    }).catch(() => [] as { url: string; status: string; lastInspect: Date }[]),
+    prisma.sitemapUrl.findMany({
+      where: { siteId, googleChecked: { gte: since } },
+      select: { url: true, googleStatus: true, googleChecked: true, googleCanonical: true },
+    }).catch(() => [] as { url: string; googleStatus: string | null; googleChecked: Date | null; googleCanonical: string | null }[]),
+  ]);
+  return [
+    ...pages.map(row => ({ url: row.url, status: row.status, checkedAt: row.lastInspect })),
+    ...sitemap.map(row => ({ url: row.url, status: row.googleStatus, checkedAt: row.googleChecked, googleCanonical: row.googleCanonical })),
+  ];
+}
+
+/**
+ * The site's own sitemap as the instance last synced it (active and pending-missing entries).
+ * Shared by the noindex triage (a listed page is meant to be indexed) and the sitemap checks.
+ * An empty inventory — no sitemap, or never synced — keeps every sitemap rule silent.
+ */
+async function loadSitemapInventory(siteId: string): Promise<string[]> {
+  const rows = await prisma.sitemapUrl.findMany({
+    where: { siteId, inventoryStatus: { not: "missing" } },
+    select: { url: true },
+    take: 50_000,
+  });
+  return rows.map(row => row.url);
+}
+
+/**
+ * The previous completed audit, read only when the crawl found at least one closed page. A site
+ * without audit history simply has one reason fewer to judge by — a missing source never makes a
+ * page suspicious.
+ */
+async function loadNoindexContext(siteId: string, auditId: string, startedAt: Date): Promise<NoindexContext> {
+  const previousAudit = await prisma.siteAudit.findFirst({
+    where: { siteId, status: "completed", id: { not: auditId }, startedAt: { lt: startedAt } },
+    orderBy: { startedAt: "desc" },
+    select: { id: true, startedAt: true },
+  }).catch(() => null);
+  let previous: NoindexContext["previous"] = null;
+  if (previousAudit) {
+    const pages = await prisma.siteAuditPage.findMany({
+      where: { auditId: previousAudit.id, noindex: false, httpStatus: 200, contentType: { contains: "html" } },
+      select: { url: true },
+    }).catch(() => [] as { url: string }[]);
+    previous = {
+      date: previousAudit.startedAt.toISOString().slice(0, 10),
+      indexable: new Set(pages.map(page => normalizeAuditUrl(page.url)).filter(Boolean)),
+    };
+  }
+  return { previous };
+}
 
 export async function runAudit(auditId: string, opts?: AuditOptions): Promise<void> {
   if (activeAudits.has(auditId)) return;
@@ -326,6 +426,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         if (page.html) {
           const ex = extractAuditHtml(page.html);
           entry.ex = ex;
+          if (page.httpStatus === 200) entry.shingles = contentShingles(page.html);
           entry.internalTargets = [];
           for (const href of ex.hrefs) {
             const u = normalizeUrl(href, new URL(item.url));
@@ -364,11 +465,90 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     // ── second pass: issues (needs the full crawl map for broken links & duplicate titles)
     const statusOf = new Map<string, number>();
     for (const [url, r] of results) statusOf.set(url, r.httpStatus);
-    const titleCount = new Map<string, number>();
-    for (const r of results.values()) {
-      const t = r.ex?.title?.toLowerCase().trim();
-      if (t) titleCount.set(t, (titleCount.get(t) ?? 0) + 1);
+
+    // ── noindex triage (noindex.ts): closed on purpose vs closed by mistake. Runs before the
+    // title-duplicate count, which must not pair a page with a closed one nobody will ever see.
+    const robotsOf = new Map<string, string>();
+    for (const [url, r] of results) {
+      robotsOf.set(url, [r.ex?.robots ?? "", r.responseHeaders["x-robots-tag"] ?? ""].filter(Boolean).join(", ").toLowerCase());
     }
+    // Site-level switch: noindex is reported but never lowers the score (Audit tab checkbox).
+    const noindexNeutral = noindexNeutralSetting(audit.site.auditSettings);
+    const closedUrls = [...results]
+      .filter(([url, r]) => !!r.ex && r.httpStatus === 200 && hasNoindex(robotsOf.get(url) ?? ""))
+      .map(([url]) => url);
+    const closedSet = new Set(closedUrls);
+    // Search Console's side of the picture (gscJoin.ts): page totals for the noindex triage and
+    // the orphan check, inspections for the two Google-verdict rules. All local reads.
+    const gscTotals = await loadGscPageTotals(audit.siteId).catch(() => new Map<string, GscTotals>());
+    const gscByKey = new Map<string, GscTotals>();
+    for (const [url, totals] of gscTotals) {
+      const key = gscPageKey(url);
+      if (!key) continue;
+      const prev = gscByKey.get(key);
+      gscByKey.set(key, prev ? { impressions: prev.impressions + totals.impressions, clicks: prev.clicks + totals.clicks } : { ...totals });
+    }
+    const inspections = latestInspections(await loadInspectionRows(audit.siteId).catch(() => []));
+    const sitemapInventory = await loadSitemapInventory(audit.siteId).catch(() => [] as string[]);
+    const sitemapKeys = new Set(sitemapInventory.map(gscPageKey).filter(Boolean));
+    // Server log (lib/logs): the newest import that is recent and covers a week. A truncated path
+    // map cannot prove absence, so then the "never visited" check stays silent.
+    const serverLog = await latestUsableImport(audit.siteId).catch(() => null);
+    const googlebotPaths = serverLog && !serverLog.google.pathsTruncated
+      ? new Map(Object.entries(serverLog.google.paths).map(([path, hits]) => [logPathKey(path), hits]))
+      : null;
+    const googlebotVisitsOf = (url: string): number | undefined => {
+      if (!googlebotPaths) return undefined;
+      try { const u = new URL(url); return googlebotPaths.get(logPathKey(u.pathname + u.search)) ?? 0; } catch { return undefined; }
+    };
+    const noindexSignalsOf = new Map<string, NoindexSignals>();
+    const noindexReasonsOf = new Map<string, NoindexReason[]>();
+    if (closedUrls.length) {
+      const ctx = await loadNoindexContext(audit.siteId, auditId, audit.startedAt)
+        .catch((): NoindexContext => ({ previous: null }));
+      for (const url of closedUrls) {
+        const key = normalizeAuditUrl(url);
+        const traffic = gscByKey.get(gscPageKey(url));
+        const signals: NoindexSignals = {
+          isRoot: results.get(url)?.depth === 0,
+          inSitemap: sitemapKeys.has(gscPageKey(url)),
+          gscImpressions: traffic?.impressions ?? 0,
+          gscClicks: traffic?.clicks ?? 0,
+          wasIndexableOn: ctx.previous?.indexable.has(key) ? ctx.previous.date : null,
+        };
+        noindexSignalsOf.set(url, signals);
+        noindexReasonsOf.set(url, noindexReasons(signals));
+      }
+    }
+    // Closed and not to be audited for content: no reason to be open, or the owner said noindex is
+    // their business. In the neutral case the suspicious finding still fires — it is just free.
+    const intentionalNoindex = new Set(closedUrls.filter(url => noindexNeutral || !(noindexReasonsOf.get(url)?.length)));
+
+    // Pages expected to be unique: 200 HTML, not closed on purpose, and not canonicalised to
+    // another URL — a page naming another canonical has declared itself a duplicate already
+    // (pagination, sort/filter variants), so pairing it is noise. Title, description and content
+    // duplicates are all counted over this set only.
+    const canonicalElsewhere = (url: string, r: CrawledPage) => {
+      if (!r.ex?.canonical) return false;
+      try { return gscPageKey(new URL(r.ex.canonical, url).href) !== gscPageKey(url); } catch { return false; }
+    };
+    const uniqueExpected = new Set([...results]
+      .filter(([url, r]) => !!r.ex && r.httpStatus === 200 && !intentionalNoindex.has(url) && !canonicalElsewhere(url, r))
+      .map(([url]) => url));
+    const titleCount = new Map<string, number>();
+    const descriptionCount = new Map<string, number>();
+    for (const url of uniqueExpected) {
+      const r = results.get(url);
+      const t = r?.ex?.title?.toLowerCase().trim();
+      if (t) titleCount.set(t, (titleCount.get(t) ?? 0) + 1);
+      const d = descriptionKey(r?.ex?.metaDesc ?? "");
+      if (d) descriptionCount.set(d, (descriptionCount.get(d) ?? 0) + 1);
+    }
+    // Trust pages, over every URL the crawl saw (crawled or merely linked internally).
+    const trustPages = findTrustPages([...results.keys(), ...[...results.values()].flatMap(r => r.internalTargets ?? [])]);
+    const trustMissing = missingTrustPages(trustPages);
+    const duplicates = findNearDuplicates([...uniqueExpected].map(url => ({ url, shingles: results.get(url)?.shingles ?? new Uint32Array() })));
+    for (const r of results.values()) delete r.shingles; // the arrays served their one purpose
     const inboundLinks = new Map<string, number>();
     for (const [source, result] of results) {
       for (const target of new Set(result.internalTargets ?? [])) {
@@ -419,8 +599,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     const noindexOf = new Map<string, boolean>();
     const canonicalAbs = new Map<string, string | null>();
     for (const [url, r] of results) {
-      const robots = [r.ex?.robots ?? "", r.responseHeaders["x-robots-tag"] ?? ""].filter(Boolean).join(", ").toLowerCase();
-      noindexOf.set(url, /(^|[\s,;:])noindex(?=$|[\s,;])/i.test(robots));
+      noindexOf.set(url, hasNoindex(robotsOf.get(url) ?? ""));
       canonicalAbs.set(url, r.ex?.canonical ? new URL(r.ex.canonical, url).href : null);
     }
     const hreflangTargetStates = new Map<string, HreflangTargetState>();
@@ -482,8 +661,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
       }
 
       const redirect = redirectTrace(url);
-      const robots = [r.ex?.robots ?? "", r.responseHeaders["x-robots-tag"] ?? ""]
-        .filter(Boolean).join(", ").toLowerCase();
+      const robots = robotsOf.get(url) ?? "";
       let canonicalInvalid = false;
       let canonicalMismatch = false;
       if (r.ex?.canonical) {
@@ -499,6 +677,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
       const isRoot = r.depth === 0;
       const hreflangPage = hreflangFindings.get(url);
       const mainQuery = mainQueryByNorm.get(normalizeAuditUrl(url)) ?? null;
+      const inspection = inspections.get(gscPageKey(url)) ?? null;
       // pickMainQuery applies the ≥ 20 impressions floor — the threshold lives in one place.
       const mainQueryMeetsFloor = mainQuery ? pickMainQuery([mainQuery]) : null;
       const facts: AuditPageFacts = {
@@ -510,7 +689,16 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         redirectHops: redirect.hops,
         redirectLoop: redirect.loop,
         title: r.ex?.title ?? "",
-        titleDuplicate: !!r.ex?.title && (titleCount.get(r.ex.title.toLowerCase().trim()) ?? 0) > 1,
+        titleDuplicate: !!r.ex?.title && uniqueExpected.has(url) && (titleCount.get(r.ex.title.toLowerCase().trim()) ?? 0) > 1,
+        descriptionDuplicate: uniqueExpected.has(url) && (descriptionCount.get(descriptionKey(r.ex?.metaDesc ?? "")) ?? 0) > 1,
+        nearDuplicate: duplicates.byUrl.get(url) ?? null,
+        // Unknown (not false) without an inventory: no sitemap is not "missing from the sitemap".
+        inSitemap: sitemapKeys.size ? sitemapKeys.has(gscPageKey(url)) : undefined,
+        articleLike: r.ex?.articleLike,
+        authorPresent: r.ex?.authorPresent,
+        datePresent: r.ex?.datePresent,
+        trustPagesMissing: isRoot ? trustMissing : undefined,
+        googlebotVisits: googlebotVisitsOf(url),
         metaDescription: r.ex?.metaDesc ?? "",
         robots,
         robotsConflict: robotsDirectivesConflict(robots),
@@ -545,6 +733,10 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         missingSecurityHeaders: isRoot && r.ex ? missingSecurityHeaders(r.responseHeaders, new URL(url).protocol === "https:").length : 0,
         sitemapSeeded: sitemapSeeds.has(url),
         internalInboundLinks: inboundLinks.get(url) ?? 0,
+        noindexIntentional: intentionalNoindex.has(url),
+        noindexReasons: noindexReasonsOf.get(url) ?? [],
+        gscInspection: inspection ? { indexed: inspection.indexed, status: inspection.status, checkedOn: inspection.checkedOn } : null,
+        gscCanonicalOther: canonicalOverride(url, canonicalAbs.get(url) ?? null, inspection),
       };
       const issues = evaluateAuditPageRules(facts);
       for (const code of issues) bump(code);
@@ -559,6 +751,14 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
         brokenLinks: broken,
         internalRedirectLinks: redirectLinks.slice(0, 5),
       });
+      if (issues.includes("no_googlebot_visits") && serverLog) {
+        evidence.no_googlebot_visits = `no Googlebot request in the server log ${serverLog.from?.slice(0, 10)} – ${serverLog.to?.slice(0, 10)} (${serverLog.days} d)`;
+      }
+      // The noindex verdict's reasons ("homepage · listed in the sitemap · 340 impressions…").
+      const closedSignals = noindexSignalsOf.get(url);
+      if (issues.includes("noindex_suspicious") && closedSignals) {
+        evidence.noindex_suspicious = noindexEvidence(noindexReasonsOf.get(url) ?? [], closedSignals, robots).slice(0, 240);
+      }
       // Context the audit's meta-fit suggestions need per page (H1 text, page language, main
       // query) but which has no column of its own. Keys are prefixed "_" and every reader of
       // evidence skips them; they ride along because the row must stay self-sufficient.
@@ -655,7 +855,25 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
     const pagesWithIssues = rows.filter(row => row.issues.some((issue: string) => AUDIT_ACTIONABLE_RULE_IDS.has(issue))).length;
     // Severity-weighted per-page score averaged over real pages (v2, issue #30) — see healthScore.ts.
     // Informational and `affectsScore: false` checks stay visible without moving it.
-    const score = computeHealthScore(rows);
+    const score = computeHealthScore(
+      rows.map(row => ({ ...row, intentionalNoindex: intentionalNoindex.has(row.url) })),
+      noindexNeutral ? { ignoreRuleIds: new Set(["noindex_suspicious"]) } : {},
+    );
+    const sitemapSummary = sitemapKeys.size
+      ? sitemapCoverage(sitemapInventory, results.keys(), root.href, { seeded: !!opts?.seedFromSitemap, partial: crawled >= maxPages })
+      : null;
+    const gscOrphans = findGscOrphans(gscTotals, results.keys(), root.href, {
+      partial: crawled >= maxPages,
+      // What the crawl was told to skip, and non-page assets, are not orphans.
+      skip: href => isIgnored(href) || !normalizeUrl(href, root),
+    });
+    const noindexSummary = summarizeNoindex([...results].map(([url, r]) => ({
+      url,
+      hasHtml: !!r.ex,
+      httpStatus: r.httpStatus,
+      noindex: closedSet.has(url),
+      reasons: noindexReasonsOf.get(url) ?? [],
+    })), noindexNeutral);
     // Awaited here, at the only point its result is used: the summary. By now the crawl has run
     // its course, so a slow robots/llms fetch (or one that already resolved) costs no extra latency.
     // The catch above already nulls a failed check, so a network error here never fails the audit.
@@ -706,6 +924,7 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
           scoreVersion: score.scoreVersion,
           scoredPages: score.scoredPages,
           redirectsExcluded: score.redirectsExcluded,
+          noindexExcluded: score.noindexExcluded,
           issues: issueTotals,
           avgLoadMs: rows.length ? Math.round(rows.reduce((s, r) => s + r.loadMs, 0) / rows.length) : 0,
           // The rule registry this audit ran with, so a future comparison can tell "the rule did
@@ -713,6 +932,21 @@ export async function runAudit(auditId: string, opts?: AuditOptions): Promise<vo
           ruleIds: AUDIT_RULE_IDS,
           // PSI sample (site-wide, not per-page). Absent only for audits that predate the stage.
           ...(psi ? { psi } : {}),
+          // Noindex triage — always written, so "no closed pages" is distinguishable from an audit
+          // that predates the triage (no key; the UI renders nothing for those).
+          noindex: noindexSummary,
+          // Near-duplicate content groups (duplicates.ts) — the per-page findings say "similar to
+          // X", this says how the site clusters.
+          duplicates: duplicates.clusters,
+          // Trust pages found (eeat.ts) — URL per kind, null when none was seen.
+          trust: trustPages,
+          // The server log the "never visited by Googlebot" check used (lib/logs); absent without one.
+          ...(serverLog ? { serverLog: { from: serverLog.from, to: serverLog.to, days: serverLog.days, googleHits: serverLog.google.hits, pathsTruncated: serverLog.google.pathsTruncated } } : {}),
+          // How much of the sitemap this audit judged (sitemapCheck.ts); absent without an inventory.
+          ...(sitemapSummary ? { sitemap: sitemapSummary } : {}),
+          // GSC pages the crawl never reached (gscJoin.ts). Written only when GSC has page data,
+          // so "no orphans" is distinguishable from "nothing to compare against".
+          ...(gscTotals.size ? { gscOrphans } : {}),
           // Site-wide (not per-page), so it lives in the summary rather than as a row issue. Old
           // audits predating this field simply have no key, and the UI renders nothing for them.
           ...(aiCrawlability ? { aiCrawlability } : {}),
@@ -799,6 +1033,20 @@ function buildEvidence(
     html_too_large: `${((facts.htmlBytes ?? 0) / (1024 * 1024)).toFixed(1)} MB HTML`,
     // "query \u001F impressions" — the UI interpolates the localized auditEvidenceQuery template,
     // the Markdown export renders its own English line.
+    gsc_not_indexed: facts.gscInspection ? `${facts.gscInspection.status} · inspected ${facts.gscInspection.checkedOn}` : "",
+    gsc_canonical_other: facts.gscCanonicalOther
+      ? `Google chose ${facts.gscCanonicalOther}${facts.canonical ? ` (declared: ${facts.canonical})` : " (no canonical declared)"}${facts.gscInspection ? ` · inspected ${facts.gscInspection.checkedOn}` : ""}`
+      : "",
+    description_duplicate: facts.metaDescription.slice(0, 90),
+    trust_pages_missing: `no ${(facts.trustPagesMissing ?? []).join(", ")} page found`,
+    article_no_author: "article page with no author (meta, schema, rel=author or byline)",
+    article_no_date: "article page with no published or updated date",
+    sitemap_redirect: ctx.redirectTo ? `listed in the sitemap, redirects -> ${ctx.redirectTo}` : "listed in the sitemap, redirects",
+    sitemap_error: `listed in the sitemap, ${facts.httpStatus ? `HTTP ${facts.httpStatus}` : "no response"}`,
+    sitemap_non_canonical: `listed in the sitemap, canonical -> ${facts.canonical ?? "?"}`,
+    content_near_duplicate: facts.nearDuplicate
+      ? `${Math.round(facts.nearDuplicate.similarity * 100)}% similar to ${facts.nearDuplicate.with}${facts.nearDuplicate.others > 1 ? ` (+${facts.nearDuplicate.others - 1} more in the group)` : ""}`
+      : "",
     title_query_mismatch: facts.mainQuery ? `${facts.mainQuery.query}\u001F${facts.mainQuery.impressions}` : "",
   };
   const out: Record<string, string> = {};

@@ -3,7 +3,69 @@
 All notable changes to OpenGSC. Dates are release dates; the version shown in
 **Settings → System** comes from `package.json`.
 
-## [Unreleased]
+## [1.13.1] — 2026-10-28
+
+### Security — Next.js 16.3.8 → 16.4.3
+
+- **Two critical unauthenticated RCEs fixed.** Next.js 16.4.1 is the October out-of-band security release closing GHSA-vcvr-r3jv-pc5j (RCE in the `next/og` ImageResponse chain) and the sharp/librsvg dependency chain (CVE-2026-96889, GHSA-wq5f-xc86-pv6w); every version in 16.0.0–16.4.0 was affected. `sharp` was already pinned at the patched 0.35.5, so only the framework needed the bump — 16.4.3 is the latest patch on top. `eslint-config-next` follows in lockstep.
+- **`npm audit` does not report these advisories**, so the bump is explicit in `package.json` rather than waiting for a dependency scan to flag it.
+- No app changes were needed for the 16.4 line (the app already uses the `proxy` convention and does not use `next/image` or `revalidateTag`), and the full check suite passes unchanged.
+- **No database changes** — update is `update.sh` as usual, without `prisma db push`. While you are on the server: this release is a good moment for the OS-level round too — NGINX (October batch, CVSS 9.2), Node.js 22.23.4 / 24.22.1 (Brotli RCE) and a kernel reboot.
+
+## [1.13.0] — 2026-10-27
+
+### Added — Server log analysis: who actually crawls the site
+
+- **Import an nginx/Apache access log** (combined, common or vhost_combined; plain or `.gz`) in the site's **Audit** tab. The browser sends it in 8 MB chunks — the request proxy buffers at most 10 MB per body — and the server streams it line by line, so a multi-gigabyte log never sits in memory. With `OPENGSC_LOG_DIRS` set, files can also be imported straight from an allow-listed directory on the server (realpath-checked; nothing outside it is readable).
+- **Crawlers are verified, not trusted.** Googlebot, Bingbot, YandexBot and Applebot claims are checked by reverse DNS plus forward confirmation, in parallel and bounded; fake crawlers are listed separately and dropped from every Googlebot figure, while IPs that could not be checked stay counted as unverified rather than disappearing. A probe against a known Googlebot address runs first: if the server's resolver does not work at all, nothing is called fake and the report says verification was unavailable.
+- **The summary**: bots by kind (search engines, AI crawlers — GPTBot, OAI-SearchBot, ChatGPT-User, ClaudeBot, Perplexity, CCBot, Bytespider, Amazonbot, Meta — SEO tools, other bots), Googlebot requests per day, its 2xx/3xx/4xx/5xx split, the most crawled paths and the errors it ran into. Only the aggregate is stored (`ServerLogImport`): no raw lines, no user agents, no visitor IPs.
+- **Audit join — `no_googlebot_visits`**: with a log that is at most 30 days old and covers at least 7 days, indexable pages Googlebot never requested are flagged (informative, not scored).
+- **MCP: `get_server_logs`** (local) — the same summary for an agent.
+- Deploy needs `prisma db push` (new `ServerLogImport` table).
+
+### Added — Site Audit trust signals (the measurable part of E-E-A-T)
+
+- **`article_no_author`** / **`article_no_date`** — article pages (og:type `article`, or Article/BlogPosting/NewsArticle schema) with no named author (meta, schema, microdata, `rel=author`, a byline class) or no publication/update date (meta, schema, microdata, `<time datetime>`). Service pages and listings are not asked for a byline.
+- **`trust_pages_missing`** — the site links to no About, Contact, Privacy or Terms page, recognised by URL in the app's eight languages plus Greek (both the Greek alphabet and transliterated slugs). Every crawled page and every internal link target counts, so a footer link is enough even if the crawl limit stopped before fetching it.
+- All three are informational and never move the health score. The summary records which trust page was found where.
+
+### Added — Site Audit checks the sitemap's own entries
+
+- **`sitemap_redirect`**, **`sitemap_error`**, **`sitemap_non_canonical`** — a URL listed in the site's sitemap that answers 3xx, answers 4xx/5xx (or nothing), or names another page as its canonical. A sitemap should list only final, live, self-canonical pages; these are facts about the owner's own list, so they score as warnings. A listed page with noindex was already the noindex triage's `sitemap` reason.
+- **Sitemap coverage line** on the Audit tab and in the Markdown export: how many listed URLs this crawl actually checked, and — when the crawl was not seeded from the sitemap — a pointer to run it from there to check them all. Membership comes from the sitemap inventory the instance already syncs; no sitemap is fetched by the audit, and without an inventory every sitemap rule stays silent.
+
+### Added — Site Audit finds duplicate descriptions and near-duplicate content
+
+- **`content_near_duplicate`** — pages whose main content (`<main>`, else `<article>`, else the body without header, nav, footer, aside and forms) is ≥ 80 % similar to another page, measured on 3-word shingles after removing text present on ≥ 80 % of pages (site chrome). Tuned for the case that matters most: a route or city page generated from a template with only the place name swapped (≈ 86 % similar) is caught; two different texts on the same topic are not. MinHash + LSH keeps a 5,000-page crawl to seconds, and every reported pair is confirmed on the exact shingle sets. Informative (`affectsScore: false`) — similarity is a measured threshold, not a fact. Evidence names the most similar page; a card on the Audit tab shows the groups.
+- **`description_duplicate`** — two or more pages with the same meta description (scored, like `title_duplicate`).
+- **Duplicates are counted only among pages that should be unique**: 200 HTML, not closed on purpose, and not canonicalised to another URL. This also applies to `title_duplicate` now — pagination and sort/filter variants that point their canonical elsewhere no longer pair up as duplicate titles.
+
+### Added — Site Audit checks the crawl against Search Console
+
+- **`gsc_not_indexed`** — an indexable page (200, no noindex, self-canonical) that the latest stored URL Inspection reports as out of Google's index, with the coverage state and inspection date as evidence.
+- **`gsc_canonical_other`** — Google selected a different canonical than the page declares (or than the page itself when it declares none).
+- **GSC orphans** — pages earning ≥ 20 impressions over 28 days that the crawl never reached: same host only, ignored paths and non-page assets skipped, http/https/www/fragment variants folded into one page, and a "crawl hit its page limit" caveat when it applies. Shown as a card on the Audit tab and listed in the Markdown export header.
+- Everything is read from data the instance already stores (`DailyMetric` page rows, `PageInspection`, the sitemap inventory's `google*` columns) — an audit spends **no URL Inspection quota**. Inspections older than 60 days are ignored. Both page rules are informative (`affectsScore: false`): Google's data can be weeks old, so it points, it does not grade. The noindex triage now matches GSC traffic across http/https and www too.
+
+### Changed — Site Audit tells a deliberate noindex from a forgotten one
+
+- **Noindex no longer sinks the health score.** Until now every noindex page was a critical finding scored 0, so a correctly configured site with closed cart, login, thank-you or tag pages looked broken, and the one noindex that mattered drowned among them. A closed page is now judged by facts the instance already holds: it is **suspicious** (`noindex_suspicious`, critical) when it is the homepage, is listed in the site's sitemap, earns impressions in Search Console (≥ 20 over 28 days), or was indexable in the previous completed audit. Every other closed page is **intentional** (`noindex`, now informational): listed, never scored, and no longer checked for title/description/H1/thin content — nor counted in title duplicates. Status, redirect, broken-link, security and hreflang checks still run on it.
+- **A noindex card on the Audit tab** — red when the homepage or nearly the whole site (≥ 80 % of HTML pages) is closed, a list of suspicious pages with the reason for each, and one grey line for the pages closed on purpose. The Markdown export carries the same verdict in its header.
+- **"Don't lower the health score for noindex pages"** — a per-site checkbox under the crawl options, stored in the site's audit settings so scheduled and bulk audits honour it too. Findings stay in the report; none of them costs points and no noindex alert is sent.
+- **New alert `audit_noindex`** (on with the audit alert): fires once per audit when the homepage is closed, nearly the whole site is, or pages that were indexable in the previous audit got noindex. A page merely sitting in the sitemap with noindex shows in the tab every run but is not pushed to Telegram every week.
+- `robots: none` is now recognised as noindex. The summary records `noindexExcluded` next to `redirectsExcluded`. Stored audits are not rescored; the first audit after the update will usually score higher on sites with many closed pages. No schema change.
+
+## [1.12.0] — 2026-10-22
+
+### Added — PBN: restore a dropped domain from Wayback, place money-site links in its real content (`/pbn`)
+
+- **Prescan scores every snapshot honestly** — content weight, page count, a foreign brand in the title, parked/doorway verdicts — and recommends one; an empty Wayback history answers `no_snapshot`, never an invented pick. **Restore** fetches up to 100 pages plus assets to disk, unwraps the archive's own wrappers, strips trackers / foreign outbound links / `javascript:` URLs, and reports every page it could not fetch instead of hiding it.
+- **Campaigns are planned, not dumped.** Anchor type shares (exact / brand / URL / generic) and `rel` shares (dofollow / nofollow / ugc / sponsored) are distributed by largest remainder across the sites in scope; each link goes into a genuine content block found by its content (a paragraph with real text — table layouts included), and when a page has no block the injector says `needs_paragraph` and can ask the AI for a topical paragraph (paid, behind `confirm: true`) rather than dropping a bare link at the top of `<body>`. The anchor tag carries no marker, class or style.
+- **Files on disk stay pristine.** Links live in the database and are baked in at render time (preview and ZIP), so re-applying a campaign never duplicates links and changing an anchor or target never re-uploads the site. The noindex preview shows the rendered page with the injection applied.
+- **The ZIP export is gated on zero residual footprints** — site + robots + bot-shield files, exported only when no archive.org trace and no injector marker survives the cleaning; otherwise it refuses with the list of what it found.
+- Five MCP tools: `pbn_prescan` and `pbn_restore` (net), `pbn_campaign_apply` (paid, confirm-gated), `pbn_site` and `pbn_zip` (local). Page `/pbn` in the network nav group, between Drops and Indexer. Deploy needs `prisma db push` (new `PbnSite`/`PbnPage`/`PbnCampaign`/`PbnLink` tables).
+
+## [1.11.0] — 2026-10-22
 
 ### Added — Dutch language and per-report languages for client reports (#36)
 
@@ -38,6 +100,45 @@ All notable changes to OpenGSC. Dates are release dates; the version shown in
 
 - **Any page on the site matched the homepage.** URL matching accepted the stored URL being a substring of the requested one, and `https://host` is a substring of every URL on the host. The brief came back with the homepage's queries, cannibalization rivals and live content. Pages now match on the normalized path (host, query string, fragment, case and trailing slash ignored); a fragment such as `pricing` is a fallback used only when nothing matches exactly, and when it names several pages the tool lists them instead of guessing.
 - **Subdomain pages no longer fold into the main host's brief.** Matching ignored the host entirely, so on an sc-domain site `blog.example.com/pricing` and `example.com/pricing` answered as one page whenever the agent named a full URL. Hosts are now compared whenever both sides carry one (`www.` counts as the same); a bare path — the common `/pricing` argument — still matches any host, since it cannot discriminate.
+
+### Added — scheduled backups with encryption, SFTP upload and an honest restore (#32)
+
+- **Settings → Backups** (owner-only): scheduled database copies on a cron inside the app, optional gzip and AES encryption, optional SFTP upload. A run writes one `BackupRun` history row — a failed night leaves a record saying why, not silence.
+- **The upload is safe by construction.** Backup work runs in a worker thread (the main process never blocks on crypto), the file is encrypted before it leaves the box, upload is atomic (temp name + rename, no half file ever visible), and the SFTP host key is pinned on first setup: the "test connection" button fills the fingerprint, Save pins it, and the next connect to a different key refuses rather than continuing. Editing host/port clears the old pin so the new one can be captured honestly.
+- **Restore is verified, not assumed.** The restore path decrypts/decompresses into a fresh database, checks it opens and answers, and reports file sizes and checksums; a bad password or a truncated upload says so instead of replacing a working database with a broken one. Restore is explicit — backups never overwrite anything on their own.
+- Also fixed along the way: the production build was broken by the ssh2 addon being pulled into the browser bundle (the SFTP code now lives behind a worker boundary), and editing a backup target's host/port now clears the stale fingerprint field.
+
+### Fixed — annotation dates walked a day back on every save
+
+- A note saved as October 3 landed on October 2 in the timeline, drifting further with every edit: the editor day was anchored to local time and the storage day to UTC, so every save re-anchored one day backwards. Days are now UTC-anchored end to end, comparison windows are equal-length, and a save that fails is reported as failed instead of pretending it wrote.
+- The add-first-note onboarding overlay is gone — the empty state and the "+" button already said everything it did.
+
+### Changed — the dashboard compares complete periods and says what it hides
+
+- Period comparisons were neither equal nor honest: a "7-day vs previous 7-day" actually compared 8 days against a shifted 8, the two windows overlapped, and the KPI percentages divided one length by another (7 against 14). Windows are now equal, non-overlapping, and aligned; provisional (still-filling) days are excluded from both sides, with a line saying so.
+- The sync now also stores per-day query history (`QueryDaily`, last 28 days, paged, replaced on every sync), so per-query trend views read real days instead of one 90-day total dated on the sync day. Deploy needs `prisma db push`.
+
+### Added — an English user wiki, published from the repo
+
+- `docs/wiki/` holds the English user documentation, and a GitHub workflow publishes it to the repo's wiki — the workflow expects the wiki repo to exist (create one page by hand once, then it keeps itself in sync). The effort also fixed the README's wrong claims about Google login and a handful of stale paths. Install docs now warn that Google OAuth apps left in Testing mode lose their tokens after 7 days.
+
+### Added — magic links grow up: FieldLink homepage links, 369 referrals, donors to the indexer
+
+- **FieldLink sells homepage links too**, priced by the donor's traffic tier; both sellers now cover both products (posts / magic links and homepage links) from the same striking-distance card.
+- **369 referrals panel** — the earnings the stored 369 key accrues, shown where the balance lives. And 369's currency is honest now: its "tokens" are US dollars, so sums read `$15` instead of `15 cr.`
+- **Bought donor pages go straight to the indexer queue** — per order, all not-yet-indexed orders at once, or over MCP (`magiclinks_queue_donors`), so purchased placements don't wait for a manual pass to reach the doorway network.
+
+### Fixed — live GSC failures on the dashboard read as "no data" (#38)
+
+- When the live Search Console call failed (a swallowed 429, a quota cap), the widgets rendered empty numbers with no hint anything had failed — indistinguishable from a site with no traffic that day. Failures now surface with the reason; only real data renders as data.
+
+### Added — Batch Queue: thousands of pages in one order, drained by the server
+
+- **One request orders a whole content plan** (`/seo-tools/batch`, MCP `create_generation_batch`): every page runs the normal outline→text pipeline, but a durable server queue drains the orders under your **concurrency setting** (pages in flight, default 2) — the AI provider never sees a burst, whichever agent or browser started the work. Items survive restarts, each has a retry policy, and a **circuit breaker** pauses the batch after N consecutive errors (default 5) and alerts you, so a dead provider costs minutes, not hours of paid retries.
+- **A second, process-wide gate caps simultaneous LLM requests per key** — one page already fires ~2 parallel model calls internally (MAP over competitors, fact batches, text chunks), and UI/MCP jobs bypass the queue entirely, so the only honest place to bound the RPM your provider sees is the call itself. Both knobs are labelled for what they are (pages vs requests), and the gate applies to every path.
+- **Provider keys never sit in the queue.** Item payloads carry knobs only (language, country, tone, length, policy name); the worker resolves credentials from your stored settings at run time — through the same shared resolver the UI and MCP paths use — so a key rotated mid-batch applies to every item that hasn't run yet.
+- **Built for site networks.** An item can bind to a site and inherits that site's Project Memory (writing preferences, positioning) as its writing instruction; priority lets an urgent site jump the line; `clientBatchId` makes an agent's retry after a timeout return the existing order instead of double-paying. Exact duplicates (keyword + country + language) are dropped at order time, and keywords already present in History are flagged back to the caller.
+- Control everything from the page (pause / resume / cancel / retry-failed / delete, live counters, ETA, per-item list) or over MCP (`get_batch_status` — poll the batch, not individual jobs — and `batch_action`). The MCP tool refuses without `confirm: true` and returns a rough provider-call estimate with the order. Deploy needs `prisma db push` (new `SeoBatch`/`SeoBatchItem` tables + a `User.genQueueSettings` column).
 
 ## [1.10.0] — 2026-10-12
 
@@ -925,6 +1026,53 @@ than this paragraph can. Everything else in the list reads data this instance al
   dark themes follow the same tokens as the rest of the app.
 - `npm run check` also verifies release metadata and seven-locale key parity.
 
+### Added
+
+**Properties removed from Search Console now leave the dashboard**
+
+Delete a property in Search Console and it used to stay on the dashboard forever. Replacing
+nine banned domains left nine dead cards sitting among the live ones, dragging the portfolio
+totals down and showing a flat line nobody could act on.
+
+The cause was that site discovery only ever inserted. `GET /api/gsc/sites` upserted everything
+Google returned and did nothing at all about rows Google had stopped returning, and there was no
+way to remove a site by hand either — no endpoint, no button. Once a row was in the `Site` table
+it was there for good.
+
+Sites Google no longer lists are now moved to an **Archive** group, collapsed at the bottom of
+the dashboard. Archiving is soft on purpose: everything already collected for that domain —
+metrics, audits, tracked keywords, backlinks, Clarity snapshots — stays in the database and stays
+queryable, which matters when the domain was replaced rather than abandoned and you still want to
+compare the new one against it. Each row has **Restore**, and **Delete** for permanent removal
+once the history is genuinely not needed. New `Site.archivedAt` — **run `npx prisma db push`
+after updating**.
+
+Reconciliation runs in two places, so it does not depend on anyone opening a browser: in the
+dashboard's own site fetch, and in `runGscSync()`, which means a scheduled sync on a headless
+instance keeps the list honest by itself. It works in both directions — a property that comes
+back (re-verified, or the same domain added again) leaves the archive on the next pass.
+
+It will not archive on a partial read. Every linked account has to have answered without error
+and the list has to be non-empty, and in `runGscSync()` a failed `sites.list` disqualifies that
+user entirely rather than just the one account. The alternative is a dashboard that empties
+itself because a token expired overnight, which looks exactly like losing your data.
+
+### Changed
+
+**Archived sites are excluded from the background schedulers**
+
+A dead domain was still being checked on schedule. The rank scheduler spent paid SERP calls on
+it, the AEO scheduler spent AI calls, Clarity collection logged a daily failure against a project
+receiving no traffic, and the alert scheduler fired a traffic-drop alert on every run — because
+traffic going to zero is precisely what a removed property does.
+
+All four now skip archived sites, as does the per-site metric work in `/api/gsc/portfolio`, which
+returns a zeroed payload for them instead of running two queries and a sparkline calculation that
+can only ever draw a flat line. Archived rows are still sent to the client, because that is what
+the Archive group lists.
+
+`runGscSync()` itself never touched them — it walks Google's list, and they are not on it.
+
 ## [1.3.0] — 2026-08-09
 
 ### Fixed
@@ -1116,55 +1264,6 @@ so a cheap volume refresh cannot bury a KD that cost ten times as much.
 It was DataForSEO-only. It now routes through the same `keywordSource` layer, and the provider is
 folded into the `DemandSearch` cache key as a prefix (`ahrefs:seed|…`), reusing the namespace
 pattern `aeo/mentions` already established with `llm:` — no schema migration needed.
-
-## [Unreleased]
-
-### Added
-
-**Properties removed from Search Console now leave the dashboard**
-
-Delete a property in Search Console and it used to stay on the dashboard forever. Replacing
-nine banned domains left nine dead cards sitting among the live ones, dragging the portfolio
-totals down and showing a flat line nobody could act on.
-
-The cause was that site discovery only ever inserted. `GET /api/gsc/sites` upserted everything
-Google returned and did nothing at all about rows Google had stopped returning, and there was no
-way to remove a site by hand either — no endpoint, no button. Once a row was in the `Site` table
-it was there for good.
-
-Sites Google no longer lists are now moved to an **Archive** group, collapsed at the bottom of
-the dashboard. Archiving is soft on purpose: everything already collected for that domain —
-metrics, audits, tracked keywords, backlinks, Clarity snapshots — stays in the database and stays
-queryable, which matters when the domain was replaced rather than abandoned and you still want to
-compare the new one against it. Each row has **Restore**, and **Delete** for permanent removal
-once the history is genuinely not needed. New `Site.archivedAt` — **run `npx prisma db push`
-after updating**.
-
-Reconciliation runs in two places, so it does not depend on anyone opening a browser: in the
-dashboard's own site fetch, and in `runGscSync()`, which means a scheduled sync on a headless
-instance keeps the list honest by itself. It works in both directions — a property that comes
-back (re-verified, or the same domain added again) leaves the archive on the next pass.
-
-It will not archive on a partial read. Every linked account has to have answered without error
-and the list has to be non-empty, and in `runGscSync()` a failed `sites.list` disqualifies that
-user entirely rather than just the one account. The alternative is a dashboard that empties
-itself because a token expired overnight, which looks exactly like losing your data.
-
-### Changed
-
-**Archived sites are excluded from the background schedulers**
-
-A dead domain was still being checked on schedule. The rank scheduler spent paid SERP calls on
-it, the AEO scheduler spent AI calls, Clarity collection logged a daily failure against a project
-receiving no traffic, and the alert scheduler fired a traffic-drop alert on every run — because
-traffic going to zero is precisely what a removed property does.
-
-All four now skip archived sites, as does the per-site metric work in `/api/gsc/portfolio`, which
-returns a zeroed payload for them instead of running two queries and a sparkline calculation that
-can only ever draw a flat line. Archived rows are still sent to the client, because that is what
-the Archive group lists.
-
-`runGscSync()` itself never touched them — it walks Google's list, and they are not on it.
 
 ## [1.2.2] — 2026-08-05
 

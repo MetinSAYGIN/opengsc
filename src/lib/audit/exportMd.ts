@@ -97,11 +97,13 @@ function detailFor(code: string, p: AuditPage): string {
     case "title_too_short": return `${(p.title || "").length} chars`;
     case "title_duplicate": return p.title || "";
     case "description_missing": return "no description";
+    case "description_duplicate": return p.metaDescription || "";
     case "description_too_long": return `${(p.metaDescription || "").length} chars`;
     case "description_too_short": return `${(p.metaDescription || "").length} chars`;
     case "h1_missing": return "0 H1";
     case "h1_multiple": return `${p.h1Count ?? 0} H1`;
     case "noindex": return "noindex";
+    case "noindex_suspicious": return "noindex";
     case "canonical_mismatch": return `canonical → ${p.canonical || "?"}`;
     case "thin_content": return `${p.wordCount ?? 0} words`;
     case "images_no_alt": return `${p.imagesNoAlt ?? 0} images`;
@@ -133,12 +135,24 @@ const FIXES: Record<string, string> = {
   title_too_long: "Trim to roughly 60 characters so it is not truncated in search results.",
   title_too_short: "Expand to roughly 50–60 characters: lead with the main keyword, then a USP, geo or commercial marker.",
   title_duplicate: "Two pages claim the same title; differentiate them or consolidate the pages.",
+  no_googlebot_visits: "Googlebot did not request this page once in the imported server log. Link it from pages Google already crawls (navigation, hubs, related links), list it in the sitemap, and check it is not buried too deep.",
+  article_no_author: "Name the author on article pages — a visible byline linked to an author page, plus author in the Article schema. Editorial content without a named author reads as anonymous to quality raters and answer engines.",
+  article_no_date: "Show when the article was published and last updated — visibly, and as datePublished/dateModified in the Article schema (or article:published_time).",
+  trust_pages_missing: "Add the missing pages (About, Contact, Privacy, Terms) and link them site-wide, usually from the footer. They are the first thing a visitor, a payment provider or a quality rater checks.",
+  sitemap_redirect: "The sitemap lists a URL that redirects. List the final URL instead — sitemaps should contain only pages that answer 200.",
+  sitemap_error: "The sitemap lists a URL that answers an error. Remove it from the sitemap, or fix the page if it should exist.",
+  sitemap_non_canonical: "The sitemap lists a URL whose canonical points to another page. List the canonical URL instead, or fix the canonical if this page is the main one.",
+  description_duplicate: "Several pages share this meta description; write one per page that states what that page specifically offers.",
+  content_near_duplicate: "The main content is nearly the same as another page's (see the evidence). Merge the pages and 301 the weaker one, point its canonical at the stronger one, or rewrite it so it answers a different query — a template with only the city name swapped counts as a duplicate.",
   description_missing: "Add a meta description; without one Google writes its own from the page.",
   description_too_long: "Trim to roughly 155 characters.",
   description_too_short: "Expand to roughly 150–160 characters: state the page's benefit, add geo or commercial markers, and end with a call to action.",
   h1_missing: "Add a single H1 stating what the page is about.",
   h1_multiple: "Keep one H1 and demote the rest to H2.",
-  noindex: "If this page should rank, remove the noindex directive from the meta robots tag or X-Robots-Tag header.",
+  noindex: "Closed from indexing and nothing on the site says it should be open — usually deliberate (cart, login, tag archives). Remove the directive only if this page should rank.",
+  gsc_not_indexed: "Google's latest URL Inspection says this indexable page is not in the index (status and date in the evidence). Check the page is worth indexing — unique, linked internally, in the sitemap — then request indexing in Search Console. A stale \"Excluded by noindex\" or \"Page with redirect\" only needs a re-inspection.",
+  gsc_canonical_other: "Google picked a different URL as the canonical than this page declares. Either the pages are duplicates (consolidate them, or make them clearly different), or signals disagree — align the canonical tag, internal links, sitemap entries and redirects on one URL.",
+  noindex_suspicious: "The page carries noindex although the site itself says it should be found (homepage, listed in the sitemap, earning GSC impressions, or indexable in the previous audit — see the evidence). Remove noindex from the meta robots tag or X-Robots-Tag header; if the page is meant to stay closed, drop it from the sitemap instead.",
   robots_conflict: "The robots directives contradict each other (e.g. index and noindex); keep one.",
   canonical_missing: "Add a self-referencing canonical link.",
   canonical_invalid: "The canonical URL is malformed or relative; use an absolute, resolvable URL.",
@@ -201,6 +215,35 @@ export function buildAuditMarkdown(
     : `- Crawled: ${meta.pagesCrawled ?? pages.length} pages (the whole site as far as the crawler could reach it)`);
   if (meta.finishedAt) out.push(`- Finished: ${new Date(meta.finishedAt).toISOString().replace("T", " ").slice(0, 16)}`);
   if (meta.summary?.healthScore != null) out.push(`- Health score: ${meta.summary.healthScore}/100`);
+  // Noindex triage (noindex.ts) — in the header block, because "the homepage is closed" changes how
+  // every other line of the report should be read. English like the rest of the developer output.
+  const noindex = meta.summary?.noindex as { pages?: number; suspicious?: number; intentional?: number; homepage?: boolean; sitewide?: boolean; htmlPages?: number; neutral?: boolean } | undefined;
+  if (noindex?.pages) {
+    if (noindex.homepage) out.push("- **Noindex: the homepage is closed from indexing** — search engines will drop it");
+    else if (noindex.sitewide) out.push(`- **Noindex: ${noindex.pages} of ${noindex.htmlPages} pages are closed from indexing** — check the template or the CMS setting`);
+    if (noindex.suspicious) out.push(`- Noindex on ${noindex.suspicious} page(s) the site says should be open — see \`noindex_suspicious\``);
+    if (noindex.intentional) out.push(`- ${noindex.intentional} page(s) closed on purpose — listed under \`noindex\`, not checked for content, not in the health score`);
+    if (noindex.neutral) out.push("- Noindex does not affect the health score for this site (site setting)");
+  }
+  // Near-duplicate groups (duplicates.ts) — the per-page tables show pairs; this shows the clusters.
+  const dups = meta.summary?.duplicates as { count?: number; pages?: number; sample?: { size: number; minSimilarity: number; urls: string[] }[] } | undefined;
+  if (dups?.count) {
+    out.push(`- ${dups.pages} page(s) form ${dups.count} group(s) of near-duplicate content:`);
+    for (const c of (dups.sample ?? []).slice(0, 5)) out.push(`  - ${c.size} pages, ≥ ${Math.round(c.minSimilarity * 100)}% similar: ${c.urls.map(shortUrl).join(", ")}${c.size > c.urls.length ? " …" : ""}`);
+  }
+  // Sitemap coverage (sitemapCheck.ts) — how much of the sitemap the sitemap_* findings judged.
+  const sm = meta.summary?.sitemap as { listed?: number; checked?: number; notChecked?: number; seeded?: boolean } | undefined;
+  if (sm?.listed) {
+    out.push(sm.notChecked
+      ? `- Sitemap: ${sm.listed} URL(s), ${sm.checked} checked by this crawl, ${sm.notChecked} not reached${sm.seeded ? "" : " — run the audit from the sitemap to check them all"}`
+      : `- Sitemap: all ${sm.listed} URL(s) checked by this crawl`);
+  }
+  // GSC orphans (gscJoin.ts): not crawled rows, so no issue table can carry them — listed here.
+  const orphans = meta.summary?.gscOrphans as { count?: number; partial?: boolean; sample?: { url: string; impressions: number; clicks: number }[] } | undefined;
+  if (orphans?.count) {
+    out.push(`- ${orphans.count} page(s) earn GSC impressions but the crawl never reached them${orphans.partial ? " (the crawl hit its page limit, so some may lie beyond it)" : ""}:`);
+    for (const o of (orphans.sample ?? []).slice(0, 10)) out.push(`  - ${shortUrl(o.url)} — ${o.impressions} impressions, ${o.clicks} clicks / 28 d`);
+  }
   out.push("");
 
   // AI Crawlability — site-wide section, emitted before the page-level issues so a reader skimming

@@ -11,6 +11,10 @@ import { withShare, isGuestView } from "@/lib/shareParam";
 import { buildAuditMarkdown } from "@/lib/audit/exportMd";
 import { downloadFile } from "@/lib/seo/exportFormats";
 import { AUDIT_RULES } from "@/lib/audit/rules";
+import type { NoindexReason, NoindexSummary } from "@/lib/audit/noindex";
+import type { GscOrphanSummary } from "@/lib/audit/gscJoin";
+import type { DuplicateResult } from "@/lib/audit/duplicates";
+import type { SitemapCoverage } from "@/lib/audit/sitemapCheck";
 
 const ISSUE_LABEL_KEYS = Object.fromEntries(AUDIT_RULES.map(rule => [rule.id, rule.titleKey]));
 const SEVERE = new Set(AUDIT_RULES.filter(rule => rule.severity === "critical").map(rule => rule.id));
@@ -114,6 +118,172 @@ interface PsiItem {
 }
 interface PsiSummaryData { status: "ok" | "partial" | "unavailable" | string; items?: PsiItem[] }
 
+// ─── Noindex card ─────────────────────────────────────────────────────────────
+// Site-wide view of the noindex triage (lib/audit/noindex.ts). Loud only when something looks
+// like a mistake — a closed homepage, most of the site closed, or closed pages the site itself
+// says should be open; pages closed on purpose get one grey line, because they are not a problem.
+// Audits that predate the triage have no `noindex` key and render nothing.
+
+const NOINDEX_REASON_KEYS: Record<NoindexReason, string> = {
+  homepage: "auditNoindexReasonHomepage",
+  was_indexable: "auditNoindexReasonWasIndexable",
+  gsc_traffic: "auditNoindexReasonGsc",
+  sitemap: "auditNoindexReasonSitemap",
+};
+const NOINDEX_CARD_ROWS = 8;
+
+function NoindexCard({ data, t, onShow }: { data: NoindexSummary; t: (k: string) => string; onShow: (code: string) => void }) {
+  if (!data.pages) return null;
+  const alarm = data.sitewide || data.suspicious > 0;
+  // Red while it counts against the score; amber once the owner has made noindex neutral.
+  const tone = data.neutral ? "#ff9f0a" : "#ff375f";
+  const showButton = (code: string) => (
+    <button onClick={() => onShow(code)}
+      style={{ padding: "4px 10px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "11px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+      {t("auditNoindexShow")}
+    </button>
+  );
+  const rows = data.sample.slice(0, NOINDEX_CARD_ROWS);
+  return (
+    <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "10px", ...(alarm ? { borderColor: tone } : {}) }}>
+      {data.sitewide && (
+        <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+          <AlertTriangle size={16} style={{ color: tone, flex: "0 0 auto", marginTop: "2px" }} />
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 700, color: tone }}>{t("auditNoindexSitewideTitle")}</div>
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px", lineHeight: 1.5 }}>
+              {data.homepage
+                ? t("auditNoindexSitewideHome")
+                : t("auditNoindexSitewideShare").replace("{n}", String(data.pages)).replace("{m}", String(data.htmlPages))}
+            </div>
+          </div>
+        </div>
+      )}
+      {data.suspicious > 0 && (
+        <>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: "10px", alignItems: "flex-start", minWidth: 0 }}>
+              {!data.sitewide && <AlertTriangle size={16} style={{ color: tone, flex: "0 0 auto", marginTop: "2px" }} />}
+              <div>
+                <div style={{ fontSize: data.sitewide ? "13px" : "14px", fontWeight: 700, color: data.sitewide ? "var(--color-text-primary)" : tone }}>
+                  {t("auditNoindexSuspiciousTitle").replace("{n}", String(data.suspicious))}
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px", lineHeight: 1.5 }}>{t("auditNoindexSuspiciousSub")}</div>
+              </div>
+            </div>
+            {showButton("noindex_suspicious")}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            {rows.map(row => (
+              <div key={row.url} style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", fontSize: "12px", minWidth: 0 }}>
+                <a href={row.url} target="_blank" rel="noreferrer"
+                  style={{ color: "var(--color-accent-blue)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+                  {row.url.replace(/^https?:\/\/[^/]+/, "") || "/"}
+                </a>
+                {row.reasons.map(reason => (
+                  <span key={reason} style={{ fontSize: "10px", padding: "2px 7px", borderRadius: "var(--radius-pill)", background: "var(--color-border-soft)", color: "var(--color-text-secondary)", fontWeight: 600, whiteSpace: "nowrap" }}>
+                    {t(NOINDEX_REASON_KEYS[reason] ?? reason)}
+                  </span>
+                ))}
+              </div>
+            ))}
+            {data.suspicious > rows.length && (
+              <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{t("auditNoindexMore").replace("{n}", String(data.suspicious - rows.length))}</div>
+            )}
+          </div>
+        </>
+      )}
+      {data.intentional > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", ...(alarm ? { borderTop: "1px solid var(--color-border)", paddingTop: "10px" } : {}) }}>
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+            {t("auditNoindexIntentional").replace("{n}", String(data.intentional))}
+          </div>
+          {showButton("noindex")}
+        </div>
+      )}
+      {data.neutral && <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{t("auditNoindexNeutralNote")}</div>}
+    </div>
+  );
+}
+
+// ─── GSC orphans card ─────────────────────────────────────────────────────────
+// Pages Search Console reports impressions for that the crawl never reached (lib/audit/gscJoin.ts).
+// They are not crawled rows, so they cannot be issue chips; this card is their only place.
+
+const GSC_ORPHAN_CARD_ROWS = 10;
+
+function GscOrphansCard({ data, t }: { data: GscOrphanSummary; t: (k: string) => string }) {
+  if (!data.count) return null;
+  const rows = data.sample.slice(0, GSC_ORPHAN_CARD_ROWS);
+  return (
+    <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+      <div>
+        <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>{t("auditGscOrphansTitle").replace("{n}", String(data.count))}</div>
+        <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px", lineHeight: 1.5 }}>{t("auditGscOrphansSub")}</div>
+        {data.partial && <div style={{ fontSize: "11px", color: "#ff9f0a", marginTop: "4px" }}>{t("auditGscOrphansPartial")}</div>}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        {rows.map(row => (
+          <div key={row.url} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", fontSize: "12px", minWidth: 0 }}>
+            <a href={row.url} target="_blank" rel="noreferrer"
+              style={{ color: "var(--color-accent-blue)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+              {row.url.replace(/^https?:\/\/[^/]+/, "") || "/"}
+            </a>
+            <span style={{ flex: "0 0 auto", fontSize: "11px", color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+              {t("auditGscOrphansStats").replace("{n}", String(row.impressions)).replace("{c}", String(row.clicks))}
+            </span>
+          </div>
+        ))}
+        {data.count > rows.length && (
+          <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>{t("auditGscOrphansMore").replace("{n}", String(data.count - rows.length))}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Near-duplicate groups card ───────────────────────────────────────────────
+// The per-page chip says "similar to X"; this card shows how the site clusters — a template with
+// the city name swapped shows up here as one big group (lib/audit/duplicates.ts).
+
+function DuplicatesCard({ data, t, onShow }: { data: DuplicateResult["clusters"]; t: (k: string) => string; onShow: (code: string) => void }) {
+  if (!data.count) return null;
+  return (
+    <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: "14px", fontWeight: 700, color: "var(--color-text-primary)" }}>
+            {t("auditDupTitle").replace("{p}", String(data.pages)).replace("{n}", String(data.count))}
+          </div>
+          <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginTop: "2px", lineHeight: 1.5 }}>{t("auditDupSub")}</div>
+        </div>
+        <button onClick={() => onShow("content_near_duplicate")}
+          style={{ padding: "4px 10px", borderRadius: "7px", border: "1px solid var(--color-border)", background: "var(--color-card)", color: "var(--color-text-secondary)", fontSize: "11px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+          {t("auditNoindexShow")}
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {data.sample.slice(0, 5).map(cluster => (
+          <div key={cluster.urls[0]} style={{ fontSize: "12px", minWidth: 0 }}>
+            <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)" }}>
+              {t("auditDupRow").replace("{n}", String(cluster.size)).replace("{s}", String(Math.round(cluster.minSimilarity * 100)))}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px", marginTop: "2px" }}>
+              {cluster.urls.map(url => (
+                <a key={url} href={url} target="_blank" rel="noreferrer"
+                  style={{ color: "var(--color-accent-blue)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+                  {url.replace(/^https?:\/\/[^/]+/, "") || "/"}
+                </a>
+              ))}
+              {cluster.size > cluster.urls.length && <span style={{ color: "var(--color-text-tertiary)" }}>…</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── API response shapes this panel reads ─────────────────────────────────────
 
 /** A row of the audit history list (GET /api/audit). */
@@ -135,6 +305,10 @@ interface AuditSummaryView {
   issues: Record<string, number>;
   aiCrawlability?: AiCrawlSummary;
   psi?: PsiSummaryData;
+  noindex?: NoindexSummary;
+  gscOrphans?: GscOrphanSummary;
+  duplicates?: DuplicateResult["clusters"];
+  sitemap?: SitemapCoverage;
 }
 
 /** A verification finding carried over from the baseline run. */
@@ -361,6 +535,8 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
   // refuse a crawler, so counting them as broken links is always wrong.
   const [useDefaults, setUseDefaults] = useState(true);
   const [ignoreExtra, setIgnoreExtra] = useState("");
+  // Site-level, stored in Site.auditSettings: applies to every audit of the site, scheduled too.
+  const [noindexNeutral, setNoindexNeutral] = useState(false);
   const [issueFilter, setIssueFilter] = useState("");
   const [starting, setStarting] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -376,6 +552,7 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
       const d = await fetch(withShare(`/api/audit?siteId=${siteDbId}`)).then(r => r.json());
       const list = d.audits || [];
       setAudits(list);
+      if (typeof d.noindexNeutral === "boolean") setNoindexNeutral(d.noindexNeutral);
       return list;
     } catch { return []; }
   }, [siteDbId]);
@@ -486,6 +663,19 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
       setMdLinkCopied(true);
       setTimeout(() => setMdLinkCopied(false), 2000);
     } catch { /* the transient ✓ state simply never shows */ }
+  };
+
+  // Saved immediately rather than with the next run: it is a property of the site, not of one
+  // crawl, and the scheduler reads it from there. Takes effect from the next audit.
+  const toggleNoindexNeutral = async (value: boolean) => {
+    setNoindexNeutral(value);
+    try {
+      const res = await fetch("/api/audit/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siteId: siteDbId, noindexNeutral: value }),
+      });
+      if (!res.ok) setNoindexNeutral(!value);
+    } catch { setNoindexNeutral(!value); }
   };
 
   const filterIssue = (code: string) => {
@@ -612,6 +802,10 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
               <input type="checkbox" checked={useDefaults} onChange={e => setUseDefaults(e.target.checked)} style={{ accentColor: "var(--color-accent-blue)" }} />
               <Filter size={14} /> {t("auditIgnoreDefaults")}
             </label>
+            <label title={t("auditNoindexNeutralHint")} style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontSize: "13px", color: noindexNeutral ? "var(--color-accent-blue)" : "var(--color-text-secondary)", cursor: "pointer", width: "fit-content" }}>
+              <input type="checkbox" checked={noindexNeutral} onChange={e => toggleNoindexNeutral(e.target.checked)} style={{ accentColor: "var(--color-accent-blue)" }} />
+              {t("auditNoindexNeutral")}
+            </label>
             <input
               value={ignoreExtra}
               onChange={e => setIgnoreExtra(e.target.value)}
@@ -691,6 +885,20 @@ export default function SiteAuditPanel({ siteDbId }: { siteDbId: string }) {
               and widening at this single point keeps the card's own type honest without importing
               the dictionary's keyof union. */}
           {summary.aiCrawlability && <AiCrawlabilityCard data={summary.aiCrawlability} t={t as (k: string) => string} />}
+
+          {/* Noindex triage — above the speed sample: a closed homepage outranks any metric */}
+          {summary.noindex && <NoindexCard data={summary.noindex} t={t as (k: string) => string} onShow={filterIssue} />}
+          {summary.gscOrphans && <GscOrphansCard data={summary.gscOrphans} t={t as (k: string) => string} />}
+          {/* Sitemap coverage — one line: how much of the sitemap the sitemap_* chips actually judged */}
+          {summary.sitemap && summary.sitemap.listed > 0 && (
+            <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+              {summary.sitemap.notChecked
+                ? t("auditSitemapCoverage").replace("{n}", String(summary.sitemap.listed)).replace("{c}", String(summary.sitemap.checked)).replace("{m}", String(summary.sitemap.notChecked))
+                : t("auditSitemapAll").replace("{n}", String(summary.sitemap.listed))}
+              {summary.sitemap.notChecked > 0 && !summary.sitemap.seeded && <> {t("auditSitemapHint")}</>}
+            </div>
+          )}
+          {summary.duplicates && <DuplicatesCard data={summary.duplicates} t={t as (k: string) => string} onShow={filterIssue} />}
 
           {/* PageSpeed sample — above the issue list: it explains the site's speed, not one page */}
           {summary.psi && <PsiCard data={summary.psi} t={t as (k: string) => string} />}

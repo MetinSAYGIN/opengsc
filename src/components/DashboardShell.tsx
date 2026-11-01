@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import PasswordChangeGate from "@/components/PasswordChangeGate";
 import { useSession, signOut } from "next-auth/react";
 import { useState, useEffect, useRef, Suspense } from "react";
-import { LogOut, Sparkles, Globe, Newspaper, LayoutDashboard, TrendingUp, Anchor, BarChart2, Radar, Server, ClipboardCheck, Menu, Boxes, Waves, FileText, Inbox, ChevronDown, Link2, Send } from "lucide-react";
+import { LogOut, Sparkles, Globe, Newspaper, LayoutDashboard, TrendingUp, Anchor, BarChart2, Radar, Server, ClipboardCheck, Menu, Boxes, Waves, FileText, Inbox, ChevronDown, Link2, Send, Network, Recycle } from "lucide-react";
 import { usePrivacy } from "@/lib/PrivacyContext";
 import { useTheme } from "@/lib/ThemeContext";
 import { useLayout } from "@/lib/LayoutContext";
@@ -12,6 +12,7 @@ import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { aparserConfiguredLocally, isAparserConfigured, resetAparserConfiguredCache } from "@/lib/seo/aparserConfigured";
 import UpdateBanner from "@/components/UpdateBanner";
 import SchemaBanner from "@/components/SchemaBanner";
+import { SUPPORT_PARTNERS, USDT_ADDRESS } from "@/lib/partners";
 
 // ─── Popup menu helpers ───────────────────────────────────────────────────────
 function MenuItem({ icon, label, onClick }: { icon: string; label: string; onClick?: () => void }) {
@@ -64,98 +65,12 @@ function VersionInfo() {
 }
 
 // ─── Feedback / Help modal ────────────────────────────────────────────────────
-const USDT_ADDRESS = "TN7v2NArTXd5J2eMuGFpXmgzAFsoZpWcZu";
-
-// Partner wall in the "Support Developer" modal. To add a partner: drop the
-// logo into public/partners/ and add a `partners<Id>` description key to every
-// src/locales/*.json. tileBg must contrast with the logo fills: light-filled
-// logos (Pay2.House) need the dark tile, dark logos on white (Cloaking.House)
-// need "#ffffff" — otherwise they vanish on light theme / dark tile.
-const SUPPORT_PARTNERS = [
-  {
-    id: "Pay2house",
-    name: "Pay2.House",
-    href: "https://pay2.house/p/kc9oevv0?utm_source=opengsc",
-    logo: "/partners/pay2house-logo.svg",
-    tileBg: "#0b0e16",
-    imgStyle: { maxWidth: "78px", maxHeight: "18px" } as React.CSSProperties,
-  },
-  {
-    id: "Groupbuyseo",
-    name: "GroupBuySEO",
-    href: "https://my.groupbuyseo.org/register?affiliate_key=8ino4XJTwJ7EJooF67JUOt2tmbcFk1",
-    logo: "/partners/groupbuyseo-logo.svg",
-    tileBg: "#0b0e16",
-    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
-  },
-  {
-    id: "Cloakinghouse",
-    name: "Cloaking.House",
-    href: "https://cloaking.house/?utm_source=opengsc",
-    logo: "/partners/cloakinghouse-logo.png",
-    tileBg: "#ffffff",
-    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
-  },
-  {
-    id: "Helodata",
-    name: "Helodata",
-    href: "https://helodata.com?ref=ruslan1",
-    logo: "/partners/helodata-logo.png",
-    tileBg: "#ffffff",
-    imgStyle: { maxHeight: "32px" } as React.CSSProperties,
-  },
-  {
-    id: "Accsly",
-    name: "Accsly.io",
-    href: "https://accsly.io/?utm_source=opengsc&utm_medium=referral",
-    logo: "/partners/accsly-logo.svg",
-    tileBg: "#ffffff",
-    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
-  },
-  {
-    id: "Orbitra",
-    name: "Orbitra.link",
-    href: "https://orbitra.link/?utm_source=opengsc",
-    logo: "/partners/orbitra-logo.svg",
-    tileBg: "#ffffff",
-    imgStyle: { maxHeight: "28px" } as React.CSSProperties,
-  },
-  {
-    id: "Novproxy",
-    name: "Novproxy",
-    href: "https://novproxy.com?kwd=tt-orb",
-    logo: "/partners/novproxy-logo.svg",
-    tileBg: "#ffffff",
-    imgStyle: { maxWidth: "84px", maxHeight: "18px" } as React.CSSProperties,
-  },
-  {
-    id: "Market369",
-    name: "369 Links Market",
-    href: "https://t.me/marketplace369_bot?start=ref_58bsvidx",
-    logo: "/partners/369market-logo.png",
-    tileBg: "#000000",
-    imgStyle: { maxHeight: "40px" } as React.CSSProperties,
-  },
-  {
-    id: "Fieldlink",
-    name: "FieldLink",
-    href: "https://seoboost-root.info/r/flt_oW6P5bnPM5JTkU44PxbVxFWBUF4e8MBRFDy0kG17t5Y",
-    logo: "/partners/fieldlink-logo.svg",
-    tileBg: "#07110c",
-    imgStyle: { maxHeight: "32px" } as React.CSSProperties,
-  },
-  {
-    id: "Tradeproxy",
-    name: "TradeProxy",
-    href: "https://tradeproxy.net/?utm_source=opengsc",
-    logo: "/partners/tradeproxy-logo.png",
-    tileBg: "#0b0e16",
-    imgStyle: { maxHeight: "30px" } as React.CSSProperties,
-  },
-] as const;
+// The partner list and the donation address live in src/lib/partners.ts — the same
+// data drives the compact logo wall here and the full /partners page.
 
 function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose: () => void }) {
   const { t } = useLanguage();
+  const router = useRouter();
   const [text, setText] = useState("");
   const [sent, setSent] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -189,6 +104,10 @@ function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose
         transform: "translate(-50%, -50%)",
         zIndex: 101,
         width: "420px", maxWidth: "calc(100vw - 32px)",
+        // The thanks mode (story + USDT + partner wall) is taller than short
+        // viewports — clamp the panel and let the body scroll under the header.
+        maxHeight: "calc(100vh - 48px)",
+        display: "flex", flexDirection: "column",
         background: "var(--color-card)",
         border: "1px solid var(--color-border)",
         borderRadius: "16px",
@@ -218,7 +137,7 @@ function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose
         </div>
 
         {/* Body */}
-        <div style={{ padding: "20px 24px 24px" }}>
+        <div style={{ padding: "20px 24px 24px", overflowY: "auto", minHeight: 0 }}>
 
           {/* ── FEEDBACK MODE ── */}
           {mode === "feedback" && (
@@ -369,48 +288,52 @@ function FeedbackModal({ mode, onClose }: { mode: "feedback" | "thanks"; onClose
                 </div>
               </div>
 
-              {/* Partners */}
+              {/* Partners — compact logo wall. The list outgrew the modal at 11 partners,
+                  so descriptions and running promos live on /partners; this grid only
+                  keeps the partners one click away from the support view. */}
               <div style={{ marginTop: "20px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "8px" }}>
                   {t("partnersTitle")}
                 </div>
-                {SUPPORT_PARTNERS.map(p => (
-                  <a
-                    key={p.id}
-                    href={p.href}
-                    target="_blank"
-                    rel="noopener noreferrer sponsored"
-                    style={{
-                      display: "flex", alignItems: "center", gap: "12px",
-                      padding: "10px 12px", borderRadius: "10px",
-                      background: "rgba(255,255,255,0.04)",
-                      border: "1px solid var(--color-border)",
-                      textDecoration: "none", marginBottom: "8px",
-                      transition: "background 0.15s",
-                    }}
-                    onMouseOver={e => (e.currentTarget.style.background = "rgba(255,255,255,0.07)")}
-                    onMouseOut={e => (e.currentTarget.style.background = "rgba(255,255,255,0.04)")}
-                  >
-                    <span style={{
-                      width: "92px", height: "44px", borderRadius: "8px",
-                      background: p.tileBg,
-                      border: "1px solid var(--color-border)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      flexShrink: 0,
-                    }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                  {SUPPORT_PARTNERS.map(p => (
+                    <a
+                      key={p.id}
+                      href={p.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={p.promo ? `${p.name} — ${t(p.promo)}` : p.name}
+                      style={{
+                        position: "relative",
+                        width: "92px", height: "44px", borderRadius: "8px",
+                        background: p.tileBg,
+                        border: "1px solid var(--color-border)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        textDecoration: "none",
+                        transition: "border-color 0.15s",
+                      }}
+                      onMouseOver={e => (e.currentTarget.style.borderColor = "var(--color-accent-purple)")}
+                      onMouseOut={e => (e.currentTarget.style.borderColor = "var(--color-border)")}
+                    >
                       <img src={p.logo} alt={p.name} style={{ display: "block", ...p.imgStyle }} />
-                    </span>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--color-text-primary)" }}>
-                        {p.name}
-                      </div>
-                      <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", lineHeight: 1.45, marginTop: "2px" }}>
-                        {t(`partners${p.id}`)}
-                      </div>
-                    </div>
-                    <span style={{ marginLeft: "auto", fontSize: "12px", color: "var(--color-text-secondary)", flexShrink: 0 }}>↗</span>
-                  </a>
-                ))}
+                      {p.promo && (
+                        <span style={{
+                          position: "absolute", top: "-6px", right: "-6px",
+                          width: "16px", height: "16px", borderRadius: "50%",
+                          background: "#f59e0b", fontSize: "9px", lineHeight: "16px", textAlign: "center",
+                          boxShadow: "0 0 0 2px var(--color-card)",
+                        }}>🔥</span>
+                      )}
+                    </a>
+                  ))}
+                </div>
+                <button onClick={() => { onClose(); router.push("/partners"); }} style={{
+                  marginTop: "12px", width: "100%", padding: "9px",
+                  background: "rgba(139,92,246,0.12)",
+                  border: "1px solid rgba(139,92,246,0.3)",
+                  borderRadius: "8px", fontSize: "12.5px", fontWeight: 600,
+                  color: "var(--color-accent-purple)", cursor: "pointer",
+                }}>{t("partnersOpenPage")}</button>
               </div>
 
               <div style={{ height: "1px", background: "var(--color-border)", margin: "16px 0" }} />
@@ -458,15 +381,18 @@ export interface NavItem {
   group?: NavGroupKey;
 }
 
-type NavGroupKey = "analytics" | "monitoring" | "recon" | "clients";
+type NavGroupKey = "analytics" | "monitoring" | "recon" | "network" | "clients";
 
 // 14 destinations stopped fitting one row even at 2000px. Grouped by what the page looks at:
 // analytics — this instance's own GSC data; monitoring — things that change over time and get
-// watched; recon — somebody else's sites and domains; clients — what goes out to customers.
+// watched; recon — somebody else's sites, looked at and nothing more; network — the link network
+// being built (drops bought, doorways served, links bought and published), in working order;
+// clients — what goes out to customers.
 const NAV_GROUPS: Record<NavGroupKey, { labelKey: string; icon: React.ReactNode }> = {
   analytics: { labelKey: "navGroupAnalytics", icon: <TrendingUp size={14} /> },
   monitoring: { labelKey: "navGroupMonitoring", icon: <Waves size={14} /> },
   recon: { labelKey: "navGroupRecon", icon: <Radar size={14} /> },
+  network: { labelKey: "navGroupNetwork", icon: <Network size={14} /> },
   clients: { labelKey: "navGroupClients", icon: <Inbox size={14} /> },
 };
 
@@ -512,23 +438,26 @@ function useNavItems(): NavItem[] {
     // reads data the instance already holds; those two buy data from outside it, which is the
     // line SEO Tools draws.
     { href: "/seo-tools", label: t("seoNavTitle"), key: "seo-tools", icon: <Sparkles size={14} /> },
-    { href: "/indexer", label: t("indexerNavTitle"), key: "indexer", icon: <Globe size={14} />, group: "monitoring" as const },
     // Sits next to the portfolio tools but points outward: everything above reads this instance's
     // own data, this one looks at somebody else's site.
     { href: "/crawler", label: t("crawlerNavTitle"), key: "crawler", icon: <Radar size={14} />, group: "recon" as const },
-    // Between the crawler and the digest for the same reason the crawler sits where it does:
-    // it looks outward at domains this instance does not own. Unlike the crawler it looks at
-    // ones nobody owns yet.
-    { href: "/drops", label: t("dropsNavTitle"), key: "drops", icon: <Boxes size={14} />, group: "recon" as const },
-    // Link purchases point outward too — money leaves for somebody else's placements — and the
-    // striking table's buy buttons lead here for the history. Always visible, like /serp-monitor:
+    // ─── network: the link network, in the order the work happens ───────────────────────
+    // Drops first: find and buy the domains the network is built from.
+    { href: "/drops", label: t("dropsNavTitle"), key: "drops", icon: <Boxes size={14} />, group: "network" as const },
+    // Restore a drop from Wayback and inject money-site links into its real content — the
+    // thing a bought drop becomes before it serves. Between buying (/drops) and serving (/indexer).
+    { href: "/pbn", label: t("pbnNavTitle"), key: "pbn", icon: <Recycle size={14} />, group: "network" as const },
+    // Then serve them: the doorways and the bot log.
+    { href: "/indexer", label: t("indexerNavTitle"), key: "indexer", icon: <Globe size={14} />, group: "network" as const },
+    // Bought links: money leaves for somebody else's placements, and the striking table's buy
+    // buttons lead here for the history. Always visible, like /serp-monitor:
     // the page explains what is missing instead of the feature looking absent.
-    { href: "/magiclinks", label: t("mlNavTitle"), key: "magiclinks", icon: <Link2 size={14} />, group: "recon" as const },
+    { href: "/magiclinks", label: t("mlNavTitle"), key: "magiclinks", icon: <Link2 size={14} />, group: "network" as const },
     // The other side of the same coin as /magiclinks: there you pay somebody else to place
     // posts, here you publish your own (WordPress now, satellite platforms later) and the
     // loop files the result as a donor link the same way. Always visible: the page explains
     // what is missing (a connection) instead of the feature looking absent.
-    { href: "/publishing", label: t("publishTitle"), key: "publishing", icon: <Send size={14} />, group: "recon" as const },
+    { href: "/publishing", label: t("publishTitle"), key: "publishing", icon: <Send size={14} />, group: "network" as const },
     // Visible always, unlike /aparser: the page itself explains what is missing (A-Parser
     // credentials) instead of the entry hiding and the feature looking absent.
     { href: "/serp-monitor", label: t("serpmonNavTitle"), key: "serpmon", icon: <Waves size={14} />, group: "monitoring" as const },

@@ -1,9 +1,11 @@
 // MCP tools for the app surfaces that live outside the GSC core (tools.ts).
 //
 // Everything here is read-only. Most of it is a Prisma read over data the app has
-// already synced; the two exceptions are labeled in their descriptions and in `cost`:
-// get_analytics calls GA4 on the user's own OAuth (quota), and get_engine_performance
-// can hit Bing/Yandex live when the cached snapshot is cold.
+// already synced; the exceptions are labeled in their descriptions and in `cost`:
+// get_analytics calls GA4 on the user's own OAuth (quota), get_engine_performance
+// can hit Bing/Yandex live when the cached snapshot is cold, and magiclinks_queue_donors
+// writes — it puts purchased donor pages into the local indexer queue (still free, still
+// the user's own data).
 //
 // These reimplement the computation of their `/api/**` counterparts rather than calling
 // them over HTTP: those routes authenticate with a session cookie, which an MCP request
@@ -21,6 +23,8 @@ import { aggregateSnapshots } from "@/lib/clarityParse";
 import { rawQuery } from "@/lib/db/raw";
 import { findDecayingPages } from "@/lib/decay/query";
 import { DEFAULT_MIN_PREVIOUS } from "@/lib/decay/logic";
+import { queuePurchasedDonors } from "@/lib/magiclinks/toIndexer";
+import { redistributeQueue } from "@/lib/indexer/redistribute";
 
 // CTR by position, Backlinko 2023 — the same table the CTR Benchmark tab uses.
 const CTR_BENCHMARKS: Record<number, number> = {
@@ -538,6 +542,87 @@ export const DATA_TOOLS: McpTool[] = [
   },
 
   {
+    name: "magiclinks_queue_donors",
+    cost: "local",
+    description:
+      "Send PURCHASED backlink donor pages (FieldLink / 369 Links Market orders from /magiclinks) into the private indexer queue (/indexer), so the doorway network serves them to crawlers. Mirrors the page's buttons. Modes: orderId queues that one order's donors; all=true queues every purchased donor NOT PROVEN indexed (includes never-checked — the no-extra-steps path); the default queues only donors the xr pass proved out of the index. Upserts per (doorway, url), so re-running re-exposes instead of duplicating; global modes cap at 200 per call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        orderId: { type: "string", description: "One provider order id — queue just its donor pages (no cap)" },
+        all: { type: "boolean", description: "true = every purchased donor not proven indexed; default = only xr-proven not_indexed" },
+      },
+    },
+    handler: async (userId, args) => {
+      const r = await queuePurchasedDonors(userId, {
+        orderId: args.orderId ? String(args.orderId) : undefined,
+        all: !!args.all,
+      });
+      if (!r.ok) {
+        const hint = r.reason === "no_indexer_domains"
+          ? "No active doorway domains — add them in /indexer first."
+          : r.reason === "not_migrated"
+            ? "Backlinks v2 tables are not migrated (prisma db push)."
+            : "No such order for this workspace.";
+        return { error: r.reason, hint };
+      }
+      return {
+        queued: r.queued,
+        candidates: r.candidates,
+        doorwayDomains: r.domains,
+        ...(r.capped ? { capped: true, cap: 200, note: "Cap reached — call again for the next batch." } : {}),
+        skippedIndexed: r.skippedIndexed,
+      };
+    },
+  },
+
+  {
+    name: "indexer_redistribute_queue",
+    cost: "local",
+    description:
+      "Re-spread stuck indexer queue rows (/indexer/queue) across the ACTIVE doorway domains — mirrors the page's redistribute buttons. The webhook serves only the rows of the doorway a bot actually hits, so pages parked on a doorway that stopped being crawled hang pending forever; this moves them to the other doorways as fresh PENDING rows (rotation starts over, crawled state is reset). domain (id or exact domain name) empties that one doorway onto the others; omit it to reshuffle the whole queue. Returns moved / merged (URL already on the target) / kept (no alternative) / deduped (extra copies removed) / domainsUsed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        domain: { type: "string", description: "Optional: one doorway (id or exact domain name) whose rows move to the others; default = whole queue" },
+      },
+    },
+    handler: async (userId, args) => {
+      let domainId: string | undefined;
+      const needle = String(args.domain ?? "").trim();
+      if (needle) {
+        // Write op: exact match only (id or domain), never a substring guess.
+        const d = await prisma.indexerDomain.findFirst({
+          where: { userId, OR: [{ id: needle }, { domain: normDomain(needle) }] },
+          select: { id: true, domain: true },
+        });
+        if (!d) return { error: "domain_not_found", hint: `No doorway domain matches "${needle}" in this workspace.` };
+        domainId = d.id;
+      }
+
+      const r = await redistributeQueue(userId, domainId ? { domainId } : {});
+      if (!r.ok) {
+        const hint = r.reason === "no_indexer_domains"
+          ? "No active doorway domains — add them in /indexer first."
+          : r.reason === "no_alternative_domains"
+            ? "No other ACTIVE doorway to move pages to — activate or add another domain."
+            : r.reason === "nothing_to_move"
+              ? "The queue has no rows in scope."
+              : "No such doorway domain for this workspace.";
+        return { error: r.reason, hint };
+      }
+      return {
+        moved: r.moved,
+        merged: r.merged,
+        kept: r.kept,
+        deduped: r.deduped,
+        domainsUsed: r.domainsUsed,
+        note: "Moved rows are fresh PENDING — crawlers get them again from the new doorways.",
+      };
+    },
+  },
+
+  {
     name: "get_digests",
     cost: "local",
     description:
@@ -582,7 +667,7 @@ export const DATA_TOOLS: McpTool[] = [
       type: "object",
       properties: {
         site: { type: "string", description: "Optional: restrict to one site (domain or id)" },
-        type: { type: "string", description: "Optional: rank_drop | traffic_drop | ssl_expiry | audit_score" },
+        type: { type: "string", description: "Optional: rank_drop | traffic_drop | ssl_expiry | audit_score | audit_noindex" },
         days: { type: "number", description: "Lookback window in days (default 30, max 365)" },
         limit: { type: "number", description: "Max alerts (default 50, max 200)" },
       },

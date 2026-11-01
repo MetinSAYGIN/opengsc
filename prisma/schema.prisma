@@ -92,6 +92,7 @@ model User {
   digestSettings   String? // JSON: { enabled, frequency: "daily"|"weekly", hourUtc, tag, days, ai, lastSentAt }
   syncSettings     String? // JSON: { enabled, hour, timeZone, lastRunAt } — automatic GSC sync, see src/lib/syncSchedule.ts
   auditQueueSettings String? // JSON: { concurrency, defaultIntervalDays, scheduleHourUtc, retryAttempts, retryDelayMin, paused } — audit queue + scheduler knobs, see src/lib/audit/queue.ts
+  genQueueSettings   String? // JSON: GenQueueSettings (src/lib/seo/genQueue/settings.ts) — generation batch queue + provider-call semaphore knobs
   uptimeSettings   String? // JSON: UptimeWorkspaceSettings (src/lib/uptime/types.ts)
   notifyChannels   String? // JSON: NotifyChannelsConfig (src/lib/notify/types.ts) — secrets inside, never sent to the browser unmasked
 
@@ -107,6 +108,7 @@ model User {
 
   // SEO Tools background generation jobs
   seoJobs             SeoJob[]
+  genBatches          SeoBatch[]
 
   // Content Operations is a publishing workflow layered on top of the existing
   // Demand / Outline / Text / Rewrite tools. Repository credentials stay server-only.
@@ -137,6 +139,11 @@ model Membership {
   email   String  // lowercased, the identity a member signs in with
   role    String  @default("viewer") // viewer | editor | admin
   status  String  @default("active") // active | invited | suspended
+
+  // JSON: CapabilityDelta { add: [], remove: [] } — the owner's per-member deviation from the role
+  // matrix (issue #39). Null = pure role. Sanitized against the role on every read, so a role
+  // change that leaves a stale delta behind degrades to a no-op instead of widening access.
+  capabilities String?
 
   // Only the SHA-256 of an invite token is stored: a leaked database must not hand out logins.
   inviteHash      String?   @unique
@@ -236,6 +243,7 @@ model Site {
   backlinks             Backlink[]
   siteBacklinks         SiteBacklink[]
   siteAudits            SiteAudit[]
+  serverLogImports      ServerLogImport[]
   claritySnapshots      ClaritySnapshot[]
   trackedKeywords       TrackedKeyword[]
   trackedQuestions      TrackedQuestion[]
@@ -784,6 +792,26 @@ model SiteAudit {
   // The workspace-wide history (GET /api/audit without siteId) orders every audit of the
   // workspace by date — no siteId to anchor on, so the composite index above can't serve it.
   @@index([startedAt])
+}
+
+// One imported server access log (nginx/Apache): who crawled the site, verified by reverse DNS.
+// The aggregate only — raw lines, IPs of ordinary visitors and user agents are never stored.
+model ServerLogImport {
+  id         String    @id @default(cuid())
+  siteId     String
+  createdAt  DateTime  @default(now())
+  source     String    // uploaded file name, or the server path it was read from
+  lines      Int       @default(0)
+  parsed     Int       @default(0)
+  skipped    Int       @default(0)
+  periodFrom DateTime?
+  periodTo   DateTime?
+  googleHits Int       @default(0)
+  summary    String    // JSON: LogSummary (src/lib/logs/aggregate.ts)
+
+  site Site @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId, createdAt])
 }
 
 model SiteAuditPage {
@@ -1993,6 +2021,107 @@ model DropDonorPlacement {
   @@index([assetId, active])
 }
 
+// ─── PBN restore + bulk link injector ────────────────────────────────────────
+// A dropped domain is restored from a Wayback snapshot to disk, then money-site links are
+// injected into its real content (never dumped at the top of <body>, never with any marker).
+// See docs/tasks/pbn/CONTRACT.md. JSON columns are String (no Json type on SQLite); string
+// members of composite keys stay <=191 chars (VARCHAR(191) on MySQL).
+
+/// One restored drop: the chosen snapshot, what was fetched, and where it lives on disk.
+model PbnSite {
+  id          String   @id @default(cuid())
+  userId      String
+  domain      String
+  /// Chosen snapshot, YYYYMMDDhhmmss.
+  snapshotTimestamp String?
+  /// scanning | fetching | ready | partial | error — honest about partial fetches.
+  status      String   @default("scanning")
+  pagesRequested Int   @default(0)
+  pagesRestored  Int   @default(0)
+  /// JSON: [{ path, reason }] — pages that could not be fetched, reported, never hidden.
+  pagesFailed String  @default("[]")
+  /// JSON: { archiveRefsRewritten, externalLinksStripped, trackersRemoved, jsLinksStripped }
+  cleanedStats String @default("{}")
+  /// Relative dir under data/pbn/<userId>/ where the cleaned site is written.
+  diskPath    String?
+  errorText   String?
+  /// Optional link to an acquired drop (DropAsset) and/or a serving doorway (IndexerDomain).
+  assetDomain String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  pages PbnPage[]
+  links PbnLink[]
+
+  @@unique([userId, domain])
+  @@index([userId, status])
+}
+
+/// One restored page and the link-placement candidates found in it.
+model PbnPage {
+  id        String  @id @default(cuid())
+  siteId    String
+  path      String
+  title     String?
+  textChars Int     @default(0)
+  /// JSON: [{ tag, textLength }] — leaf text blocks a link can go into; empty = needs a paragraph.
+  blocks    String  @default("[]")
+  /// ok | needs_paragraph | skipped
+  status    String  @default("ok")
+
+  site PbnSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId])
+}
+
+/// A bulk campaign: one money target, an anchor list with per-kind shares, applied to N sites.
+model PbnCampaign {
+  id        String  @id @default(cuid())
+  userId    String
+  targetUrl String
+  /// JSON: [{ text, kind }] — kind is exact|brand|url|generic.
+  anchors   String  @default("[]")
+  /// JSON: { exact, brand, url, generic } weights.
+  shares    String  @default("{}")
+  /// homepage_only | sitewide_footer | combo_both
+  scope     String  @default("homepage_only")
+  /// JSON: { dofollow, nofollow, sponsored } weights.
+  relShares String  @default("{}")
+  /// JSON: string[] of PbnSite ids this campaign applies to.
+  siteIds   String  @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// One placed (or skipped) link on a restored site. Declarative: the file on disk is rewritten
+/// from these rows, so re-applying a campaign is idempotent.
+model PbnLink {
+  id        String  @id @default(cuid())
+  siteId    String
+  campaignId String?
+  /// "/" | "*" | a concrete page path.
+  pagePath  String
+  anchorText String
+  /// exact | brand | url | generic
+  anchorKind String  @default("generic")
+  targetUrl String
+  /// dofollow | nofollow | sponsored
+  rel       String  @default("dofollow")
+  /// content | nav | footer — where in the page the link sits.
+  placement String  @default("content")
+  surroundingText String?
+  /// placed | skipped
+  status    String  @default("placed")
+  skipReason String?
+  createdAt DateTime @default(now())
+
+  site PbnSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([siteId])
+}
+
 // ─── SERP Monitor (full top-N snapshots per market) ──────────────────────────
 // A project is a market (engine · country · language · device) plus a keyword set. Every run
 // stores the whole top-N per keyword; diffs are host-level and computed once, at write time.
@@ -2734,4 +2863,71 @@ model BackupRun {
   error       String    @default("") // why a run failed, "" on success
 
   @@index([startedAt])
+}
+
+// ─── Generation batch queue ──────────────────────────────────────────────────
+// Mass page production: an agent (or the UI) creates a batch of thousands of
+// page orders in one call; the in-process scheduler drains them under the
+// workspace's concurrency setting, so the AI provider never sees a thousand
+// parallel jobs. The queue SPAWNS SeoJob rows — the whole existing pipeline
+// (pre-flight ping, fallbacks, judge, SeoHistory filing) runs unchanged — and
+// only orchestrates which item runs next.
+//
+// Item payloads store KNOBS ONLY (keyword, language, country, tone, word
+// count, policy name…). Provider keys are NEVER persisted here: the worker
+// resolves them from the owner's stored settings at run time, exactly like
+// the MCP path does (see src/lib/seo/jobPayload.ts), so a key rotated
+// mid-batch applies to items that have not run yet.
+model SeoBatch {
+  id              String    @id @default(cuid())
+  userId          String
+  name            String
+  pipeline        String    @default("outline_text") // "outline" | "outline_text" — "publish" is a planned phase, not a pipeline
+  status          String    @default("active") // "active" | "paused" | "done" | "cancelled"
+  statusReason    String    @default("") // why a batch paused itself ("auto_paused_errors" circuit breaker)
+  itemDefaults    String?   // JSON: shared knobs applied to every item unless it overrides them — knobs only, never credentials
+  clientBatchId   String?   @unique // idempotency for agent retries: a repeated create returns the existing batch instead of double-ordering
+  consecutiveErrors Int     @default(0) // circuit breaker: consecutive item errors, reset on any success
+  pauseAfterErrors   Int    @default(5) // 0 disables the breaker
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  finishedAt      DateTime?
+
+  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items SeoBatchItem[]
+
+  @@index([userId, createdAt])
+}
+
+// One page order inside a batch. The outline and text of the same page are TWO
+// items chained by dependsOnItemId: the text item becomes eligible the moment
+// its outline completes, and is skipped if the outline exhausts its retries.
+// phase is a plain string so a future "publish" phase (→ the existing publish
+// queue) can be added without a migration.
+model SeoBatchItem {
+  id              String    @id @default(cuid())
+  batchId         String
+  userId          String
+  siteId          String? // optional site binding: the worker injects that site's context (writing preferences, positioning) into the job's instruction
+  phase           String    // "outline" | "text" — "publish" reserved for the future phase
+  keyword         String
+  payload         String?   // JSON: per-item knob overrides on top of the batch itemDefaults — knobs only, never provider keys
+  priority        Int       @default(0) // higher runs first; pump orders by priority desc, createdAt asc
+  status          String    @default("queued") // "queued" | "running" | "completed" | "error" | "skipped"
+  dependsOnItemId String?
+  jobId           String?   // the SeoJob that ran (completed outline/text items: also the SeoHistory id)
+  error           String?
+  attempt         Int       @default(1)
+  nextAttemptAt   DateTime?
+  heartbeatAt     DateTime?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  batch SeoBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, status])
+  @@index([userId, status, nextAttemptAt])
+  @@index([dependsOnItemId])
 }
